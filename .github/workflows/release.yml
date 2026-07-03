@@ -28,7 +28,8 @@ on:
 # "latest") so builds are reproducible and never silently grab the wrong
 # version. Set the repo/org Actions variable SINGBOX_VERSION, or override
 # per-run via the workflow_dispatch input above. The download step fails fast
-# if neither is set.
+# if neither is set. Optionally set SINGBOX_SHA256 to the .zip asset digest
+# shown on the sing-box release page to pin the archive contents.
 env:
   SINGBOX_VERSION: ${{ inputs.singbox_version || vars.SINGBOX_VERSION }}
 
@@ -91,6 +92,26 @@ jobs:
           $url = "https://github.com/SagerNet/sing-box/releases/download/v$ver/$asset.zip"
           Write-Host "Downloading sing-box $ver from $url"
           Invoke-WebRequest -Uri $url -OutFile "sing-box.zip"
+
+      # Verify the archive as downloaded, before anything touches it. The
+      # expected hash is the asset digest GitHub shows on the sing-box release
+      # page — copy it into the SINGBOX_SHA256 variable when bumping
+      # SINGBOX_VERSION (it hashes the .zip, not the inner exe).
+      - name: Verify sing-box archive integrity
+        if: vars.SINGBOX_SHA256 != ''
+        env:
+          SINGBOX_SHA256: ${{ vars.SINGBOX_SHA256 }}
+        run: |
+          $expected = "$env:SINGBOX_SHA256".Trim() -replace '^sha256:', ''
+          $hash = (Get-FileHash -Algorithm SHA256 "sing-box.zip").Hash
+          if ($hash -ne $expected) {
+            Write-Error "sing-box.zip SHA256 mismatch! Expected: $expected, Got: $hash"
+            exit 1
+          }
+          Write-Host "sing-box.zip SHA256 verified: $hash"
+
+      - name: Extract and stage sing-box
+        run: |
           Expand-Archive -Path "sing-box.zip" -DestinationPath "singbox-extract" -Force
           # Robust against future folder-layout changes: just find the exe.
           $exe = Get-ChildItem -Path "singbox-extract" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
@@ -99,17 +120,7 @@ jobs:
             exit 1
           }
           Copy-Item $exe.FullName -Destination "release/sing-box.exe"
-          Write-Host "Bundled sing-box $ver from $($exe.FullName)"
-
-      - name: Verify sing-box integrity
-        if: vars.SINGBOX_SHA256 != ''
-        run: |
-          $hash = (Get-FileHash -Algorithm SHA256 "release/sing-box.exe").Hash
-          if ($hash -ne "${{ vars.SINGBOX_SHA256 }}") {
-            Write-Error "sing-box SHA256 mismatch! Expected: ${{ vars.SINGBOX_SHA256 }}, Got: $hash"
-            exit 1
-          }
-          Write-Host "sing-box SHA256 verified: $hash"
+          Write-Host "Bundled sing-box from $($exe.FullName)"
 
       - name: Install WiX Toolset
         run: choco install wixtoolset -y
