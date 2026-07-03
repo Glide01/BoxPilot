@@ -1,0 +1,191 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  BoxPilot Windows Installer Configuration
+
+  This WiX Source file is used to generate an MSI installer for BoxPilot.
+
+  Key features:
+  - Installs to Program Files\BoxPilot
+  - Creates Start Menu shortcut
+  - Creates Desktop shortcut
+  - Supports upgrade/downgrade (replaces previous versions)
+  - Registers in Add/Remove Programs
+  - Preserves user config in AppData (not touched by uninstall)
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='BoxPilot'
+        UpgradeCode='F7A8C9D1-2E3B-4F5A-6B7C-8D9E0F1A2B3C'
+        Manufacturer='BoxPilot Contributors'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='BoxPilot $(var.Version) Installer'
+            Manufacturer='BoxPilot Contributors'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            Platform='x64'/>
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='BoxPilot Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='ProgramFiles64Folder' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='BoxPilot'>
+                    <Component Id='MainExecutable' Guid='*' Win64='yes'>
+                        <File
+                            Id='exe0'
+                            Name='box-pilot.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\box_pilot_gui.exe'
+                            KeyPath='yes'/>
+                    </Component>
+                    <Component Id='SingBoxExecutable' Guid='*' Win64='yes'>
+                        <File
+                            Id='exe1'
+                            Name='sing-box.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\sing-box.exe'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <!--
+                      URL protocol handlers for subscription import links
+                      (sing-box://import-remote-profile?url=...#name).
+                      boxpilot:// is BoxPilot's own scheme; sing-box:// is the
+                      ecosystem-wide one, registered last-writer-wins against
+                      other sing-box GUIs the user may have installed. The exe
+                      receives the full URI as argv[1] and forwards it to a
+                      running instance via the single-instance pipe.
+                    -->
+                    <Component Id='UrlProtocolBoxpilot' Guid='*' Win64='yes'>
+                        <RegistryKey Root='HKLM' Key='Software\Classes\boxpilot'>
+                            <RegistryValue Type='string' Value='URL:BoxPilot Protocol' KeyPath='yes'/>
+                            <RegistryValue Type='string' Name='URL Protocol' Value=''/>
+                            <RegistryKey Key='DefaultIcon'>
+                                <RegistryValue Type='string' Value='"[APPLICATIONFOLDER]box-pilot.exe",0'/>
+                            </RegistryKey>
+                            <RegistryKey Key='shell\open\command'>
+                                <RegistryValue Type='string' Value='"[APPLICATIONFOLDER]box-pilot.exe" "%1"'/>
+                            </RegistryKey>
+                        </RegistryKey>
+                    </Component>
+                    <Component Id='UrlProtocolSingBox' Guid='*' Win64='yes'>
+                        <RegistryKey Root='HKLM' Key='Software\Classes\sing-box'>
+                            <RegistryValue Type='string' Value='URL:sing-box Protocol' KeyPath='yes'/>
+                            <RegistryValue Type='string' Name='URL Protocol' Value=''/>
+                            <RegistryKey Key='DefaultIcon'>
+                                <RegistryValue Type='string' Value='"[APPLICATIONFOLDER]box-pilot.exe",0'/>
+                            </RegistryKey>
+                            <RegistryKey Key='shell\open\command'>
+                                <RegistryValue Type='string' Value='"[APPLICATIONFOLDER]box-pilot.exe" "%1"'/>
+                            </RegistryKey>
+                        </RegistryKey>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='BoxPilot'>
+                    <Component Id='StartMenuShortcut' Guid='*' Win64='yes'>
+                        <Shortcut
+                            Id='StartMenuShortcut'
+                            Name='BoxPilot'
+                            Description='A GUI manager for the sing-box proxy program'
+                            Target='[APPLICATIONFOLDER]box-pilot.exe'
+                            WorkingDirectory='APPLICATIONFOLDER'
+                            Icon='ProductIcon'/>
+                        <RemoveFolder Id='CleanUpStartMenuShortcut' Directory='ApplicationProgramsFolder' On='uninstall'/>
+                        <RegistryValue
+                            Root='HKCU'
+                            Key='Software\BoxPilot'
+                            Name='StartMenuShortcut'
+                            Type='integer'
+                            Value='1'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='DesktopFolder' Name='Desktop'>
+                <Component Id='DesktopShortcut' Guid='*' Win64='yes'>
+                    <Shortcut
+                        Id='DesktopShortcut'
+                        Name='BoxPilot'
+                        Description='A GUI manager for the sing-box proxy program'
+                        Target='[APPLICATIONFOLDER]box-pilot.exe'
+                        WorkingDirectory='APPLICATIONFOLDER'
+                        Icon='ProductIcon'/>
+                    <RegistryValue
+                        Root='HKCU'
+                        Key='Software\BoxPilot'
+                        Name='DesktopShortcut'
+                        Type='integer'
+                        Value='1'
+                        KeyPath='yes'/>
+                </Component>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='MainProgram'
+            Title='BoxPilot'
+            Description='The main executable and required files.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='MainExecutable'/>
+            <ComponentRef Id='SingBoxExecutable'/>
+            <ComponentRef Id='UrlProtocolBoxpilot'/>
+            <ComponentRef Id='UrlProtocolSingBox'/>
+            <Feature
+                Id='StartMenuFeature'
+                Title='Start Menu Shortcut'
+                Description='Add a shortcut to the Start Menu.'
+                Level='1'
+                AllowAdvertise='no'
+                Absent='allow'>
+                <ComponentRef Id='StartMenuShortcut'/>
+            </Feature>
+            <Feature
+                Id='DesktopFeature'
+                Title='Desktop Shortcut'
+                Description='Add a shortcut to the Desktop.'
+                Level='1'
+                AllowAdvertise='no'
+                Absent='allow'>
+                <ComponentRef Id='DesktopShortcut'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Icon Id='ProductIcon' SourceFile='assets/app.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductIcon'/>
+
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='wix\License.rtf'/>
+
+    </Product>
+
+</Wix>

@@ -1,0 +1,79 @@
+# Cargo.toml
+
+[package]
+name = "box_pilot_gui"
+version = "1.13.0"
+edition = "2021"
+description = "A GUI manager for the sing-box proxy program"
+authors = ["BoxPilot Contributors"]
+license = "MIT"
+repository = "https://github.com/Glide01/BoxPilot"
+readme = "README.md"
+
+[package.metadata.wix]
+product-name = "BoxPilot"
+product-icon = "assets/app.ico"
+
+[profile.release]
+panic = "abort"
+strip = true
+opt-level = "z"
+lto = true
+
+[dependencies]
+# `default-features = false` drops `wayland`/`x11` activation at our level.
+# It does NOT suppress gpui's `windows-manifest` feature — that's in gpui's
+# defaults and gpui-component (transitively) activates them, so gpui's bundled
+# MANIFEST is embedded. We let that be the single MANIFEST source; admin
+# elevation is handled at runtime via `ensure_elevated()` in `src/main.rs`.
+#
+# gpui and gpui_platform are pinned via Cargo.lock rather than `rev = "..."`
+# here, because gpui-component's workspace Cargo.toml references gpui without
+# a rev — pinning here with `rev` would produce two different source URL forms
+# in Cargo.lock for the same commit, breaking trait coherence (E0277).
+# To bump: `cargo update -p gpui --precise <commit>` (and gpui_platform).
+gpui = { git = "https://github.com/zed-industries/zed", default-features = false, features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "ee4e9e474e9b260b9ef56451da46861ae0fe892a" }
+# Bundles SVG icon files for IconName via rust-embed. Must be registered with
+# `gpui_platform::application().with_assets(Assets)` in main.rs — without it,
+# every IconName silently renders as empty space.
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "ee4e9e474e9b260b9ef56451da46861ae0fe892a" }
+anyhow = "1"
+futures-util = "0.3"
+# Deep-link channel: the Windows pipe-server thread (and main's argv handling)
+# push received `sing-box://` URIs to the UI; `AppState` drains the receiver
+# in a spawned task. Already in the dep graph via gpui's `futures` facade.
+futures-channel = "0.3"
+
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12.5", features = ["blocking", "rustls-tls"], default-features = false }
+dirs = "5.0"
+
+# Used by `ensure_elevated()` in `src/main.rs` (token elevation check +
+# `ShellExecuteW("runas", ...)` self-relaunch), by the deep-link
+# single-instance pipe in `core/single_instance.rs` (Pipes + FileSystem for
+# CreateNamedPipeW/ReadFile), and by `remove_tun_adapter()` in
+# `core/process.rs` (SetupAPI device enumeration + DiUninstallDevice to drop
+# stale sing-tun adapters natively, replacing a slow powershell+pnputil shell-
+# out — Win32_Devices_DeviceAndDriverInstallation). Version matches zed's
+# workspace pin to avoid duplicate `windows` crate versions in the dep graph.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "2.2.0"
+
