@@ -13,6 +13,11 @@ on:
       - main
       - master
       - dev
+    # Version tags (v1.13.0) publish an immutable versioned release — the
+    # winget manifest points at those assets, so they must never be
+    # overwritten. Branch pushes keep feeding the rolling ci-latest build.
+    tags:
+      - "v*"
   pull_request:
     branches:
       - main
@@ -46,6 +51,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # On version-tag builds, fail fast if the tag doesn't match the crate
+      # version — the MSI's ProductVersion (and the winget manifest that will
+      # point at it) comes from Cargo.toml, so a mismatched tag would publish
+      # a release whose assets claim a different version than the tag says.
+      # The tag name is read via the runner-provided env var, never
+      # interpolated into the script.
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $tag = "$env:GITHUB_REF_NAME".TrimStart('v')
+          $m = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $cargo = $m.Matches[0].Groups[1].Value
+          if ($tag -ne $cargo) {
+            Write-Error "Tag 'v$tag' does not match Cargo.toml version '$cargo'. Bump Cargo.toml (and Cargo.lock) before tagging."
+            exit 1
+          }
+          Write-Host "Tag v$tag matches Cargo.toml version $cargo"
 
       - name: Install Rust toolchain (MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -145,7 +168,7 @@ jobs:
       # (PRs only build/test; fork PRs lack write access anyway). sing-box.exe
       # is bundled inside the MSI, so only box-pilot.exe + the MSI are attached.
       - name: Publish to rolling CI release
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
         # Third-party action holding contents:write — pinned to a full commit
         # SHA (not the mutable @v2 tag) to prevent a moved/compromised tag from
         # running with our release token. Bump deliberately (or via Dependabot).
@@ -157,6 +180,27 @@ jobs:
           body: |
             Rolling CI build from `${{ github.ref_name }}` @ `${{ github.sha }}`.
             sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI.
+          files: |
+            release/box-pilot.exe
+            release/*.msi
+
+      # Version tags publish a real (non-prerelease) release with immutable
+      # assets. The winget manifest records this URL + the MSI's SHA256, so
+      # never re-push a version tag or replace its assets — publish a new
+      # version instead.
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          name: BoxPilot ${{ github.ref_name }}
+          body: |
+            BoxPilot ${{ github.ref_name }} — sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI.
+
+            Install via winget: `winget install Glide01.BoxPilot`
+
+            BoxPilot is MIT licensed. The bundled `sing-box.exe` is the official
+            [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binary,
+            distributed under its own GPL-3.0-or-later license.
           files: |
             release/box-pilot.exe
             release/*.msi
