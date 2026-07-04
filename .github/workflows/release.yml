@@ -91,11 +91,6 @@ jobs:
       - name: Build
         run: cargo build --release --target x86_64-pc-windows-msvc
 
-      - name: Stage built binary
-        run: |
-          New-Item -ItemType Directory -Force -Path "release"
-          Copy-Item "target/x86_64-pc-windows-msvc/release/box_pilot_gui.exe" -Destination "release/box-pilot.exe"
-
       - name: Download sing-box from official GitHub release
         run: |
           # Read the version from the env var (set at workflow level), never
@@ -135,6 +130,7 @@ jobs:
 
       - name: Extract and stage sing-box
         run: |
+          New-Item -ItemType Directory -Force -Path "release"
           Expand-Archive -Path "sing-box.zip" -DestinationPath "singbox-extract" -Force
           # Robust against future folder-layout changes: just find the exe.
           $exe = Get-ChildItem -Path "singbox-extract" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
@@ -165,8 +161,8 @@ jobs:
       # actions/upload-artifact — release assets don't count against the
       # Actions artifact storage quota, and each push overwrites the assets so
       # there's always one current build to download. Skipped on pull_request
-      # (PRs only build/test; fork PRs lack write access anyway). sing-box.exe
-      # is bundled inside the MSI, so only box-pilot.exe + the MSI are attached.
+      # (PRs only build/test; fork PRs lack write access anyway). Both exes
+      # are bundled inside the MSI, so the MSI is the only attached asset.
       - name: Publish to rolling CI release
         if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
         # Third-party action holding contents:write — pinned to a full commit
@@ -180,9 +176,7 @@ jobs:
           body: |
             Rolling CI build from `${{ github.ref_name }}` @ `${{ github.sha }}`.
             sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI.
-          files: |
-            release/box-pilot.exe
-            release/*.msi
+          files: release/*.msi
 
       # Version tags publish a real (non-prerelease) release with immutable
       # assets. The winget manifest records this URL + the MSI's SHA256, so
@@ -201,6 +195,4 @@ jobs:
             BoxPilot is MIT licensed. The bundled `sing-box.exe` is the official
             [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binary,
             distributed under its own GPL-3.0-or-later license.
-          files: |
-            release/box-pilot.exe
-            release/*.msi
+          files: release/*.msi
