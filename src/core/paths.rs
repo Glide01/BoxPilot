@@ -4,7 +4,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn get_app_data_dir() -> Result<PathBuf, String> {
-    let base = dirs::config_dir()
+    // Test seam: the import-rollback harness (`src/bin/import_rollback_harness.rs`)
+    // points this at a temp dir so integration tests exercise real first-run
+    // state without touching user data. Not a supported end-user knob.
+    let base = env::var_os("BOXPILOT_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(dirs::config_dir)
         .or_else(|| env::current_dir().ok())
         .ok_or_else(|| "Failed to resolve config or current directory".to_string())?;
     let app_dir = base.join("BoxPilot");

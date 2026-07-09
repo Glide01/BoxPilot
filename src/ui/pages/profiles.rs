@@ -6,6 +6,7 @@
 use crate::core::presentation::{profile_row_info, updated_label};
 use crate::core::profile_draft::{is_json_config, DraftKind, ProfileDraft};
 use crate::core::settings::{Profile, StatusLevel};
+use crate::state::app_state::FetchOrigin;
 use crate::state::AppState;
 use crate::ui::widgets::{page_header, pill, PillTone};
 use crate::ui::toast;
@@ -301,7 +302,7 @@ impl ProfilesPage {
                                 None => {
                                     let id = state.create_profile(output.name, output.source, cx);
                                     if output.has_content {
-                                        state.update_profile(id, false, cx);
+                                        state.update_profile(id, FetchOrigin::Manual, cx);
                                     }
                                 }
                             }
@@ -403,7 +404,7 @@ impl ProfilesPage {
                             .disabled(row_info.source_empty || any_updating)
                             .on_click(move |_, _, cx| {
                                 app_state_refresh.update(cx, |state, cx| {
-                                    state.update_profile(refresh_id.clone(), false, cx);
+                                    state.update_profile(refresh_id.clone(), FetchOrigin::Manual, cx);
                                 });
                             }),
                     )

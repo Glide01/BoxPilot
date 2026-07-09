@@ -37,8 +37,24 @@ pub enum UpdateStatus {
     /// the result is ignored).
     Updating {
         profile_id: String,
+        origin: FetchOrigin,
         _task: Task<()>,
     },
+}
+
+/// How a profile fetch was initiated — failure handling differs by door.
+#[derive(Clone, Copy, PartialEq)]
+pub enum FetchOrigin {
+    /// Row-level ⟳ / Ctrl+U / first fetch after the Add dialog: never
+    /// activates, and a failure keeps the profile — the user created it
+    /// explicitly and can see and edit it on the Profiles page.
+    Manual,
+    /// User-confirmed `sing-box://` URI import: activates once the config
+    /// lands on disk. If the import *created* the profile and the fetch
+    /// fails, the profile is rolled back — Home keys its "Add subscription"
+    /// empty card on `has_profiles()`, so a lingering never-fetched profile
+    /// would dismiss the card and make the failed import read as a success.
+    UriImport { created_profile: bool },
 }
 
 /// Inputs the auto-update loop needs from `AppState`, captured on the UI
@@ -593,22 +609,23 @@ impl AppState {
             return;
         }
         let id = self.settings.active_profile_id.clone();
-        self.update_profile(id, false, cx);
+        self.update_profile(id, FetchOrigin::Manual, cx);
     }
 
     /// Kick off a subscription fetch / local re-import for `profile_id` on
     /// the background executor, writing `configs/<id>.json`. Fetching does
     /// NOT activate the profile and never touches a running process — except
-    /// with `activate_on_success` (the URI import path), which activates once
-    /// the config landed on disk, because activating before the fetch would
-    /// point a running sing-box at a config that doesn't exist yet. The
+    /// for `FetchOrigin::UriImport`, which activates once the config landed
+    /// on disk, because activating before the fetch would point a running
+    /// sing-box at a config that doesn't exist yet; on failure it rolls the
+    /// profile back if this import created it (see [`FetchOrigin`]). The
     /// `Task<()>` is stored in `update_status`(连同 profile id,供行级
     /// spinner)so dropping it (e.g. by overwriting with another update)
     /// cancels the in-flight fetch.
     pub fn update_profile(
         &mut self,
         profile_id: String,
-        activate_on_success: bool,
+        origin: FetchOrigin,
         cx: &mut Context<Self>,
     ) {
         if self.is_updating() {
@@ -687,13 +704,18 @@ impl AppState {
                             format!("\"{}\" is up to date.", profile_name),
                         )
                     }
-                    Err(msg) => (
-                        StatusLevel::Error,
-                        format!("\"{}\": {}", profile_name, msg),
-                    ),
+                    Err(msg) => {
+                        if origin == (FetchOrigin::UriImport { created_profile: true }) {
+                            state.rollback_import_created(&profile_id);
+                        }
+                        (
+                            StatusLevel::Error,
+                            format!("\"{}\": {}", profile_name, msg),
+                        )
+                    }
                 };
                 if matches!(level, StatusLevel::Success | StatusLevel::Info)
-                    && activate_on_success
+                    && matches!(origin, FetchOrigin::UriImport { .. })
                 {
                     state.set_active_profile(profile_id.clone(), cx);
                 }
@@ -704,6 +726,7 @@ impl AppState {
 
         self.update_status = UpdateStatus::Updating {
             profile_id: status_id,
+            origin,
             _task: task,
         };
         cx.notify();
@@ -841,18 +864,50 @@ impl AppState {
         }
     }
 
+    /// Remove a profile that a URI import created but never landed a config
+    /// for. Keeping it would dismiss Home's "Add subscription" empty card
+    /// and make the failed import read as a success. The profile is never
+    /// active at this point (imports only activate on success), so
+    /// `normalize_profiles` is just a safety net.
+    fn rollback_import_created(&mut self, profile_id: &str) {
+        self.settings.profiles.retain(|p| p.id != profile_id);
+        self.settings.normalize_profiles();
+        self.save_settings();
+    }
+
     /// User-confirmed import. A profile that already has this URL is reused
     /// (re-import = refresh) instead of duplicated. The fetch activates the
     /// profile once its config is on disk.
     pub fn import_profile(&mut self, request: ImportRequest, cx: &mut Context<Self>) {
+        // An explicit user action outranks whatever fetch is in flight:
+        // dropping the task cancels it. If the cancelled fetch was itself an
+        // import that created its profile, roll that phantom back now — its
+        // failure arm will never run, and the URL lookup below must not
+        // resurrect it (re-clicking the same link mid-fetch would otherwise
+        // "reuse" the phantom and lose the created-by-import marker).
+        if let UpdateStatus::Updating {
+            profile_id,
+            origin: FetchOrigin::UriImport {
+                created_profile: true,
+            },
+            ..
+        } = &self.update_status
+        {
+            let stale = profile_id.clone();
+            self.update_status = UpdateStatus::Idle;
+            self.rollback_import_created(&stale);
+        } else {
+            self.update_status = UpdateStatus::Idle;
+        }
+
         let url = request.url.trim().to_string();
-        let id = match self
+        let (id, created_profile) = match self
             .settings
             .profiles
             .iter()
             .find(|p| p.remote_url() == Some(url.as_str()))
         {
-            Some(existing) => existing.id.clone(),
+            Some(existing) => (existing.id.clone(), false),
             None => {
                 let id = self.settings.next_profile_id();
                 let name = request
@@ -870,13 +925,10 @@ impl AppState {
                     last_updated_secs: None,
                 });
                 self.save_settings();
-                id
+                (id, true)
             }
         };
-        // An explicit user action outranks whatever fetch is in flight:
-        // dropping the task cancels it.
-        self.update_status = UpdateStatus::Idle;
-        self.update_profile(id, true, cx);
+        self.update_profile(id, FetchOrigin::UriImport { created_profile }, cx);
         cx.notify();
     }
 }
