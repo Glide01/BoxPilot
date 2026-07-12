@@ -2,7 +2,7 @@
 
 [package]
 name = "box_pilot_gui"
-version = "1.13.1"
+version = "1.14.0"
 edition = "2021"
 description = "A GUI manager for the sing-box proxy program"
 authors = ["BoxPilot Contributors"]
