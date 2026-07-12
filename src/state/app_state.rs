@@ -1,6 +1,7 @@
 use crate::core::clash_api::ClashApi;
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest};
 use crate::core::orchestration::{process_edge_effects, ProcessEdgeEffect};
+use crate::core::process::query_sing_box_version;
 use crate::core::paths::{
     get_app_data_dir, get_install_dir, profile_config_path, runtime_config_path,
 };
@@ -65,6 +66,7 @@ struct AutoUpdateSnap {
     profiles: Vec<Profile>,
     app_dir: PathBuf,
     sing_box_path: PathBuf,
+    sing_box_version: Option<String>,
     updating: bool,
     starting: bool,
 }
@@ -76,6 +78,11 @@ struct AutoUpdateSnap {
 /// processed before any subscriber exists) and shows the confirm dialog.
 pub struct ImportRequested;
 
+/// A plain second launch pinged the single-instance pipe (empty payload, no
+/// URI). The user tried to open the app again — `RootView` responds by
+/// bringing the existing window to the foreground.
+pub struct ActivateRequested;
+
 /// Top-level reactive state owned by `RootView`. Holds persisted settings,
 /// resolved paths, the child entities for the process and log subsystems,
 /// and an initial status message that `RootView` consumes once on startup.
@@ -83,6 +90,12 @@ pub struct AppState {
     pub settings: AppSettings,
     pub app_dir: PathBuf,
     pub install_dir: PathBuf,
+    /// The bundled sing-box binary's self-reported version, probed once at
+    /// startup on the background executor (the MSI-installed binary can't
+    /// change mid-run). `None` until the probe lands — or forever, if the
+    /// binary is missing. Feeds the Settings ABOUT card and the subscription
+    /// User-Agent.
+    pub sing_box_version: Option<String>,
     pub update_status: UpdateStatus,
     /// One-shot startup status drained by `RootView::new` after subscribers
     /// are wired. Always `None` after that initial read.
@@ -111,6 +124,8 @@ pub struct AppState {
 impl EventEmitter<StatusEvent> for AppState {}
 
 impl EventEmitter<ImportRequested> for AppState {}
+
+impl EventEmitter<ActivateRequested> for AppState {}
 
 impl AppState {
     pub fn new(deeplinks: UnboundedReceiver<String>, cx: &mut App) -> Entity<Self> {
@@ -244,6 +259,7 @@ impl AppState {
                         profiles: state.settings.profiles.clone(),
                         app_dir: state.app_dir.clone(),
                         sing_box_path: state.sing_box_path(),
+                        sing_box_version: state.sing_box_version.clone(),
                         updating: state.is_updating(),
                         starting: state.process.read(cx).is_starting(),
                     });
@@ -284,10 +300,17 @@ impl AppState {
                         let app_dir = snap.app_dir.clone();
                         let config_path = profile_config_path(&snap.app_dir, &profile.id);
                         let sing_box = snap.sing_box_path.clone();
+                        let sing_box_version = snap.sing_box_version.clone();
                         let result = cx
                             .background_executor()
                             .spawn(async move {
-                                perform_update(&url, &app_dir, &config_path, Some(&sing_box))
+                                perform_update(
+                                    &url,
+                                    &app_dir,
+                                    &config_path,
+                                    Some(&sing_box),
+                                    sing_box_version.as_deref(),
+                                )
                             })
                             .await;
 
@@ -327,12 +350,18 @@ impl AppState {
             });
 
             // Empty payloads are second-launch pings from the
-            // single-instance pipe (no URI attached) — ignored for now;
-            // a future iteration could focus the window here.
+            // single-instance pipe (no URI attached) — the user tried to
+            // open the app again, so surface the existing window.
             let deeplink_task = cx.spawn(async move |this, cx| {
                 let mut deeplinks = deeplinks;
                 while let Some(uri) = deeplinks.next().await {
                     if uri.is_empty() {
+                        if this
+                            .update(cx, |_, cx| cx.emit(ActivateRequested))
+                            .is_err()
+                        {
+                            return;
+                        }
                         continue;
                     }
                     if this
@@ -344,10 +373,29 @@ impl AppState {
                 }
             });
 
+            // Probe the bundled sing-box's version once (ABOUT card + real
+            // version in the subscription User-Agent). One shot is enough:
+            // the binary is MSI-installed and can't change mid-run.
+            let sing_path = install_dir.join(SING_EXECUTABLE);
+            cx.spawn(async move |this, cx| {
+                let version = cx
+                    .background_executor()
+                    .spawn(async move { query_sing_box_version(&sing_path) })
+                    .await;
+                if let Some(version) = version {
+                    let _ = this.update(cx, |state: &mut AppState, cx| {
+                        state.sing_box_version = Some(version);
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+
             Self {
                 settings,
                 app_dir,
                 install_dir,
+                sing_box_version: None,
                 update_status: UpdateStatus::Idle,
                 pending_status,
                 pending_import: None,
@@ -658,6 +706,7 @@ impl AppState {
         let app_dir = self.app_dir.clone();
         let config_path = profile_config_path(&self.app_dir, &profile_id);
         let sing_box = self.sing_box_path();
+        let sing_box_version = self.sing_box_version.clone();
         let status_id = profile_id.clone();
 
         let task = cx.spawn(async move |this, cx| {
@@ -670,6 +719,7 @@ impl AppState {
                             &app_dir,
                             &config_path,
                             Some(sing_box.as_path()),
+                            sing_box_version.as_deref(),
                         ),
                         ProfileSource::Local { path } => import_local_config(
                             std::path::Path::new(path.trim()),

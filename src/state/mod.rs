@@ -14,7 +14,7 @@ pub mod process_session;
 pub mod proxy_groups;
 pub mod traffic;
 
-pub use app_state::{AppState, ImportRequested};
+pub use app_state::{ActivateRequested, AppState, ImportRequested};
 pub use log_buffer::LogBuffer;
 pub use process_session::{PendingStart, ProcessSession, ProcessState};
 pub use proxy_groups::{DelayState, GroupSource, ProxyGroups};

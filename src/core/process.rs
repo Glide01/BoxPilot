@@ -297,6 +297,36 @@ pub fn validate_config(
     Err(format!("Config validation failed: {}", summary))
 }
 
+/// Parse the version out of `sing-box version` output. The first line looks
+/// like `sing-box version 1.11.15`; later lines (Environment/Tags/…) are
+/// ignored. Pure so the one bit of judgement — what counts as a version
+/// line — is unit-tested off-Windows.
+pub fn parse_sing_box_version(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let version = line.trim().strip_prefix("sing-box version ")?.trim();
+        (!version.is_empty()).then(|| version.to_string())
+    })
+}
+
+/// Ask the bundled binary for its version (`sing-box version`, hidden
+/// window). `None` when the binary is missing or the output is
+/// unrecognizable. Blocking — run on the background executor.
+pub fn query_sing_box_version(sing_path: &Path) -> Option<String> {
+    let mut cmd = Command::new(sing_path);
+    cmd.arg("version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd.output().ok()?;
+    parse_sing_box_version(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Both pipe readers run on dedicated threads. Called from
 /// `ProcessSession::spawn_child` after the prep task completes.
 pub fn start_sing_box(
@@ -384,6 +414,30 @@ mod tests {
         assert!(!is_sing_tun_friendly_name("TAP-Windows Adapter V9"));
         assert!(!is_sing_tun_friendly_name("my sing-tun clone")); // prefix only
         assert!(!is_sing_tun_friendly_name(""));
+    }
+
+    /// Real `sing-box version` output: version on the first line, then
+    /// Environment/Tags/Revision lines we must not mistake for versions.
+    #[test]
+    fn parses_version_from_typical_output() {
+        let out = "sing-box version 1.11.15\n\nEnvironment: go1.24.4 windows/amd64\nTags: with_gvisor,with_quic\n";
+        assert_eq!(parse_sing_box_version(out).as_deref(), Some("1.11.15"));
+    }
+
+    #[test]
+    fn parses_prerelease_versions() {
+        assert_eq!(
+            parse_sing_box_version("sing-box version 1.12.0-beta.5\n").as_deref(),
+            Some("1.12.0-beta.5")
+        );
+    }
+
+    #[test]
+    fn rejects_output_without_a_version_line() {
+        assert_eq!(parse_sing_box_version(""), None);
+        assert_eq!(parse_sing_box_version("not a sing-box binary"), None);
+        assert_eq!(parse_sing_box_version("sing-box version "), None);
+        assert_eq!(parse_sing_box_version("Environment: go1.24.4"), None);
     }
 
     #[test]

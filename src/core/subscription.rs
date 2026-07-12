@@ -6,11 +6,19 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-const USER_AGENT: &str = concat!(
-    "BoxPilot/", env!("CARGO_PKG_VERSION"),
-    " (", env!("CARGO_PKG_VERSION"),
-    "; sing-box ", env!("CARGO_PKG_VERSION"), ")"
-);
+/// Subscription User-Agent. Servers sniff the literal `sing-box` token to
+/// decide whether to serve sing-box JSON or Clash YAML, and read the version
+/// after it to gate config-format features — so the token is always present,
+/// and the advertised version is the real one whenever startup detection got
+/// it. `None` (binary missing/unreadable) falls back to the historical
+/// string, which fills the slot with BoxPilot's own version.
+pub fn user_agent(sing_box_version: Option<&str>) -> String {
+    const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+    format!(
+        "BoxPilot/{APP_VERSION} ({APP_VERSION}; sing-box {})",
+        sing_box_version.unwrap_or(APP_VERSION)
+    )
+}
 
 /// Result of a subscription fetch + write.
 ///
@@ -109,6 +117,7 @@ pub fn perform_update(
     app_dir: &Path,
     config_path: &Path,
     sing_box: Option<&Path>,
+    sing_box_version: Option<&str>,
 ) -> Result<UpdateOutcome, String> {
     if !sub_url.starts_with("http://") && !sub_url.starts_with("https://") {
         return Err("Invalid URL: must start with http:// or https://".to_string());
@@ -121,7 +130,7 @@ pub fn perform_update(
 
     let response = client
         .get(sub_url)
-        .header("User-Agent", USER_AGENT)
+        .header("User-Agent", user_agent(sing_box_version))
         .send()
         .map_err(|e| {
         if e.is_timeout() {
@@ -256,6 +265,23 @@ mod tests {
 
     fn parse(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn user_agent_advertises_real_sing_box_version() {
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            user_agent(Some("1.11.15")),
+            format!("BoxPilot/{v} ({v}; sing-box 1.11.15)")
+        );
+    }
+
+    /// Unknown version → byte-identical to the historical compile-time UA,
+    /// so servers that sniff it see zero change.
+    #[test]
+    fn user_agent_falls_back_to_historical_string() {
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(user_agent(None), format!("BoxPilot/{v} ({v}; sing-box {v})"));
     }
 
     #[test]

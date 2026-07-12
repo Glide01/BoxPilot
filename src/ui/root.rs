@@ -2,7 +2,7 @@ use crate::actions::{ToggleProcess, UpdateSubscription};
 use crate::core::bytefmt::format_speed;
 use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::StatusEvent;
-use crate::state::{AppState, ImportRequested};
+use crate::state::{ActivateRequested, AppState, ImportRequested};
 use crate::ui::pages::{ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage};
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
@@ -54,6 +54,17 @@ impl RootView {
             window,
             |_, app_state, _: &ImportRequested, window, cx| {
                 Self::prompt_import(app_state.clone(), window, cx);
+            },
+        )
+        .detach();
+
+        // Plain second launch (empty pipe payload): the user tried to open
+        // the app again — bring the existing window to the foreground.
+        cx.subscribe_in(
+            &app_state,
+            window,
+            |_, _, _: &ActivateRequested, window, _| {
+                window.activate_window();
             },
         )
         .detach();
@@ -113,6 +124,11 @@ impl RootView {
         let Some(request) = app_state.update(cx, |state, _| state.pending_import.take()) else {
             return;
         };
+        // The link usually lands while the browser is in front — surface our
+        // window so the confirm dialog is actually seen (gpui's Windows
+        // activate() restores a minimized window and works around the
+        // SetForegroundWindow lock).
+        window.activate_window();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let app_state = app_state.clone();
             let request = request.clone();

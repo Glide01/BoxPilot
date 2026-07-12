@@ -82,6 +82,10 @@ impl Render for SettingsPage {
         let can_clear = state.process.read(cx).is_stopped() && !state.is_updating();
         let app_state_clear = self.app_state.clone();
         let proxy_port = state.settings.proxy_port;
+        let sing_box_version = state
+            .sing_box_version
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
         let theme = cx.theme();
 
         let section_label = |text: &'static str| {
@@ -174,6 +178,26 @@ impl Render for SettingsPage {
                             }),
                     ),
                 ),
+            )
+            .child(
+                card_frame(theme)
+                    .child(section_label("ABOUT"))
+                    .child(
+                        setting_row(theme, "BoxPilot", None).child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child(env!("CARGO_PKG_VERSION")),
+                        ),
+                    )
+                    .child(
+                        setting_row(theme, "sing-box", None).child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child(sing_box_version),
+                        ),
+                    ),
             )
     }
 }
