@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription};
+use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
 use box_pilot_gui::ui::RootView;
 use gpui::*;
@@ -97,18 +98,22 @@ fn main() {
     #[cfg(target_os = "windows")]
     ensure_elevated();
 
-    let (deeplink_tx, deeplink_rx) = futures_channel::mpsc::unbounded::<String>();
+    // Launch attempts reaching this instance: our own argv link, plus every
+    // one the pipe server forwards later. A cold start with no link is not
+    // an *attempt to reach a running instance*, so it sends nothing —
+    // `Plain` only ever originates from the pipe.
+    let (deeplink_tx, deeplink_rx) = futures_channel::mpsc::unbounded::<LaunchAttempt>();
     if let Some(uri) = deeplink_arg {
-        let _ = deeplink_tx.unbounded_send(uri);
+        let _ = deeplink_tx.unbounded_send(LaunchAttempt::DeepLink(uri));
     }
 
-    // Become the primary instance: pipe server feeds later deep links into
+    // Become the primary instance: pipe server feeds later attempts into
     // the same channel. Two simultaneous cold starts race on the instance
     // mutex; the loser forwards its link to the winner and exits.
     {
         let tx = deeplink_tx.clone();
-        match box_pilot_gui::core::single_instance::start_server(Box::new(move |uri| {
-            let _ = tx.unbounded_send(uri);
+        match box_pilot_gui::core::single_instance::start_server(Box::new(move |attempt| {
+            let _ = tx.unbounded_send(attempt);
         })) {
             box_pilot_gui::core::single_instance::ServerStart::Primary => {}
             box_pilot_gui::core::single_instance::ServerStart::LostRace => {

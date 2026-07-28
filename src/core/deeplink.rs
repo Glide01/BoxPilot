@@ -24,6 +24,37 @@ pub fn is_deeplink(arg: &str) -> bool {
     SCHEMES.iter().any(|scheme| lower.starts_with(scheme))
 }
 
+/// One attempt by the user to launch or reach BoxPilot, routed to the single
+/// primary instance: a plain second launch or a clicked deep link.
+///
+/// Naming the umbrella concept is what lets the app state one rule instead of
+/// three — *every launch attempt ends with the user seeing the window* (see
+/// `docs/adr/0001-launch-attempt-invariant.md`). What the attempt carries only
+/// decides what is shown *after* the window surfaces.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaunchAttempt {
+    /// No URI attached — the user started BoxPilot again while an instance
+    /// was already running.
+    Plain,
+    /// A URI arrived through a registered scheme. Not yet validated: only
+    /// [`parse_import_uri`] decides whether it is a usable import link.
+    DeepLink(String),
+}
+
+impl LaunchAttempt {
+    /// Decode a single-instance pipe payload. The empty string is the wire
+    /// protocol's "no URI" sentinel — the pipe carries bytes, so it needs
+    /// one — and this is where it stops: nothing downstream sees `""`.
+    pub fn from_wire(payload: &str) -> Self {
+        let trimmed = payload.trim();
+        if trimmed.is_empty() {
+            Self::Plain
+        } else {
+            Self::DeepLink(trimmed.to_string())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportRequest {
     /// The subscription URL to fetch (http/https, already decoded).
@@ -137,6 +168,22 @@ fn percent_decode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_wire_payload_is_a_plain_launch() {
+        assert_eq!(LaunchAttempt::from_wire(""), LaunchAttempt::Plain);
+        // A whitespace-only payload is the same thing: some senders write a
+        // trailing newline, and it must not read as a (blank) deep link.
+        assert_eq!(LaunchAttempt::from_wire(" \r\n"), LaunchAttempt::Plain);
+    }
+
+    #[test]
+    fn uri_wire_payload_is_a_deep_link() {
+        assert_eq!(
+            LaunchAttempt::from_wire("  sing-box://import-remote-profile?url=x\n"),
+            LaunchAttempt::DeepLink("sing-box://import-remote-profile?url=x".to_string())
+        );
+    }
 
     #[test]
     fn canonical_sing_box_uri_with_name_fragment() {

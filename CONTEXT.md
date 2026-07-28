@@ -17,6 +17,22 @@ BoxPilot version; "Unknown" when the binary is missing or unreadable.
 **BoxPilot version**:
 The version of the BoxPilot app itself (the Cargo package version).
 
+**Launch attempt**:
+One action by the user to start or reach BoxPilot — double-clicking the icon,
+launching it a second time, or clicking a link. Every attempt is routed to the
+single running instance, whatever it carried.
+_Avoid_: ping, second launch, inbound message
+
+**Deep link**:
+A URI handed to BoxPilot through one of its registered URL schemes
+(`sing-box://`, `boxpilot://`). The transport, not yet a promise that the URI
+means anything.
+
+**Import link**:
+A deep link whose action is `import-remote-profile` — the only action BoxPilot
+understands today. UI text uses this term, never "deep link".
+_Avoid_: URI import, import URI, subscription link
+
 **Subscription User-Agent**:
 The identity string sent when fetching a subscription. Servers sniff the
 literal `sing-box` token in it to decide whether to serve sing-box JSON or

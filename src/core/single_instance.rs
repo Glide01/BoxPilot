@@ -10,8 +10,10 @@
 //!    no UAC prompt at all on the common path.
 //! 2. The (elevated) process that finds no pipe becomes the primary: it
 //!    takes the instance mutex and runs the pipe server thread, feeding
-//!    received URIs into the UI via the callback (`main` wires it to a
-//!    futures channel drained by `AppState`).
+//!    received payloads into the UI as [`LaunchAttempt`]s via the callback
+//!    (`main` wires it to a futures channel drained by `AppState`). The
+//!    empty-string "no URI" sentinel is a wire-protocol detail and is
+//!    decoded away here — see [`LaunchAttempt::from_wire`].
 //!
 //! DACL note: the pipe carries an explicit SDDL security descriptor
 //! (`D:(A;;GRGW;;;WD)` + low-integrity label). The default DACL of an
@@ -26,6 +28,8 @@
 //! no-op stubs so `main` can call unconditionally. None of it can be
 //! compile-checked on macOS (see CLAUDE.md) — CI's MSVC build is the
 //! verifier.
+
+use crate::core::deeplink::LaunchAttempt;
 
 #[cfg(target_os = "windows")]
 const PIPE_PATH: &str = r"\\.\pipe\BoxPilot.DeepLink";
@@ -44,8 +48,9 @@ pub enum ServerStart {
 }
 
 /// If a primary instance is already listening, hand it `uri` (empty string
-/// = plain second launch, primary ignores it) and return `true` — the
-/// caller must then exit. Returns `false` when no instance is running.
+/// = plain second launch, which surfaces the primary's window) and return
+/// `true` — the caller must then exit. Returns `false` when no instance is
+/// running.
 #[cfg(target_os = "windows")]
 pub fn try_forward(uri: Option<&str>) -> bool {
     use std::io::Write;
@@ -79,10 +84,10 @@ pub fn try_forward(_uri: Option<&str>) -> bool {
 
 /// Claim the single-instance mutex and start the pipe server thread.
 /// Call only after elevation (the primary must be the elevated process).
-/// `on_message` is invoked on the pipe thread for every received payload —
+/// `on_attempt` is invoked on the pipe thread for every received payload —
 /// it must be cheap and thread-safe (main wires it to a channel send).
 #[cfg(target_os = "windows")]
-pub fn start_server(on_message: Box<dyn Fn(String) + Send>) -> ServerStart {
+pub fn start_server(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStart {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
@@ -103,12 +108,12 @@ pub fn start_server(on_message: Box<dyn Fn(String) + Send>) -> ServerStart {
         }
     }
 
-    std::thread::spawn(move || pipe_server_loop(on_message));
+    std::thread::spawn(move || pipe_server_loop(on_attempt));
     ServerStart::Primary
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn start_server(_on_message: Box<dyn Fn(String) + Send>) -> ServerStart {
+pub fn start_server(_on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStart {
     ServerStart::Primary
 }
 
@@ -116,7 +121,7 @@ pub fn start_server(_on_message: Box<dyn Fn(String) + Send>) -> ServerStart {
 /// one URI, closes; we read to EOF and pass the payload on. Sequential
 /// accepts are plenty — deep links are human-paced.
 #[cfg(target_os = "windows")]
-fn pipe_server_loop(on_message: Box<dyn Fn(String) + Send>) {
+fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
     use windows::core::{w, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED};
     use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
@@ -198,7 +203,7 @@ fn pipe_server_loop(on_message: Box<dyn Fn(String) + Send>) {
             }
             let _ = unsafe { DisconnectNamedPipe(pipe) };
             if let Ok(text) = String::from_utf8(data) {
-                on_message(text.trim().to_string());
+                on_attempt(LaunchAttempt::from_wire(&text));
             }
         }
         unsafe {

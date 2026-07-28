@@ -1,5 +1,5 @@
 use crate::core::clash_api::ClashApi;
-use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest};
+use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
 use crate::core::orchestration::{process_edge_effects, ProcessEdgeEffect};
 use crate::core::process::query_sing_box_version;
 use crate::core::paths::{
@@ -18,6 +18,7 @@ use crate::state::process_session::{PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
 use crate::state::traffic::Traffic;
 use futures_channel::mpsc::UnboundedReceiver;
+use futures_channel::oneshot;
 use futures_util::StreamExt;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
 use std::collections::HashMap;
@@ -71,16 +72,15 @@ struct AutoUpdateSnap {
     starting: bool,
 }
 
-/// A `sing-box://import-remote-profile` deep link arrived (argv or the
-/// single-instance pipe) and was parsed successfully. The request itself is
-/// parked in `AppState::pending_import` — `RootView` consumes it from there
-/// (and on startup checks the field directly, since the initial link can be
-/// processed before any subscriber exists) and shows the confirm dialog.
+/// A deep link arrived (argv or the single-instance pipe) and parsed into a
+/// usable import link. The request itself is parked in
+/// `AppState::pending_import` — `RootView` consumes it from there and shows
+/// the confirm dialog.
 pub struct ImportRequested;
 
-/// A plain second launch pinged the single-instance pipe (empty payload, no
-/// URI). The user tried to open the app again — `RootView` responds by
-/// bringing the existing window to the foreground.
+/// A launch attempt reached this instance — any launch attempt, whatever it
+/// carried. `RootView` responds by bringing the window to the foreground;
+/// see `docs/adr/0001-launch-attempt-invariant.md`.
 pub struct ActivateRequested;
 
 /// Top-level reactive state owned by `RootView`. Holds persisted settings,
@@ -103,6 +103,9 @@ pub struct AppState {
     /// Parsed deep-link import awaiting user confirmation; see
     /// [`ImportRequested`]. A newer link simply replaces an unconfirmed one.
     pub pending_import: Option<ImportRequest>,
+    /// Fires once `RootView` has wired its subscribers, releasing the
+    /// launch-attempt gate in the deep-link task. `None` after that.
+    view_ready: Option<oneshot::Sender<()>>,
     pub process: Entity<ProcessSession>,
     pub logs: Entity<LogBuffer>,
     pub proxy_groups: Entity<ProxyGroups>,
@@ -116,7 +119,7 @@ pub struct AppState {
     /// subscription. Held so it lives as long as `AppState` and is dropped
     /// (cancelled) on app exit.
     _auto_update_task: Task<()>,
-    /// Drains deep-link URIs (argv + single-instance pipe) for the lifetime
+    /// Drains launch attempts (argv + single-instance pipe) for the lifetime
     /// of the app.
     _deeplink_task: Task<()>,
 }
@@ -128,7 +131,8 @@ impl EventEmitter<ImportRequested> for AppState {}
 impl EventEmitter<ActivateRequested> for AppState {}
 
 impl AppState {
-    pub fn new(deeplinks: UnboundedReceiver<String>, cx: &mut App) -> Entity<Self> {
+    pub fn new(launches: UnboundedReceiver<LaunchAttempt>, cx: &mut App) -> Entity<Self> {
+        let (view_ready_tx, view_ready_rx) = oneshot::channel::<()>();
         let mut errors = Vec::new();
         let app_dir = get_app_data_dir().unwrap_or_else(|e| {
             errors.push(e);
@@ -349,25 +353,31 @@ impl AppState {
                 }
             });
 
-            // Empty payloads are second-launch pings from the
-            // single-instance pipe (no URI attached) — the user tried to
-            // open the app again, so surface the existing window.
             let deeplink_task = cx.spawn(async move |this, cx| {
-                let mut deeplinks = deeplinks;
-                while let Some(uri) = deeplinks.next().await {
-                    if uri.is_empty() {
-                        if this
-                            .update(cx, |_, cx| cx.emit(ActivateRequested))
-                            .is_err()
-                        {
-                            return;
+                // Gate: consume nothing until `RootView` has subscribed.
+                // gpui drops events emitted before a subscriber exists, and
+                // the window opens several executor turns after this task is
+                // spawned — an argv link, or one the pipe forwards during
+                // that window, would otherwise vanish without a trace.
+                // Attempts queue harmlessly in the unbounded channel
+                // meanwhile. `Err` = the sender was dropped with no view
+                // (app shutting down).
+                if view_ready_rx.await.is_err() {
+                    return;
+                }
+
+                let mut launches = launches;
+                while let Some(attempt) = launches.next().await {
+                    // Every launch attempt ends with the user seeing the
+                    // window — enforced once, here, for every arm. What the
+                    // attempt carried only decides what is shown next.
+                    let delivered = this.update(cx, |state: &mut AppState, cx| {
+                        cx.emit(ActivateRequested);
+                        if let LaunchAttempt::DeepLink(uri) = attempt {
+                            state.handle_deeplink(&uri, cx);
                         }
-                        continue;
-                    }
-                    if this
-                        .update(cx, |state: &mut AppState, cx| state.handle_deeplink(&uri, cx))
-                        .is_err()
-                    {
+                    });
+                    if delivered.is_err() {
                         return;
                     }
                 }
@@ -399,6 +409,7 @@ impl AppState {
                 update_status: UpdateStatus::Idle,
                 pending_status,
                 pending_import: None,
+                view_ready: Some(view_ready_tx),
                 process,
                 logs,
                 proxy_groups,
@@ -896,9 +907,20 @@ impl AppState {
         cx.notify();
     }
 
+    /// Called by `RootView::new` once its subscribers are wired: opens the
+    /// launch-attempt gate so queued attempts can be delivered as events
+    /// that someone is listening for. Idempotent.
+    pub fn view_attached(&mut self) {
+        if let Some(ready) = self.view_ready.take() {
+            let _ = ready.send(());
+        }
+    }
+
     /// Parse a received deep link. Valid → park as `pending_import` and ask
     /// the view layer to confirm; invalid → warning toast (links arrive from
-    /// arbitrary web pages, never import silently).
+    /// arbitrary web pages, never import silently). Surfacing the window is
+    /// not this function's job — the caller has already done it for every
+    /// launch attempt, which is what makes the failure toast visible.
     pub fn handle_deeplink(&mut self, uri: &str, cx: &mut Context<Self>) {
         match parse_import_uri(uri) {
             Ok(request) => {

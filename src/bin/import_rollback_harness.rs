@@ -10,7 +10,7 @@
 //!
 //! Exit codes: 0 = expected behavior, 1 = regression, 2 = inconclusive.
 
-use box_pilot_gui::core::deeplink::ImportRequest;
+use box_pilot_gui::core::deeplink::{ImportRequest, LaunchAttempt};
 use box_pilot_gui::core::settings::ProfileSource;
 use box_pilot_gui::state::AppState;
 use gpui::{AsyncApp, Entity};
@@ -67,7 +67,10 @@ fn main() {
     std::fs::create_dir_all(&tmp).expect("create temp data dir");
     std::env::set_var("BOXPILOT_DATA_DIR", &tmp);
 
-    let (_tx, rx) = futures_channel::mpsc::unbounded::<String>();
+    // Nothing is ever sent: this harness drives `import_profile` directly,
+    // so the launch-attempt gate (never opened here — there is no view) is
+    // out of scope.
+    let (_tx, rx) = futures_channel::mpsc::unbounded::<LaunchAttempt>();
 
     gpui_platform::headless().run(move |cx| {
         let app_state = AppState::new(rx, cx);

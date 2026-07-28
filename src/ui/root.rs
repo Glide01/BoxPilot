@@ -46,9 +46,9 @@ impl RootView {
         let traffic = app_state.read(cx).traffic.clone();
         cx.observe(&traffic, |_, _, cx| cx.notify()).detach();
 
-        // Deep-link imports need a user confirmation dialog. The event covers
-        // links arriving while the app runs; the startup check below covers a
-        // link that was processed from argv before this subscriber existed.
+        // Deep-link imports need a user confirmation dialog. No startup
+        // special case: `AppState` holds every launch attempt back until
+        // `view_attached()` below, so this subscriber cannot miss one.
         cx.subscribe_in(
             &app_state,
             window,
@@ -58,8 +58,9 @@ impl RootView {
         )
         .detach();
 
-        // Plain second launch (empty pipe payload): the user tried to open
-        // the app again — bring the existing window to the foreground.
+        // Any launch attempt that reached this instance — plain second
+        // launch, good link, or unparsable one: the user reached for
+        // BoxPilot, so BoxPilot shows itself (ADR-0001).
         cx.subscribe_in(
             &app_state,
             window,
@@ -75,12 +76,10 @@ impl RootView {
                 toast::show(level, message, cx);
             });
         }
-        if app_state.read(cx).pending_import.is_some() {
-            let app_state = app_state.clone();
-            cx.on_next_frame(window, move |_, window, cx| {
-                Self::prompt_import(app_state, window, cx);
-            });
-        }
+        // Subscribers are wired — release the launch attempts queued during
+        // startup (argv link, or one the pipe forwarded while the window was
+        // still opening).
+        app_state.update(cx, |state, _| state.view_attached());
 
         Self {
             app_state,
@@ -124,11 +123,9 @@ impl RootView {
         let Some(request) = app_state.update(cx, |state, _| state.pending_import.take()) else {
             return;
         };
-        // The link usually lands while the browser is in front — surface our
-        // window so the confirm dialog is actually seen (gpui's Windows
-        // activate() restores a minimized window and works around the
-        // SetForegroundWindow lock).
-        window.activate_window();
+        // No activate_window() here: the `ActivateRequested` handler above
+        // already ran for this attempt (emitted first, and gpui dispatches
+        // effects in emit order), so the window is up before the dialog.
         window.open_alert_dialog(cx, move |alert, _, _| {
             let app_state = app_state.clone();
             let request = request.clone();
