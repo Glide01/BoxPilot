@@ -1,5 +1,5 @@
 use crate::core::clash_api::ClashApi;
-use crate::core::settings::{CLASH_API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
+use crate::core::settings::{AppSettings, CLASH_API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs;
@@ -49,35 +49,80 @@ pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize config: {}", e))
 }
 
+/// The TUN interface's IPv4 address — always present in TUN mode.
+const TUN_IPV4_ADDRESS: &str = "172.18.0.1/30";
+/// Added to the TUN interface only when `RuntimeOptions::tun_ipv6` is on.
+const TUN_IPV6_ADDRESS: &str = "fdfe:dcba:9876::1/126";
+
+/// Everything `prepare_config` needs to turn a canonical config into the form
+/// sing-box actually runs. Grouped into one struct so the injected shape can
+/// keep growing (more TUN knobs are likely) without every call site
+/// maintaining a row of bare booleans in the right order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RuntimeOptions {
+    /// `true` = Proxy mode (mixed inbound only), `false` = TUN mode.
+    pub proxy_mode: bool,
+    pub set_system_proxy: bool,
+    pub proxy_port: u16,
+    pub clash_api_port: u16,
+    /// TUN mode only: give the TUN interface an IPv6 address so IPv6 traffic
+    /// is routed into the tunnel. Off means the interface carries no IPv6
+    /// route at all and IPv6 traffic leaves via the physical interface — this
+    /// injects nothing into `dns`/`route`, which stay the subscription's.
+    pub tun_ipv6: bool,
+}
+
+impl Default for RuntimeOptions {
+    /// Mirrors `AppSettings::default()`: TUN mode, default ports, IPv6 off.
+    fn default() -> Self {
+        Self {
+            proxy_mode: false,
+            set_system_proxy: false,
+            proxy_port: PROXY_PORT,
+            clash_api_port: CLASH_API_PORT,
+            tun_ipv6: false,
+        }
+    }
+}
+
+impl From<&AppSettings> for RuntimeOptions {
+    fn from(settings: &AppSettings) -> Self {
+        Self {
+            proxy_mode: settings.proxy_mode,
+            set_system_proxy: settings.set_system_proxy,
+            proxy_port: settings.proxy_port,
+            clash_api_port: settings.clash_api_port,
+            tun_ipv6: settings.tun_ipv6,
+        }
+    }
+}
+
 /// Inject mode-specific inbounds into config (used at process start)
-pub fn prepare_config(
-    config_data: &str,
-    proxy_mode: bool,
-    set_system_proxy: bool,
-    proxy_port: u16,
-    clash_api_port: u16,
-) -> Result<String, String> {
+pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String, String> {
     let mut json: Value = serde_json::from_str(config_data)
         .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
 
-    let port = proxy_port;
     let mut mixed_inbound = serde_json::json!({
         "type": "mixed",
         "tag": "proxy",
         "listen": "127.0.0.1",
-        "listen_port": port
+        "listen_port": opts.proxy_port
     });
-    if set_system_proxy {
+    if opts.set_system_proxy {
         mixed_inbound["set_system_proxy"] = serde_json::Value::Bool(true);
     }
 
-    let inbounds = if proxy_mode {
+    let inbounds = if opts.proxy_mode {
         serde_json::Value::Array(vec![mixed_inbound])
     } else {
+        let mut address = vec![serde_json::Value::from(TUN_IPV4_ADDRESS)];
+        if opts.tun_ipv6 {
+            address.push(serde_json::Value::from(TUN_IPV6_ADDRESS));
+        }
         let tun_inbound = serde_json::json!({
             "type": "tun",
             "tag": "tun0",
-            "address": ["172.18.0.1/30", "fdfe:dcba:9876::1/126"],
+            "address": address,
             "auto_route": true,
             "strict_route": true,
             "stack": "mixed"
@@ -93,7 +138,7 @@ pub fn prepare_config(
     // upstream and now fails config validation as an unknown field.
     json["experimental"] = serde_json::json!({
         "clash_api": {
-            "external_controller": ClashApi::new(clash_api_port).external_controller()
+            "external_controller": ClashApi::new(opts.clash_api_port).external_controller()
         },
         "cache_file": {
             "enabled": true
@@ -240,8 +285,15 @@ fn validate_downloaded_config(
     app_dir: &Path,
     stripped: &str,
 ) -> Result<(), String> {
-    // 校验用的入站/Clash API 端口与运行时无关,固定默认值即可。
-    let prepared = prepare_config(stripped, true, false, PROXY_PORT, CLASH_API_PORT)?;
+    // 校验用的入站/Clash API 端口与运行时无关,固定默认值即可;proxy_mode
+    // 显式设 true,校验的就是注释里说的那个 mixed 形态。
+    let prepared = prepare_config(
+        stripped,
+        RuntimeOptions {
+            proxy_mode: true,
+            ..Default::default()
+        },
+    )?;
     let tmp_path = app_dir.join("config_check.tmp");
     fs::write(&tmp_path, &prepared)
         .map_err(|e| format!("Failed to write validation temp file: {}", e))?;
@@ -265,6 +317,16 @@ mod tests {
 
     fn parse(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
+    }
+
+    /// Proxy mode (mixed inbound only) on default ports — the shape most of
+    /// these tests assert against. Compose with `..proxy_opts()` to vary one
+    /// field.
+    fn proxy_opts() -> RuntimeOptions {
+        RuntimeOptions {
+            proxy_mode: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -316,7 +378,7 @@ mod tests {
     #[test]
     fn prepare_injects_clash_api_and_cache_file() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let prepared = parse(&prepare_config(&stripped, true, false, PROXY_PORT, CLASH_API_PORT).unwrap());
+        let prepared = parse(&prepare_config(&stripped, proxy_opts()).unwrap());
         assert_eq!(
             prepared["experimental"]["clash_api"]["external_controller"],
             format!("127.0.0.1:{}", CLASH_API_PORT)
@@ -339,7 +401,7 @@ mod tests {
     #[test]
     fn proxy_mode_injects_single_mixed_inbound() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let prepared = parse(&prepare_config(&stripped, true, false, PROXY_PORT, CLASH_API_PORT).unwrap());
+        let prepared = parse(&prepare_config(&stripped, proxy_opts()).unwrap());
         let inbounds = prepared["inbounds"].as_array().unwrap();
         assert_eq!(inbounds.len(), 1);
         let mixed = &inbounds[0];
@@ -352,14 +414,32 @@ mod tests {
     #[test]
     fn prepare_uses_custom_proxy_port() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let prepared = parse(&prepare_config(&stripped, true, false, 18888, CLASH_API_PORT).unwrap());
+        let prepared = parse(
+            &prepare_config(
+                &stripped,
+                RuntimeOptions {
+                    proxy_port: 18888,
+                    ..proxy_opts()
+                },
+            )
+            .unwrap(),
+        );
         assert_eq!(prepared["inbounds"][0]["listen_port"], 18888);
     }
 
     #[test]
     fn prepare_uses_custom_clash_api_port() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let prepared = parse(&prepare_config(&stripped, true, false, PROXY_PORT, 17900).unwrap());
+        let prepared = parse(
+            &prepare_config(
+                &stripped,
+                RuntimeOptions {
+                    clash_api_port: 17900,
+                    ..proxy_opts()
+                },
+            )
+            .unwrap(),
+        );
         assert_eq!(
             prepared["experimental"]["clash_api"]["external_controller"],
             "127.0.0.1:17900"
@@ -369,14 +449,23 @@ mod tests {
     #[test]
     fn system_proxy_flag_is_injected_only_when_enabled() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let prepared = parse(&prepare_config(&stripped, true, true, PROXY_PORT, CLASH_API_PORT).unwrap());
+        let prepared = parse(
+            &prepare_config(
+                &stripped,
+                RuntimeOptions {
+                    set_system_proxy: true,
+                    ..proxy_opts()
+                },
+            )
+            .unwrap(),
+        );
         assert_eq!(prepared["inbounds"][0]["set_system_proxy"], true);
     }
 
     #[test]
     fn tun_mode_injects_tun_then_mixed() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let prepared = parse(&prepare_config(&stripped, false, false, PROXY_PORT, CLASH_API_PORT).unwrap());
+        let prepared = parse(&prepare_config(&stripped, RuntimeOptions::default()).unwrap());
         let inbounds = prepared["inbounds"].as_array().unwrap();
         assert_eq!(inbounds.len(), 2);
         assert_eq!(inbounds[0]["type"], "tun");
@@ -385,12 +474,62 @@ mod tests {
         assert_eq!(inbounds[1]["type"], "mixed");
     }
 
+    /// IPv6 on: the TUN interface gets both addresses, so IPv6 traffic is
+    /// routed into the tunnel.
+    #[test]
+    fn tun_ipv6_on_injects_both_addresses() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        let prepared = parse(
+            &prepare_config(
+                &stripped,
+                RuntimeOptions {
+                    tun_ipv6: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            prepared["inbounds"][0]["address"],
+            serde_json::json!([TUN_IPV4_ADDRESS, TUN_IPV6_ADDRESS])
+        );
+    }
+
+    /// IPv6 off (the default): IPv4 only. The address is simply absent — we
+    /// never inject a block rule or touch `dns`/`route` to compensate.
+    #[test]
+    fn tun_ipv6_off_injects_ipv4_only() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        let prepared = parse(&prepare_config(&stripped, RuntimeOptions::default()).unwrap());
+        assert_eq!(
+            prepared["inbounds"][0]["address"],
+            serde_json::json!([TUN_IPV4_ADDRESS])
+        );
+    }
+
+    /// The toggle is TUN-only: Proxy mode injects a lone mixed inbound either
+    /// way, with no TUN inbound to carry an address.
+    #[test]
+    fn tun_ipv6_does_not_affect_proxy_mode() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        let with = prepare_config(
+            &stripped,
+            RuntimeOptions {
+                tun_ipv6: true,
+                ..proxy_opts()
+            },
+        )
+        .unwrap();
+        let without = prepare_config(&stripped, proxy_opts()).unwrap();
+        assert_eq!(with, without);
+    }
+
     /// The subscription's own inbounds must be replaced, never merged —
     /// `start_process` relies on the active config containing exactly the
     /// inbounds BoxPilot injected.
     #[test]
     fn prepare_replaces_existing_inbounds() {
-        let prepared = parse(&prepare_config(SUB_CONFIG, true, false, PROXY_PORT, CLASH_API_PORT).unwrap());
+        let prepared = parse(&prepare_config(SUB_CONFIG, proxy_opts()).unwrap());
         let inbounds = prepared["inbounds"].as_array().unwrap();
         assert_eq!(inbounds.len(), 1);
         assert_eq!(inbounds[0]["tag"], "proxy");
@@ -410,18 +549,27 @@ mod tests {
     #[test]
     fn strip_after_prepare_recovers_canonical_form() {
         let canonical = strip_inbounds(SUB_CONFIG).unwrap();
-        for (proxy_mode, system_proxy) in
-            [(true, true), (true, false), (false, true), (false, false)]
-        {
-            let on_disk =
-                prepare_config(&canonical, proxy_mode, system_proxy, PROXY_PORT, CLASH_API_PORT)
+        for proxy_mode in [true, false] {
+            for set_system_proxy in [true, false] {
+                for tun_ipv6 in [true, false] {
+                    let on_disk = prepare_config(
+                        &canonical,
+                        RuntimeOptions {
+                            proxy_mode,
+                            set_system_proxy,
+                            tun_ipv6,
+                            ..Default::default()
+                        },
+                    )
                     .unwrap();
-            let recovered = strip_inbounds(&on_disk).unwrap();
-            assert_eq!(
-                recovered, canonical,
-                "strip(prepare(x, {}, {})) must equal x",
-                proxy_mode, system_proxy
-            );
+                    let recovered = strip_inbounds(&on_disk).unwrap();
+                    assert_eq!(
+                        recovered, canonical,
+                        "strip(prepare(x, proxy_mode={}, system_proxy={}, tun_ipv6={})) must equal x",
+                        proxy_mode, set_system_proxy, tun_ipv6
+                    );
+                }
+            }
         }
     }
 

@@ -10,7 +10,7 @@ use crate::core::settings::{
     CONFIG_FILENAME, SING_EXECUTABLE,
 };
 use crate::core::subscription::{
-    import_local_config, perform_update, prepare_config, UpdateOutcome,
+    import_local_config, perform_update, prepare_config, RuntimeOptions, UpdateOutcome,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
 use crate::state::log_buffer::LogBuffer;
@@ -467,13 +467,7 @@ impl AppState {
         let config_path = self.active_config_path();
         let data = fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        let prepared = prepare_config(
-            &data,
-            self.settings.proxy_mode,
-            self.settings.set_system_proxy,
-            self.settings.proxy_port,
-            self.settings.clash_api_port,
-        )?;
+        let prepared = prepare_config(&data, RuntimeOptions::from(&self.settings))?;
         let runtime_path = runtime_config_path(&self.app_dir);
         fs::write(&runtime_path, prepared)
             .map_err(|e| format!("Failed to write {}: {}", runtime_path.display(), e))?;
@@ -590,6 +584,18 @@ impl AppState {
         let api = ClashApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.save_settings();
+        self.restart_if_running(cx);
+        cx.notify();
+    }
+
+    /// Settings 页的 TUN IPv6 开关:同 `set_proxy_mode`——持久化并在运行中
+    /// 重启生效。Proxy 模式下改它同样合法,只是要等切回 TUN 才看得出区别。
+    pub fn set_tun_ipv6(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.tun_ipv6 == value {
+            return;
+        }
+        self.settings.tun_ipv6 = value;
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

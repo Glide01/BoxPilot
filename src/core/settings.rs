@@ -197,6 +197,11 @@ pub struct AppSettings {
     /// 固定 127.0.0.1(Settings 页可配)。
     #[serde(default = "default_clash_api_port")]
     pub clash_api_port: u16,
+    /// TUN 模式下是否给 TUN 接口分配 IPv6 地址(Settings 页可配)。关闭时
+    /// IPv6 流量不进隧道,走物理网卡直连。默认关——设置文件里没有这个字段的
+    /// 老安装升级后同样是关。
+    #[serde(default)]
+    pub tun_ipv6: bool,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
@@ -222,6 +227,7 @@ impl Default for AppSettings {
             set_system_proxy: false,
             proxy_port: default_proxy_port(),
             clash_api_port: default_clash_api_port(),
+            tun_ipv6: false,
             profiles: Vec::new(),
             active_profile_id: String::new(),
         };
@@ -355,8 +361,9 @@ mod tests {
     }
 
     /// Settings files written by releases that predate `set_system_proxy` /
-    /// `proxy_port` must still deserialize with the documented defaults filled
-    /// in. The removed legacy `subscription_input` field is simply ignored.
+    /// `proxy_port` / `tun_ipv6` must still deserialize with the documented
+    /// defaults filled in. The removed legacy `subscription_input` field is
+    /// simply ignored.
     #[test]
     fn legacy_settings_file_gets_defaults_for_new_fields() {
         let legacy = r#"{"proxy_mode": true, "subscription_input": "https://example.com/sub"}"#;
@@ -365,6 +372,10 @@ mod tests {
         assert!(!settings.set_system_proxy);
         assert_eq!(settings.proxy_port, 7788);
         assert_eq!(settings.clash_api_port, 7789);
+        assert!(
+            !settings.tun_ipv6,
+            "installs that predate the toggle get TUN IPv6 off"
+        );
     }
 
     /// A settings file with no `profiles` array stays empty — no Default
@@ -492,6 +503,7 @@ mod tests {
             set_system_proxy: true,
             proxy_port: 18888,
             clash_api_port: 17900,
+            tun_ipv6: true,
             profiles: vec![
                 Profile {
                     id: "p1".into(),
@@ -519,6 +531,7 @@ mod tests {
         assert_eq!(loaded.set_system_proxy, original.set_system_proxy);
         assert_eq!(loaded.proxy_port, 18888);
         assert_eq!(loaded.clash_api_port, 17900);
+        assert!(loaded.tun_ipv6);
         assert_eq!(loaded.profiles, original.profiles);
         assert_eq!(loaded.active_profile_id, "p2");
         let _ = fs::remove_dir_all(&dir);

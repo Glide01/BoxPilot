@@ -11,6 +11,7 @@ use gpui::*;
 use gpui_component::{
     button::Button,
     input::{Input, InputEvent, InputState},
+    switch::Switch,
     ActiveTheme, Disableable, Sizable, StyledExt,
 };
 
@@ -81,7 +82,9 @@ impl Render for SettingsPage {
         let state = self.app_state.read(cx);
         let can_clear = state.process.read(cx).is_stopped() && !state.is_updating();
         let app_state_clear = self.app_state.clone();
+        let app_state_ipv6 = self.app_state.clone();
         let proxy_port = state.settings.proxy_port;
+        let tun_ipv6 = state.settings.tun_ipv6;
         let sing_box_version = state
             .sing_box_version
             .clone()
@@ -136,6 +139,19 @@ impl Render for SettingsPage {
                                 .child(Input::new(&self.clash_api_port_input).cleanable(false)),
                         ),
                     ),
+            )
+            .child(
+                card_frame(theme).child(section_label("TUN")).child(
+                    setting_row(theme, "IPv6", Some("Proxies IPv6 traffic in TUN mode.")).child(
+                        Switch::new("tun-ipv6")
+                            .checked(tun_ipv6)
+                            .on_click(move |checked: &bool, _, cx| {
+                                let value = *checked;
+                                app_state_ipv6
+                                    .update(cx, |state, cx| state.set_tun_ipv6(value, cx));
+                            }),
+                    ),
+                ),
             )
             .child(
                 card_frame(theme)
