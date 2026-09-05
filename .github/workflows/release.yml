@@ -76,6 +76,11 @@ jobs:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
 
+      # The key hashes Cargo.lock + Cargo.toml, so every version bump is a
+      # guaranteed miss — and version bumps are exactly the builds that ship.
+      # restore-keys falls back to the newest earlier cache, which still holds
+      # every compiled dependency (gpui dominates); only our own crate, whose
+      # version actually changed, rebuilds.
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -84,6 +89,8 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-msvc-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msvc-
 
       - name: Test
         run: cargo test --target x86_64-pc-windows-msvc
