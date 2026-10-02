@@ -203,13 +203,13 @@ impl AppState {
             ))
         };
 
-        let logs = cx.new(|_| LogBuffer::new());
+        let api = SingBoxApi::new(settings.api_port);
+        let logs = cx.new(|_| LogBuffer::new(api));
         let process = cx.new({
             let logs = logs.clone();
             move |_| ProcessSession::new(logs)
         });
 
-        let api = SingBoxApi::new(settings.api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
 
@@ -238,6 +238,12 @@ impl AppState {
                         }
                         ProcessEdgeEffect::StopTraffic => {
                             this.traffic.update(cx, |traffic, cx| traffic.stop(cx))
+                        }
+                        ProcessEdgeEffect::StartLogs => {
+                            this.logs.update(cx, |logs, cx| logs.start_api(cx))
+                        }
+                        ProcessEdgeEffect::StopLogs => {
+                            this.logs.update(cx, |logs, cx| logs.stop_api(cx))
                         }
                     }
                 }
@@ -560,6 +566,32 @@ impl AppState {
         // If currently `Preparing`, ignore — let it complete.
     }
 
+    /// The Logs page's Clear: empty the view, and while sing-box runs empty
+    /// its own log buffer too (`ClearLogs`), or a re-subscribe would replay
+    /// the cleared lines. Failure: error toast; the view stays cleared.
+    pub fn clear_logs(&mut self, cx: &mut Context<Self>) {
+        self.logs.update(cx, |logs, cx| logs.clear(cx));
+        if !self.process.read(cx).is_running() {
+            return;
+        }
+        let api = SingBoxApi::new(self.settings.api_port);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { api.clear_logs() })
+                .await;
+            if let Err(e) = result {
+                let _ = this.update(cx, |_, cx| {
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message: format!("Failed to clear sing-box logs: {}", e),
+                    });
+                });
+            }
+        })
+        .detach();
+    }
+
     fn restart_if_running(&mut self, cx: &mut Context<Self>) {
         if self.process.read(cx).is_running() {
             self.stop_process(cx);
@@ -589,9 +621,9 @@ impl AppState {
         cx.notify();
     }
 
-    /// Settings 页改 sing-box API 端口:持久化 + 给 ProxyGroups/Traffic 换新的
-    /// `SingBoxApi` 句柄(下次启动用它)+ 运行中重启 sing-box 让新的 api
-    /// 服务端口生效。
+    /// Settings 页改 sing-box API 端口:持久化 + 给 ProxyGroups/Traffic/
+    /// LogBuffer 换新的 `SingBoxApi` 句柄(下次启动用它)+ 运行中重启
+    /// sing-box 让新的 api 服务端口生效。
     pub fn set_api_port(&mut self, value: u16, cx: &mut Context<Self>) {
         if self.settings.api_port == value {
             return;
@@ -600,6 +632,7 @@ impl AppState {
         let api = SingBoxApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.logs.update(cx, |logs, _| logs.set_api(api));
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

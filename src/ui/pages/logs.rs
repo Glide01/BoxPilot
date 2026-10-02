@@ -1,84 +1,213 @@
+use crate::core::log_merge::ViewText;
 use crate::core::presentation::log_count_label;
-use crate::core::settings::{matches_filter, LogEntry, LogFilter};
-use crate::state::AppState;
+use crate::core::singbox_api::LogLevel;
+use crate::state::{AppState, LogBuffer};
 use crate::ui::card_frame;
 use crate::ui::widgets::{empty_card, page_header};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
-    input::{Textarea, TextareaState},
+    input::{Editor, EditorState, TextDecoration, TextDecorationCollection},
     ActiveTheme, IconName, Sizable, StyledExt,
 };
-use std::collections::VecDeque;
 
-/// 日志页:标题行(标题 + 计数 + 过滤 pills + 清空)在内容卡片**外面**(与
-/// Groups 页一致);卡片内是一个只读的 `Textarea`,承载(按当前过滤后的)
-/// 日志文本——这样用户能用鼠标拖选、复制(⌘/Ctrl+C 或右键菜单),并在关掉
-/// 软换行后横向滚动查看长行。卡片 `flex_1 + min_h_0` 占满标题行外的剩余高度。
+/// The level control's choices, most severe first. `panic`/`fatal` lines
+/// show under every one of them.
+const LEVEL_CHOICES: [(&str, &str, LogLevel); 5] = [
+    ("level-error", "Error", LogLevel::Error),
+    ("level-warn", "Warn", LogLevel::Warn),
+    ("level-info", "Info", LogLevel::Info),
+    ("level-debug", "Debug", LogLevel::Debug),
+    ("level-trace", "Trace", LogLevel::Trace),
+];
+
+/// 日志页:标题行(标题 + 计数 + 级别 pills + 清空)在内容卡片**外面**(与
+/// Groups 页一致);卡片内是一个只读的 `Editor`,承载按当前级别过滤后的日志
+/// 文本——用户能用鼠标拖选、复制(⌘/Ctrl+C 或右键菜单)、Ctrl+F 搜索,不换行
+/// 所以长行可横向滚动。每行的级别词(`INFO` 等)用 text decoration 上色,
+/// 即级别徽标。卡片 `flex_1 + min_h_0` 占满标题行外的剩余高度。
 ///
-/// 只读靠 `Textarea::readonly(true)`:只拒绝用户编辑,聚焦 / 选中 / 复制照常;
-/// `appearance(false)` 去掉边框背景,看起来就是一块普通文本面板。日志内容在
-/// `observe_in` 里随 LogBuffer / 过滤变化重新灌入(`set_value`,仅在文本真的
-/// 变化时调用)。注意 `set_value` 会把滚动条复位到顶部,所以流式刷新时视图会
-/// 回到顶部——停止后内容稳定,选中 / 复制 / 滚动都不受影响。
+/// 级别:默认跟随 sing-box 配置的 `log.level`(API 报告),用户可放宽到
+/// Debug/Trace 或收紧;选回配置级别即恢复跟随。来源与去重见
+/// `core::log_merge`。
+///
+/// 刷新:`set_value` 会清掉选区并把滚动复位到顶部,所以每次换文本后还原——
+/// 选区按行 id 映射到新文本(`ViewText::map_offset`);停在底部时滚到新的底部
+/// 跟随最新行(还没布局过就把光标放到末行,首次布局时编辑器自己滚过去);
+/// 否则按行 id 保持同一批行可见(`ViewText::map_row`),上方淘汰旧行、下方
+/// 追加新行都不会让视图跳走。
 pub struct LogsPage {
     app_state: Entity<AppState>,
-    /// 只读 Textarea,承载日志文本,供鼠标选中 / 复制 / 横向滚动。
-    viewer: Entity<TextareaState>,
+    /// 只读编辑器,承载日志文本,供选中 / 复制 / 搜索 / 横向滚动。
+    viewer: Entity<EditorState>,
+    /// 级别徽标的着色。
+    badges: TextDecorationCollection,
+    /// 当前灌进 viewer 的内容(用于判断是否变化,以及映射选区 / 滚动)。
+    shown: ViewText,
+    /// 是否跟随最新行。仅在 viewer 画过当前内容后按"是否停在底部"重算。
+    follow: bool,
+    /// 自上次刷新以来本页是否渲染过——没渲染过(页面不可见)时 viewer 的
+    /// 布局 / 滚动还是旧的,不能据此判断。
+    painted: bool,
+    /// 上次刷新设下但可能还没生效的滚动位置(页面不可见时一直挂着)。
+    pending_offset: Option<Point<Pixels>>,
 }
 
 impl LogsPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let logs = app_state.read(cx).logs.clone();
 
-        let viewer = cx.new(|cx| TextareaState::new(window, cx).soft_wrap(false));
+        let viewer = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .line_number(false)
+                .folding(false)
+                .soft_wrap(false)
+        });
+        let badges = viewer.update(cx, |s, cx| s.create_decorations_collection(Vec::new(), cx));
 
-        // 初始灌入已有日志(启动时通常为空)。
-        let initial = {
-            let lb = logs.read(cx);
-            Self::compose_text(&lb.entries, lb.filter)
-        };
-        viewer.update(cx, |s, cx| s.set_value(initial, window, cx));
-
-        // LogBuffer 变化(新日志 / 清空 / 切换过滤)→ 把最新文本灌进只读 viewer
-        // (仅文本真的变了才 set_value,避免无谓的滚动复位),并重渲染标题计数。
-        cx.observe_in(&logs, window, {
-            let viewer = viewer.clone();
-            move |_, logs, window, cx| {
-                let text = {
-                    let lb = logs.read(cx);
-                    Self::compose_text(&lb.entries, lb.filter)
-                };
-                let changed = viewer.read(cx).value().as_ref() != text.as_str();
-                if changed {
-                    viewer.update(cx, |s, cx| s.set_value(text, window, cx));
-                }
-                cx.notify();
-            }
+        // LogBuffer 变化(新日志 / 清空 / 切换级别)→ 把最新文本灌进 viewer,
+        // 并重渲染标题计数。
+        cx.observe_in(&logs, window, |this, logs, window, cx| {
+            this.refresh(&logs, window, cx);
+            cx.notify();
         })
         .detach();
 
-        Self { app_state, viewer }
+        let mut page = Self {
+            app_state,
+            viewer,
+            badges,
+            shown: ViewText::default(),
+            follow: true,
+            painted: false,
+            pending_offset: None,
+        };
+        page.refresh(&logs, window, cx);
+        page
     }
 
-    /// 把(按 `filter` 过滤后的)日志条目拼成可选中的纯文本,一行一条。
-    /// `entry.message` 已含 `[STDOUT]/[STDERR]` 前缀和原始行内容,直接拼接即可。
-    fn compose_text(entries: &VecDeque<LogEntry>, filter: LogFilter) -> String {
-        let mut out = String::new();
-        for entry in entries.iter().filter(|e| matches_filter(e.level, filter)) {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(&entry.message);
+    fn refresh(&mut self, logs: &Entity<LogBuffer>, window: &mut Window, cx: &mut Context<Self>) {
+        let view = {
+            let logs = logs.read(cx);
+            ViewText::compose(logs.entries(), logs.threshold())
+        };
+        if view.text == self.shown.text {
+            return;
         }
-        out
+
+        let (offset, line_height, height, selection) = {
+            let viewer = self.viewer.read(cx);
+            (
+                viewer.scroll_offset(),
+                viewer.line_height(),
+                viewer.text_bounds().map(|b| b.size.height),
+                viewer.selected_range(),
+            )
+        };
+        // Only a painted layout says where the user is.
+        let offset = match (self.painted, self.pending_offset) {
+            (false, Some(pending)) => pending,
+            _ => offset,
+        };
+        if let (true, Some(line_height), Some(height)) = (self.painted, line_height, height) {
+            let content = line_height * self.shown.line_count() as f32;
+            self.follow = -offset.y + height >= content - line_height * 1.5;
+        }
+
+        let colors = BadgeColors::new(cx);
+        let decorations = view
+            .badges
+            .iter()
+            .map(|(range, level)| TextDecoration::new(range.clone(), colors.style(*level)))
+            .collect();
+        self.viewer
+            .update(cx, |s, cx| s.set_value(view.text.clone(), window, cx));
+        self.badges.set(decorations, cx);
+
+        // Keep a selection on the same characters.
+        if selection.start != selection.end {
+            let start = view.map_offset(&self.shown, selection.start);
+            let end = view.map_offset(&self.shown, selection.end);
+            if let (Some(start), Some(end)) = (start, end) {
+                self.viewer
+                    .update(cx, |s, cx| s.set_selected_range(start..end, cx));
+            }
+        }
+
+        // A deferred scroll offset wins over the editor's own scroll-to-caret.
+        let target = match (self.follow, line_height, height) {
+            (true, Some(line_height), Some(height)) => {
+                let content = line_height * view.line_count() as f32;
+                Some(point(offset.x, -(content - height).max(px(0.))))
+            }
+            (true, _, _) => {
+                // Never laid out: put the caret on the last line; the first
+                // layout scrolls it into view with the real viewport size.
+                let end = view.last_line_start();
+                self.viewer
+                    .update(cx, |s, cx| s.set_selected_range(end..end, cx));
+                None
+            }
+            (false, Some(line_height), _) => {
+                // Stay on the same lines.
+                let scrolled = -offset.y;
+                let row = (scrolled / line_height).floor().max(0.) as usize;
+                let within = scrolled - line_height * row as f32;
+                let new_row = view.map_row(&self.shown, row).unwrap_or(0);
+                Some(point(offset.x, -(line_height * new_row as f32 + within)))
+            }
+            (false, None, _) => None,
+        };
+        if let Some(target) = target {
+            self.viewer
+                .update(cx, |s, cx| s.set_scroll_offset(target, cx));
+        }
+        self.pending_offset = target;
+        self.shown = view;
+        self.painted = false;
     }
 }
 
-fn filter_pill(
+/// Level-badge styles, from the theme.
+struct BadgeColors {
+    danger: Hsla,
+    warning: Hsla,
+    info: Hsla,
+    muted: Hsla,
+}
+
+impl BadgeColors {
+    fn new(cx: &App) -> Self {
+        let theme = cx.theme();
+        Self {
+            danger: theme.danger,
+            warning: theme.warning,
+            info: theme.info,
+            muted: theme.muted_foreground,
+        }
+    }
+
+    fn style(&self, level: LogLevel) -> HighlightStyle {
+        let color = match level {
+            LogLevel::Panic | LogLevel::Fatal | LogLevel::Error => self.danger,
+            LogLevel::Warn => self.warning,
+            LogLevel::Info => self.info,
+            LogLevel::Debug | LogLevel::Trace => self.muted,
+        };
+        HighlightStyle {
+            color: Some(color),
+            background_color: Some(color.opacity(0.14)),
+            font_weight: Some(FontWeight::SEMIBOLD),
+            ..Default::default()
+        }
+    }
+}
+
+fn level_pill(
     id: &'static str,
     label: &'static str,
     active: bool,
+    is_default: bool,
     on_click: impl Fn(&mut App) + 'static,
 ) -> Button {
     let mut b = Button::new(id).label(label).small();
@@ -87,27 +216,25 @@ fn filter_pill(
     } else {
         b = b.ghost();
     }
+    if is_default {
+        b = b.tooltip("sing-box's configured log level");
+    }
     b.on_click(move |_, _, cx| on_click(cx))
 }
 
 impl Render for LogsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.painted = true;
+        let app_state_entity = self.app_state.clone();
         let app_state = self.app_state.read(cx);
         let logs_entity = app_state.logs.clone();
         let logs = logs_entity.read(cx);
         let theme = cx.theme();
 
-        let total = logs.entries.len();
-        let filter = logs.filter;
-
-        let filtered_count = if filter == LogFilter::All {
-            total
-        } else {
-            logs.visible_count()
-        };
-        let count_label = log_count_label(filtered_count, total);
-
-        let logs_for_clear = logs_entity.clone();
+        let total = logs.entries().len();
+        let threshold = logs.threshold();
+        let default_threshold = logs.default_threshold();
+        let count_label = log_count_label(logs.visible_count(), total);
 
         let title_block = div()
             .h_flex()
@@ -122,15 +249,17 @@ impl Render for LogsPage {
             );
 
         let mut controls = div().h_flex().items_center().gap_2();
-        for (id, label, target) in [
-            ("filter-all", "All", LogFilter::All),
-            ("filter-warn", "Warn", LogFilter::Warn),
-            ("filter-error", "Error", LogFilter::Error),
-        ] {
+        for (id, label, level) in LEVEL_CHOICES {
             let logs_for_pill = logs_entity.clone();
-            controls = controls.child(filter_pill(id, label, filter == target, move |cx| {
-                logs_for_pill.update(cx, |b, cx| b.set_filter(target, cx));
-            }));
+            controls = controls.child(level_pill(
+                id,
+                label,
+                threshold == level,
+                default_threshold == level,
+                move |cx| {
+                    logs_for_pill.update(cx, |b, cx| b.set_threshold(level, cx));
+                },
+            ));
         }
         let controls = controls
             .child(div().w_px().h_4().bg(theme.border).mx_1())
@@ -140,7 +269,7 @@ impl Render for LogsPage {
                     .small()
                     .label("Clear")
                     .on_click(move |_, _, cx| {
-                        logs_for_clear.update(cx, |b, cx| b.clear(cx));
+                        app_state_entity.update(cx, |state, cx| state.clear_logs(cx));
                     }),
             );
 
@@ -163,26 +292,20 @@ impl Render for LogsPage {
             )
             .into_any_element()
         } else {
-            // 只读、无边框、不换行的 Textarea:鼠标可拖选 + 复制 + 横向滚动。
+            // 只读、无边框、不换行的编辑器:鼠标可拖选 + 复制 + 搜索 + 横向滚动。
             card_frame(theme)
                 .flex_1()
                 .min_h_0()
                 .child(
-                    Textarea::new(&self.viewer)
+                    Editor::new(&self.viewer)
                         .appearance(false)
                         .readonly(true)
                         .h_full()
-                        .text_sm()
-                        .font_family("monospace"),
+                        .text_sm(),
                 )
                 .into_any_element()
         };
 
-        div()
-            .v_flex()
-            .size_full()
-            .gap_4()
-            .child(header)
-            .child(body)
+        div().v_flex().size_full().gap_4().child(header).child(body)
     }
 }
