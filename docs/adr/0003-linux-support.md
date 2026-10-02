@@ -27,7 +27,7 @@ user. Only the one thing that needs privilege, sing-box's TUN device, gets it:
   same sing-box version as the bundled one, and has `cap_net_admin` in its
   `security.capability` attribute. If any check fails, it asks once, and on
   confirmation runs `pkexec` to `install` the bundled binary there as
-  root:root 0755 and `setcap` it. That shows the system password prompt. If
+  owner root, group = the user's primary group, mode 0750, and `setcap` it. That shows the system password prompt. If
   the user cancels or the grant fails, BoxPilot says so and doesn't start
   sing-box.
 - **The grant is per sing-box version.** An AppImage update that bundles a
@@ -44,8 +44,10 @@ in, to get its own code run with those capabilities.
 
 - **Accepted risk: the capabilities are not tied to BoxPilot.** Any process
   running as the user can start `/usr/local/lib/boxpilot/sing-box` with its
-  own config and get `CAP_NET_ADMIN`. The file is mode 0755, so that holds
-  for every local account, not only the one that granted it. That means it can
+  own config and get `CAP_NET_ADMIN`. The file is mode 0750 with the
+  granting user's primary group, so other local accounts can't run it. They
+  are offered their own grant, which re-groups the copy to them; on a shared
+  machine the last user to grant holds it. That means it can
   create TUN devices, rewrite routes and firewall rules, and bind low ports. It
   does not give root, and it is the same power the user grants by choosing
   TUN mode at all. We accept it in exchange for one prompt instead of one per
@@ -72,7 +74,13 @@ in, to get its own code run with those capabilities.
   Windows keeps its existing stop. On Linux the grace period lets sing-box
   remove its `auto_route` rules and the system proxy it set. sing-box is also
   started with `PR_SET_PDEATHSIG` = SIGTERM, so it exits with BoxPilot even if
-  BoxPilot crashes. The TUN device needs no cleanup on Linux; it goes away
+  BoxPilot crashes. The kernel clears that signal when it execs a binary with
+  file capabilities, so the TUN copy is covered differently: every start
+  records the pid in `<data dir>/sing-box.pid`, and the next start stops a
+  recorded process that is still ours (SIGTERM, then SIGKILL after 3 seconds).
+  Its `/proc/<pid>/exe` is unreadable even to the same user, so "ours" falls
+  back to its command line starting with the copy or bundled path and carrying
+  our `-D` data dir. The TUN device needs no cleanup on Linux; it goes away
   when sing-box closes it.
 - **System proxy reset is conservative.** On GNOME (`org.gnome.system.proxy`)
   and on KDE (`kwriteconfig6`, else `kwriteconfig5`), BoxPilot clears the
