@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+#[cfg(target_os = "windows")]
 pub const SING_EXECUTABLE: &str = "sing-box.exe";
+#[cfg(not(target_os = "windows"))]
+pub const SING_EXECUTABLE: &str = "sing-box";
 pub const CONFIG_FILENAME: &str = "config.json";
 /// Per-profile configs live in `<app_dir>/configs/<profile_id>.json`. The
 /// legacy single `config.json` is migrated into here on first launch.

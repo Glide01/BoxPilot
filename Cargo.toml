@@ -82,6 +82,16 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Linux: turn on gpui's real windowing backends. `gpui_platform` above keeps
+# `default-features` off for every target; without `x11`/`wayland` the Linux
+# build only gets gpui's headless client and panics on the first window. Cargo
+# unifies these features into the single `gpui-pre-platform` dependency.
+# `libc` backs the Unix-only process plumbing (SIGTERM stop, PDEATHSIG) and
+# the TUN capability check.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["x11", "wayland"] }
+libc = "0.2"
+
 [build-dependencies]
 embed-resource = "2.2.0"
 
