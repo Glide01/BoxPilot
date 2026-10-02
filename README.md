@@ -7,9 +7,14 @@
 - **多配置管理**：远程订阅 / 本地 JSON 文件两种来源，增删改、一键切换；每个订阅可独立设置自动更新间隔
 - **一键连接**：Home 页大圆按钮启动 / 停止 sing-box，断开 / 启动中 / 已连接三态可视化
 - **双代理模式**：TUN ↔ Mixed inbound 切换，系统代理（注册表）一键开关
-- **代理分组**：selector 分组手动选节点，urltest 分组自动选路（只读）；节点协议类型标注、整组延迟测速
-- **实时网速**：侧边栏底部显示上行 / 下行速率（连接时）
-- **实时日志**：按级别过滤（All / Warn / Error）、可拖选复制、清空，缓冲上限 1000 条
+- **代理分组**：selector 分组手动选节点，urltest 分组自动选路（只读）；节点协议类型标注、整组延迟测速；分组展开状态由 sing-box 记住
+- **运行状态**：侧边栏底部实时上行 / 下行速率；Home 页显示内存、连接数、累计流量、运行时长与 sing-box 版本
+- **Clash mode 切换**：配置的路由规则带 `clash_mode` 时，Home 页可在 Rule / Global / Direct 等模式间切换
+- **连接列表**：Connections 页实时查看活动 / 已关闭连接（域名、进程、出站链路、规则、速率），可筛选、排序、关闭单个或全部连接
+- **实时日志**：来自 sing-box API，按级别过滤（Error / Warn / Info / Debug / Trace，默认跟随配置）、级别着色、可拖选复制与搜索、清空；启动失败与崩溃输出同样可见，缓冲上限 1000 条
+- **诊断工具**：Tools 页提供网络质量测试（带宽 / RPM / 延迟）与 NAT 类型（STUN）检测，可指定出站
+- **Tailscale**：配置含 Tailscale endpoint 时出现 Tailscale 页——登录 / 登出、设备列表、出口节点、Ping、Taildrop 收件、HTTPS 证书
+- **OpenConnect / OpenVPN / USB/IP**：配置含这些 endpoint 时出现 VPN 页——连接状态、隧道信息，以及登录表单 / 一次性验证码等交互式认证
 - **深链接导入**：浏览器点击 `sing-box://import-remote-profile` 链接直接导入订阅
 - **端口可配**：本地代理端口（默认 7788）与 sing-box API 端口（默认 7789）均可在 Settings 页修改
 - **一键复制** PowerShell / WSL 代理环境变量（跟随配置端口）

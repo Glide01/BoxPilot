@@ -766,7 +766,7 @@ impl AppState {
         } else if deleted > 0 {
             (
                 StatusLevel::Success,
-                format!("Cleared {} cache file(s). Node selection reset.", deleted),
+                format!("Cleared {} cache file(s). Node selection, clash mode and group expand state reset.", deleted),
             )
         } else {
             (StatusLevel::Info, "No cache files to clear.".to_string())

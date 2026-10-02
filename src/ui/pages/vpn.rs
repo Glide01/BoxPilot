@@ -8,7 +8,7 @@
 //! pops a dialog for it. Closing the dialog leaves the challenge pending —
 //! the endpoint card's "Sign in" button reopens it. A dialog whose challenge
 //! ended meanwhile (answered elsewhere, timed out) says so and only offers
-//! Close; it is closed automatically when the next challenge pops.
+//! Close; the next challenge's dialog opens on top of it.
 
 use crate::core::settings::StatusLevel;
 use crate::core::singbox_api::{
@@ -69,15 +69,10 @@ impl VpnPage {
         if self.open_dialogs.contains(&key) {
             return;
         }
-        // Our dialogs on top whose challenge ended are only showing "this
-        // request has ended" — make way. Only the topmost can be closed.
-        while let Some(top) = self.open_dialogs.last() {
-            if self.vpn.read(cx).is_pending(top) {
-                break;
-            }
-            self.open_dialogs.pop();
-            window.close_dialog(cx);
-        }
+        // A dialog whose challenge ended stays up showing "this request has
+        // ended" until the user closes it; the new one opens on top. Closing
+        // it here would be unsafe: `close_dialog` pops whatever is topmost,
+        // which may be another page's dialog (e.g. an Import link prompt).
         let dialog = DialogHandle {
             vpn: self.vpn.clone(),
             page: cx.entity().downgrade(),

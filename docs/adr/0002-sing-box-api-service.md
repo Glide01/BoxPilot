@@ -42,6 +42,16 @@ dedicated reader thread holds each long-lived stream, as before.
   sing-box writes each line to both, so `core::log_merge` merges them
   without showing a line twice. The Logs page filters by level, defaulting
   to `GetDefaultLogLevel`; its Clear also calls `ClearLogs`.
+- **Coverage.** BoxPilot uses every server-streaming and unary RPC that
+  does something under the CLI `api` service: also connections, clash mode,
+  group expand state, network quality / STUN tests, Tailscale (status, ping,
+  exit node, logout, Taildrop inbox, certificates), OpenConnect / OpenVPN
+  status and sign-in challenges, and USB/IP server status. Left out:
+  `StartTailscaleSSHSession`, `SendTaildropFiles` and `ProvideUSBDevices`
+  (client-streaming, out of reach of gRPC-Web), and `SubscribeNotifications`,
+  `GetDeprecatedWarnings` and `SubscribeServiceStatus`, which only the
+  official GUIs' daemon fills — under `sing-box run` they stay empty or
+  report `Started` once.
 - The settings field `clash_api_port` became `api_port`; the old name is
   still read. Any `api` service a subscription carries is dropped, the same
   ownership rule as `inbounds` and `experimental`.

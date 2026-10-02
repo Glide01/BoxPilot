@@ -7,7 +7,7 @@ use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
     TailscalePage, ToolsPage, VpnPage,
 };
-use crate::ui::sidebar::sidebar;
+use crate::ui::sidebar::{sidebar, OptionalPages};
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt};
@@ -265,8 +265,10 @@ impl Render for RootView {
                 status_label,
                 speed,
                 speed_color,
-                self.tailscale_visible,
-                show_vpn,
+                OptionalPages {
+                    tailscale: self.tailscale_visible,
+                    vpn: show_vpn,
+                },
                 on_nav,
             ))
             .child(div().flex_1().min_w_0().v_flex().p_6().child(page))

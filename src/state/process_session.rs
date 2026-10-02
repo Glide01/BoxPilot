@@ -126,13 +126,12 @@ impl ProcessSession {
                                 }
                             }
                         }
-                        if !batch.is_empty() {
-                            if weak_logs
+                        if !batch.is_empty()
+                            && weak_logs
                                 .update(cx, |logs, cx| logs.push_pipe(batch, cx))
                                 .is_err()
-                            {
-                                return;
-                            }
+                        {
+                            return;
                         }
                         if disconnected {
                             return;

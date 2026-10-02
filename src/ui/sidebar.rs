@@ -21,6 +21,16 @@ fn footer_speed(icon: &'static str, value: String, color: Hsla) -> impl IntoElem
         .child(div().text_xs().text_color(color).child(value))
 }
 
+/// Sidebar entries offered only while the running config needs them.
+#[derive(Clone, Copy, Default)]
+pub struct OptionalPages {
+    /// The running config has Tailscale endpoints.
+    pub tailscale: bool,
+    /// The running config has OpenConnect / OpenVPN endpoints or USB/IP
+    /// servers.
+    pub vpn: bool,
+}
+
 pub fn sidebar(
     active: ActivePage,
     dot_color: Hsla,
@@ -28,10 +38,7 @@ pub fn sidebar(
     // (download, upload) 已格式化速率;仅在已连接时为 `Some`,否则隐藏网速行。
     speed: Option<(String, String)>,
     speed_color: Hsla,
-    // Tailscale 页仅在运行中的配置有 Tailscale endpoint 时出现。
-    show_tailscale: bool,
-    // VPN 页入口:仅当运行中的配置含 OpenConnect / OpenVPN / USB/IP 时显示。
-    show_vpn: bool,
+    optional: OptionalPages,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let items = [
@@ -49,8 +56,8 @@ pub fn sidebar(
     ];
     // Tailscale / VPN are offered only while the running config needs them.
     let items = items.into_iter().filter(|(page, ..)| match page {
-        ActivePage::Tailscale => show_tailscale,
-        ActivePage::Vpn => show_vpn,
+        ActivePage::Tailscale => optional.tailscale,
+        ActivePage::Vpn => optional.vpn,
         _ => true,
     });
 
