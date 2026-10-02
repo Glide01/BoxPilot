@@ -1,5 +1,6 @@
-//! Human-readable byte-rate formatting for the network-speed display. No gpui
-//! dependency — pure functions, unit-tested off-Windows via the core shim.
+//! Human-readable byte-rate and byte-count formatting for the network-speed
+//! and traffic displays. No gpui dependency — pure functions, unit-tested
+//! off-Windows via the core shim.
 
 /// Format a byte/second rate into a compact label: `0 B/s`, `512 B/s`,
 /// `12.3 KB/s`, `1.5 MB/s`, `2.0 GB/s`. Binary (1024) steps with one decimal
@@ -22,9 +23,41 @@ pub fn format_speed(bytes_per_sec: u64) -> String {
     }
 }
 
+/// Format a byte count (a traffic total) the same way `format_speed` formats
+/// a rate, minus the `/s`: `0 B`, `512 B`, `12.3 KB`, `1.5 MB`, `2.0 GB`.
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const TB: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+
+    let value = bytes as f64;
+    if value < KB {
+        format!("{} B", bytes)
+    } else if value < MB {
+        format!("{:.1} KB", value / KB)
+    } else if value < GB {
+        format!("{:.1} MB", value / MB)
+    } else if value < TB {
+        format!("{:.1} GB", value / GB)
+    } else {
+        format!("{:.1} TB", value / TB)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_counts_mirror_speed_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 / 2), "1.5 MB");
+        assert_eq!(format_bytes(5 * 1024 * 1024 * 1024), "5.0 GB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024 * 1024), "2.0 TB");
+    }
 
     #[test]
     fn bytes_range_is_integer_with_b_suffix() {

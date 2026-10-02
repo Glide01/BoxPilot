@@ -1,4 +1,5 @@
 pub mod bytefmt;
+pub mod connections_view;
 pub mod deeplink;
 pub mod orchestration;
 pub mod presentation;

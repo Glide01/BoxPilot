@@ -13,6 +13,7 @@ use crate::core::subscription::{
     import_local_config, perform_update, prepare_config, RuntimeOptions, UpdateOutcome,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
+use crate::state::connections::Connections;
 use crate::state::log_buffer::LogBuffer;
 use crate::state::process_session::{PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
@@ -111,6 +112,8 @@ pub struct AppState {
     pub proxy_groups: Entity<ProxyGroups>,
     /// Live up/down network rate; streamed while sing-box is running.
     pub traffic: Entity<Traffic>,
+    /// Live connection list; streamed while sing-box is running.
+    pub connections: Entity<Connections>,
     /// Last `is_running()` seen by the process observer — detects
     /// Running/Stopped edges so groups + traffic refresh exactly once per
     /// transition.
@@ -212,9 +215,11 @@ impl AppState {
         let api = SingBoxApi::new(settings.api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
+        let connections = cx.new(|_| Connections::new(api));
 
         cx.new(|cx| {
-            // Drive ProxyGroups + Traffic from process Running/Stopped edges.
+            // Drive ProxyGroups + Traffic + Connections from process
+            // Running/Stopped edges.
             // The edge decision is pure (`core::orchestration`, unit-tested);
             // this observer just executes the returned effects and stores the
             // acted-on state, which is what makes each transition fire once.
@@ -239,6 +244,12 @@ impl AppState {
                         ProcessEdgeEffect::StopTraffic => {
                             this.traffic.update(cx, |traffic, cx| traffic.stop(cx))
                         }
+                        ProcessEdgeEffect::StartConnections => this
+                            .connections
+                            .update(cx, |connections, cx| connections.start(cx)),
+                        ProcessEdgeEffect::StopConnections => this
+                            .connections
+                            .update(cx, |connections, cx| connections.stop(cx)),
                     }
                 }
             })
@@ -414,6 +425,7 @@ impl AppState {
                 logs,
                 proxy_groups,
                 traffic,
+                connections,
                 groups_saw_running: false,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
@@ -600,6 +612,8 @@ impl AppState {
         let api = SingBoxApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.connections
+            .update(cx, |connections, _| connections.set_api(api));
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

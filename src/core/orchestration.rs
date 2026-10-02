@@ -5,19 +5,24 @@
 //! way so the core test shim keeps working.
 
 /// What the app must do in response to a process Running/Stopped transition.
-/// `AppState`'s process observer maps these onto the `ProxyGroups` and
-/// `Traffic` entities.
+/// `AppState`'s process observer maps these onto the `ProxyGroups`,
+/// `Traffic` and `Connections` entities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessEdgeEffect {
     /// Stopped→Running: subscribe to live groups from the sing-box API.
     StartGroups,
     /// Stopped→Running: start streaming traffic from the sing-box API.
     StartTraffic,
+    /// Stopped→Running: subscribe to the live connection list.
+    StartConnections,
     /// Running→Stopped: groups are shown only while connected; ends the
     /// group stream.
     ClearGroups,
     /// Running→Stopped: stop the stream and zero the readout.
     StopTraffic,
+    /// Running→Stopped: end the connection stream and empty the list —
+    /// connections belong to one sing-box run.
+    StopConnections,
 }
 
 /// Decide the effects of an observed process-state change. gpui observers
@@ -30,10 +35,12 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
         (false, true) => &[
             ProcessEdgeEffect::StartGroups,
             ProcessEdgeEffect::StartTraffic,
+            ProcessEdgeEffect::StartConnections,
         ],
         (true, false) => &[
             ProcessEdgeEffect::ClearGroups,
             ProcessEdgeEffect::StopTraffic,
+            ProcessEdgeEffect::StopConnections,
         ],
         _ => &[],
     }
@@ -49,7 +56,8 @@ mod tests {
             process_edge_effects(false, true),
             &[
                 ProcessEdgeEffect::StartGroups,
-                ProcessEdgeEffect::StartTraffic
+                ProcessEdgeEffect::StartTraffic,
+                ProcessEdgeEffect::StartConnections,
             ]
         );
     }
@@ -60,7 +68,8 @@ mod tests {
             process_edge_effects(true, false),
             &[
                 ProcessEdgeEffect::ClearGroups,
-                ProcessEdgeEffect::StopTraffic
+                ProcessEdgeEffect::StopTraffic,
+                ProcessEdgeEffect::StopConnections,
             ]
         );
     }
