@@ -3,6 +3,8 @@ use crate::core::bytefmt::format_speed;
 use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
+#[cfg(target_os = "linux")]
+use crate::state::TunGrantRequested;
 use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
     TailscalePage, ToolsPage, VpnPage,
@@ -108,6 +110,18 @@ impl RootView {
         )
         .detach();
 
+        // A Linux TUN-mode start without CAP_NET_ADMIN stops short and asks
+        // for the one-time grant here.
+        #[cfg(target_os = "linux")]
+        cx.subscribe_in(
+            &app_state,
+            window,
+            |_, app_state, _: &TunGrantRequested, window, cx| {
+                Self::prompt_tun_grant(app_state.clone(), window, cx);
+            },
+        )
+        .detach();
+
         if let Some((level, message)) = app_state.update(cx, |state, _| state.pending_status.take())
         {
             cx.on_next_frame(window, move |_, _, cx| {
@@ -191,6 +205,29 @@ impl RootView {
                     app_state.update(cx, |state, cx| {
                         state.import_profile(request.clone(), cx);
                     });
+                    true
+                })
+        });
+    }
+
+    /// Offer the one-time TUN grant (`core::privilege`). Cancel leaves
+    /// sing-box stopped; OK runs pkexec, which shows its own password prompt.
+    #[cfg(target_os = "linux")]
+    fn prompt_tun_grant(app_state: Entity<AppState>, window: &mut Window, cx: &mut App) {
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let app_state = app_state.clone();
+            alert
+                .title("Grant TUN permission")
+                .description(
+                    "TUN mode needs network-admin permission for sing-box. BoxPilot \
+                     installs a copy of sing-box to /usr/local/lib/boxpilot/ and grants \
+                     it once, through the system password prompt. You'll be asked \
+                     again after a sing-box update.",
+                )
+                .confirm()
+                .ok_text("Grant")
+                .on_ok(move |_, _, cx| {
+                    app_state.update(cx, |state, cx| state.grant_tun_permission(cx));
                     true
                 })
         });

@@ -5,6 +5,8 @@ pub mod log_merge;
 pub mod network_tools;
 pub mod orchestration;
 pub mod presentation;
+#[cfg(target_os = "linux")]
+pub mod privilege;
 pub mod profile_draft;
 pub mod settings;
 pub mod single_instance;

@@ -30,6 +30,8 @@ pub mod traffic;
 pub mod vpn;
 
 pub use app_state::{ActivateRequested, AppState, ImportRequested};
+#[cfg(target_os = "linux")]
+pub use app_state::TunGrantRequested;
 pub use clash_mode::ClashMode;
 pub use connections::Connections;
 pub use log_buffer::LogBuffer;

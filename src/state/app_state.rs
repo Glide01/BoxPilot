@@ -1,5 +1,7 @@
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
 use crate::core::orchestration::{process_edge_effects, ProcessEdgeEffect};
+#[cfg(target_os = "linux")]
+use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
 use crate::core::process::query_sing_box_version;
 use crate::core::paths::{
     get_app_data_dir, get_install_dir, profile_config_path, runtime_config_path,
@@ -88,6 +90,13 @@ pub struct ImportRequested;
 /// see `docs/adr/0001-launch-attempt-invariant.md`.
 pub struct ActivateRequested;
 
+/// A TUN-mode start found no usable granted sing-box copy (Linux, not
+/// root; see `core::privilege`), so nothing was started. `RootView` asks the
+/// user to grant TUN permission; confirming calls
+/// [`AppState::grant_tun_permission`].
+#[cfg(target_os = "linux")]
+pub struct TunGrantRequested;
+
 /// Top-level reactive state owned by `RootView`. Holds persisted settings,
 /// resolved paths, the child entities for the process and log subsystems,
 /// and an initial status message that `RootView` consumes once on startup.
@@ -139,6 +148,11 @@ pub struct AppState {
     /// Drains launch attempts (argv + single-instance pipe) for the lifetime
     /// of the app.
     _deeplink_task: Task<()>,
+    /// A Linux TUN-mode start that hasn't reached `ProcessSession` yet: the
+    /// background TUN-plan probe, or the pkexec grant. Holds off a second
+    /// start meanwhile; `stop_process` drops (cancels) it.
+    #[cfg(target_os = "linux")]
+    tun_gate: Option<Task<()>>,
 }
 
 impl EventEmitter<StatusEvent> for AppState {}
@@ -146,6 +160,9 @@ impl EventEmitter<StatusEvent> for AppState {}
 impl EventEmitter<ImportRequested> for AppState {}
 
 impl EventEmitter<ActivateRequested> for AppState {}
+
+#[cfg(target_os = "linux")]
+impl EventEmitter<TunGrantRequested> for AppState {}
 
 impl AppState {
     pub fn new(launches: UnboundedReceiver<LaunchAttempt>, cx: &mut App) -> Entity<Self> {
@@ -479,6 +496,8 @@ impl AppState {
                 groups_saw_running: false,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
+                #[cfg(target_os = "linux")]
+                tun_gate: None,
             }
         })
     }
@@ -537,9 +556,16 @@ impl AppState {
     }
 
     /// Validate paths, prepare the config, and ask the `ProcessSession` to
-    /// start. No-op if a process is already running or starting.
+    /// start. No-op if a process is already running or starting. Every start
+    /// — toggle, and the restarts after a settings / profile change or an
+    /// auto-update — comes through here, so the Linux TUN gate below covers
+    /// them all.
     pub fn start_process(&mut self, cx: &mut Context<Self>) {
         if !self.process.read(cx).is_stopped() {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if self.tun_gate.is_some() {
             return;
         }
 
@@ -584,6 +610,22 @@ impl AppState {
             return;
         }
 
+        // Linux TUN mode needs CAP_NET_ADMIN, which a normal user's bundled
+        // sing-box lacks: start the granted copy instead, or ask for the
+        // grant first. Proxy mode always runs the bundled sing-box.
+        #[cfg(target_os = "linux")]
+        if !self.settings.proxy_mode {
+            self.start_tun_gated(sing_path, cx);
+            return;
+        }
+
+        self.launch(sing_path, cx);
+    }
+
+    /// Write the runtime config and hand the start to `ProcessSession`,
+    /// running `sing_path`. The `-D` working dir stays the user's data dir
+    /// whichever binary runs, so `cache.db` and friends stay user-owned.
+    fn launch(&mut self, sing_path: PathBuf, cx: &mut Context<Self>) {
         let config_path = match self.write_runtime_config() {
             Ok(path) => path,
             Err(e) => {
@@ -607,7 +649,62 @@ impl AppState {
         cx.notify();
     }
 
+    /// Decide which sing-box a Linux TUN-mode start runs (blocking probes,
+    /// so on the background executor), then start it — or, with no usable
+    /// granted copy, start nothing and ask the view to offer the grant.
+    #[cfg(target_os = "linux")]
+    fn start_tun_gated(&mut self, bundled: PathBuf, cx: &mut Context<Self>) {
+        let bundled_version = self.sing_box_version.clone();
+        self.tun_gate = Some(cx.spawn(async move |this, cx| {
+            let plan = cx
+                .background_executor()
+                .spawn(async move { evaluate_tun_plan(&bundled, bundled_version) })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                state.tun_gate = None;
+                match plan {
+                    TunPlan::UseBundled(path) | TunPlan::UsePrivilegedCopy(path) => {
+                        state.launch(path, cx)
+                    }
+                    TunPlan::NeedsGrant => cx.emit(TunGrantRequested),
+                }
+            });
+        }));
+    }
+
+    /// The user confirmed the TUN grant: install + setcap the copy through
+    /// pkexec (blocks on the password prompt, so on the background
+    /// executor), then start with it. Failure or a dismissed prompt: error
+    /// toast, nothing started.
+    #[cfg(target_os = "linux")]
+    pub fn grant_tun_permission(&mut self, cx: &mut Context<Self>) {
+        if self.tun_gate.is_some() || !self.process.read(cx).is_stopped() {
+            return;
+        }
+        let bundled = self.sing_box_path();
+        self.tun_gate = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { run_grant(&bundled) })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                state.tun_gate = None;
+                match result {
+                    Ok(()) => state.launch(PathBuf::from(PRIVILEGED_COPY_PATH), cx),
+                    Err(message) => cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message,
+                    }),
+                }
+            });
+        }));
+    }
+
     pub fn stop_process(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        {
+            self.tun_gate = None;
+        }
         self.process.update(cx, |p, cx| p.stop(cx));
         cx.notify();
     }
