@@ -17,6 +17,7 @@ use crate::state::log_buffer::LogBuffer;
 use crate::state::process_session::{PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
 use crate::state::traffic::Traffic;
+use crate::state::vpn::VpnStatus;
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_channel::oneshot;
 use futures_util::StreamExt;
@@ -111,6 +112,9 @@ pub struct AppState {
     pub proxy_groups: Entity<ProxyGroups>,
     /// Live up/down network rate; streamed while sing-box is running.
     pub traffic: Entity<Traffic>,
+    /// OpenConnect / OpenVPN / USB/IP status and sign-in challenges; follows
+    /// the process Running/Stopped edges on its own.
+    pub vpn: Entity<VpnStatus>,
     /// Last `is_running()` seen by the process observer — detects
     /// Running/Stopped edges so groups + traffic refresh exactly once per
     /// transition.
@@ -212,6 +216,11 @@ impl AppState {
         let api = SingBoxApi::new(settings.api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
+        let vpn = cx.new({
+            let runtime_config = runtime_config_path(&app_dir);
+            let process = process.clone();
+            move |cx| VpnStatus::new(api, runtime_config, &process, cx)
+        });
 
         cx.new(|cx| {
             // Drive ProxyGroups + Traffic from process Running/Stopped edges.
@@ -414,6 +423,7 @@ impl AppState {
                 logs,
                 proxy_groups,
                 traffic,
+                vpn,
                 groups_saw_running: false,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
@@ -600,6 +610,7 @@ impl AppState {
         let api = SingBoxApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.vpn.update(cx, |vpn, _| vpn.set_api(api));
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

@@ -3,7 +3,9 @@ use crate::core::bytefmt::format_speed;
 use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
-use crate::ui::pages::{ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage};
+use crate::ui::pages::{
+    ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage, VpnPage,
+};
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
@@ -21,6 +23,7 @@ pub struct RootView {
     profiles: Entity<ProfilesPage>,
     logs: Entity<LogsPage>,
     settings: Entity<SettingsPage>,
+    vpn: Entity<VpnPage>,
     toasts: Entity<Toasts>,
 }
 
@@ -31,6 +34,7 @@ impl RootView {
         let profiles = cx.new(|cx| ProfilesPage::new(app_state.clone(), cx));
         let logs = cx.new(|cx| LogsPage::new(app_state.clone(), window, cx));
         let settings = cx.new(|cx| SettingsPage::new(app_state.clone(), window, cx));
+        let vpn = cx.new(|cx| VpnPage::new(app_state.clone(), window, cx));
         let toasts = toast::init(cx);
 
         // Every StatusEvent emitter routes to the same single toast slot.
@@ -39,6 +43,10 @@ impl RootView {
         Self::route_status_toasts(&process_session, window, cx);
         let proxy_groups = app_state.read(cx).proxy_groups.clone();
         Self::route_status_toasts(&proxy_groups, window, cx);
+        let vpn_status = app_state.read(cx).vpn.clone();
+        Self::route_status_toasts(&vpn_status, window, cx);
+        // The VPN sidebar entry comes and goes with the running config.
+        cx.observe(&vpn_status, |_, _, cx| cx.notify()).detach();
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();
@@ -89,6 +97,7 @@ impl RootView {
             profiles,
             logs,
             settings,
+            vpn,
             toasts,
         }
     }
@@ -176,6 +185,12 @@ impl Render for RootView {
             (format_speed(traffic.down), format_speed(traffic.up))
         });
 
+        let show_vpn = self.app_state.read(cx).vpn.read(cx).is_visible();
+        if self.active_page == ActivePage::Vpn && !show_vpn {
+            // Its entry just disappeared (sing-box stopped): fall back.
+            self.active_page = ActivePage::Home;
+        }
+
         let view = cx.entity().downgrade();
         let on_nav = move |page: ActivePage, _: &mut Window, cx: &mut App| {
             view.update(cx, |this, cx| {
@@ -190,6 +205,7 @@ impl Render for RootView {
         let page: AnyView = match self.active_page {
             ActivePage::Home => self.home.clone().into(),
             ActivePage::Groups => self.groups.clone().into(),
+            ActivePage::Vpn => self.vpn.clone().into(),
             ActivePage::Profiles => self.profiles.clone().into(),
             ActivePage::Logs => self.logs.clone().into(),
             ActivePage::Settings => self.settings.clone().into(),
@@ -212,6 +228,7 @@ impl Render for RootView {
                 status_label,
                 speed,
                 speed_color,
+                show_vpn,
                 on_nav,
             ))
             .child(div().flex_1().min_w_0().v_flex().p_6().child(page))

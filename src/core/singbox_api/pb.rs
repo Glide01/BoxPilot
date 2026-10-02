@@ -697,3 +697,518 @@ mod tests {
         assert_eq!(ping.latency_ms, 12.5);
     }
 }
+
+// ==========================================================================
+// OpenConnect / OpenVPN endpoints and USB/IP servers (`openconnect.rs`,
+// `openvpn.rs`, `usbip.rs`). One block at the end of the file, with its own
+// tests, so it merges cleanly beside other domains' additions.
+// ==========================================================================
+
+// --- OpenConnect ----------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectStatusUpdate {
+    #[prost(message, repeated, tag = "1")]
+    pub endpoints: Vec<OpenConnectEndpointStatus>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectEndpointStatus {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    /// `connecting`, `auth-pending`, `connected` or `error`.
+    #[prost(string, tag = "2")]
+    pub state: String,
+    #[prost(string, tag = "3")]
+    pub state_text: String,
+    #[prost(message, optional, tag = "4")]
+    pub auth_challenge: Option<OpenConnectAuthChallenge>,
+    #[prost(string, tag = "5")]
+    pub error: String,
+    #[prost(message, optional, tag = "6")]
+    pub tunnel_info: Option<OpenConnectTunnelInfo>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectTunnelInfo {
+    #[prost(string, tag = "1")]
+    pub server: String,
+    #[prost(string, tag = "2")]
+    pub flavor: String,
+    #[prost(string, tag = "3")]
+    pub transport: String,
+    #[prost(string, repeated, tag = "4")]
+    pub ipv4: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub ipv6: Vec<String>,
+    #[prost(string, repeated, tag = "6")]
+    pub dns: Vec<String>,
+    #[prost(uint32, tag = "7")]
+    pub mtu: u32,
+    /// Unix seconds; 0 = unknown.
+    #[prost(int64, tag = "8")]
+    pub connected_since: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthChallenge {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, tag = "2")]
+    pub banner: String,
+    #[prost(string, tag = "3")]
+    pub message: String,
+    #[prost(string, tag = "4")]
+    pub error: String,
+    #[prost(oneof = "open_connect_auth_challenge::Challenge", tags = "5, 6")]
+    pub challenge: Option<open_connect_auth_challenge::Challenge>,
+}
+
+pub mod open_connect_auth_challenge {
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub enum Challenge {
+        #[prost(message, tag = "5")]
+        Form(super::OpenConnectAuthForm),
+        #[prost(message, tag = "6")]
+        Browser(super::OpenConnectBrowserRequest),
+    }
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthForm {
+    #[prost(message, repeated, tag = "1")]
+    pub fields: Vec<OpenConnectAuthFormField>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthFormField {
+    #[prost(string, tag = "1")]
+    pub submission_key: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+    #[prost(string, tag = "3")]
+    pub label: String,
+    /// `text`, `password` or `select`.
+    #[prost(string, tag = "4")]
+    pub kind: String,
+    #[prost(string, tag = "5")]
+    pub value: String,
+    #[prost(message, repeated, tag = "6")]
+    pub options: Vec<OpenConnectAuthFormChoice>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthFormChoice {
+    #[prost(string, tag = "1")]
+    pub value: String,
+    #[prost(string, tag = "2")]
+    pub label: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserRequest {
+    #[prost(string, tag = "1")]
+    pub url: String,
+    #[prost(string, tag = "2")]
+    pub final_url: String,
+    #[prost(string, repeated, tag = "3")]
+    pub cookie_names: Vec<String>,
+    #[prost(string, repeated, tag = "4")]
+    pub header_names: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub callback_url_prefixes: Vec<String>,
+    #[prost(string, repeated, tag = "6")]
+    pub early_cookie_names: Vec<String>,
+    #[prost(string, tag = "7")]
+    pub cache_id: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserCookie {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub value: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserHeader {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, repeated, tag = "2")]
+    pub values: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthFormResponse {
+    /// `map<string, string>` keyed by submission key; a `BTreeMap` so the
+    /// encoding is deterministic.
+    #[prost(btree_map = "string, string", tag = "1")]
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserResult {
+    #[prost(string, tag = "1")]
+    pub final_url: String,
+    #[prost(message, repeated, tag = "2")]
+    pub cookies: Vec<OpenConnectBrowserCookie>,
+    #[prost(message, repeated, tag = "3")]
+    pub headers: Vec<OpenConnectBrowserHeader>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthResponseSubmission {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+    #[prost(
+        oneof = "open_connect_auth_response_submission::Response",
+        tags = "3, 4"
+    )]
+    pub response: Option<open_connect_auth_response_submission::Response>,
+}
+
+pub mod open_connect_auth_response_submission {
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub enum Response {
+        #[prost(message, tag = "3")]
+        Form(super::OpenConnectAuthFormResponse),
+        #[prost(message, tag = "4")]
+        Browser(super::OpenConnectBrowserResult),
+    }
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthChallengeCancel {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+}
+
+// --- OpenVPN --------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnStatusUpdate {
+    #[prost(message, repeated, tag = "1")]
+    pub endpoints: Vec<OpenVpnEndpointStatus>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnEndpointStatus {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    /// `connecting`, `auth-pending`, `connected` or `error`.
+    #[prost(string, tag = "2")]
+    pub state: String,
+    #[prost(string, tag = "3")]
+    pub state_text: String,
+    #[prost(message, optional, tag = "4")]
+    pub challenge: Option<OpenVpnChallenge>,
+    #[prost(string, tag = "5")]
+    pub error: String,
+    #[prost(message, optional, tag = "6")]
+    pub tunnel_info: Option<OpenVpnTunnelInfo>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnTunnelInfo {
+    #[prost(string, tag = "1")]
+    pub server: String,
+    // Field 2 is reserved upstream.
+    #[prost(string, tag = "3")]
+    pub network: String,
+    #[prost(string, repeated, tag = "4")]
+    pub ipv4: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub ipv6: Vec<String>,
+    #[prost(string, repeated, tag = "6")]
+    pub dns: Vec<String>,
+    #[prost(uint32, tag = "7")]
+    pub mtu: u32,
+    /// Unix seconds; 0 = unknown.
+    #[prost(int64, tag = "8")]
+    pub connected_since: i64,
+    #[prost(string, tag = "9")]
+    pub cipher: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnChallenge {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    /// `credentials`, `secret`, `message` or `open-url`.
+    #[prost(string, tag = "2")]
+    pub kind: String,
+    #[prost(string, tag = "3")]
+    pub username: String,
+    #[prost(string, tag = "4")]
+    pub message: String,
+    #[prost(string, tag = "5")]
+    pub url: String,
+    #[prost(string, tag = "6")]
+    pub secret_message: String,
+    #[prost(bool, tag = "7")]
+    pub echo: bool,
+    #[prost(string, tag = "8")]
+    pub previous_error: String,
+    /// Unix seconds; 0 = none.
+    #[prost(int64, tag = "9")]
+    pub deadline: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnChallengeSubmission {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+    #[prost(string, tag = "3")]
+    pub username: String,
+    #[prost(string, tag = "4")]
+    pub password: String,
+    #[prost(string, tag = "5")]
+    pub secret: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnChallengeCancel {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+}
+
+// --- USB/IP ---------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbipServerStatusUpdate {
+    #[prost(message, repeated, tag = "1")]
+    pub servers: Vec<UsbipServerStatus>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbipServerStatus {
+    #[prost(string, tag = "1")]
+    pub server_tag: String,
+    #[prost(message, repeated, tag = "2")]
+    pub devices: Vec<UsbSharedDevice>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbSharedDevice {
+    #[prost(message, optional, tag = "1")]
+    pub descriptor: Option<UsbDeviceDescriptor>,
+    #[prost(string, tag = "2")]
+    pub bus_id: String,
+    #[prost(string, tag = "3")]
+    pub stable_id: String,
+    /// `USBBackend`: UNSPECIFIED 0, LINUX_SYSFS 1, DYNAMIC 2, DARWIN_IOKIT 3,
+    /// WINDOWS_VBOXUSB 4.
+    #[prost(int32, tag = "4")]
+    pub backend: i32,
+    /// `USBDeviceState`: IDLE 0, ATTACHED 1, UNAVAILABLE 2.
+    #[prost(int32, tag = "5")]
+    pub state: i32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbDeviceDescriptor {
+    #[prost(string, tag = "1")]
+    pub device_id: String,
+    #[prost(uint32, tag = "2")]
+    pub bus_num: u32,
+    #[prost(uint32, tag = "3")]
+    pub dev_num: u32,
+    /// Linux `usb_device_speed`.
+    #[prost(uint32, tag = "4")]
+    pub speed: u32,
+    #[prost(uint32, tag = "5")]
+    pub vendor_id: u32,
+    #[prost(uint32, tag = "6")]
+    pub product_id: u32,
+    #[prost(uint32, tag = "7")]
+    pub bcd_device: u32,
+    #[prost(uint32, tag = "8")]
+    pub device_class: u32,
+    #[prost(uint32, tag = "9")]
+    pub device_sub_class: u32,
+    #[prost(uint32, tag = "10")]
+    pub device_protocol: u32,
+    #[prost(uint32, tag = "11")]
+    pub configuration_value: u32,
+    #[prost(uint32, tag = "12")]
+    pub num_configurations: u32,
+    #[prost(message, repeated, tag = "13")]
+    pub interfaces: Vec<UsbInterface>,
+    #[prost(string, tag = "14")]
+    pub serial: String,
+    #[prost(string, tag = "15")]
+    pub product: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbInterface {
+    #[prost(uint32, tag = "1")]
+    pub interface_class: u32,
+    #[prost(uint32, tag = "2")]
+    pub interface_sub_class: u32,
+    #[prost(uint32, tag = "3")]
+    pub interface_protocol: u32,
+}
+
+/// Byte-exact pins for the block above, same rules as `tests`.
+#[cfg(test)]
+mod vpn_tests {
+    use super::*;
+    use prost::Message;
+
+    #[test]
+    fn openconnect_form_submission_uses_upstream_field_numbers() {
+        let mut values = std::collections::BTreeMap::new();
+        values.insert("k".to_string(), "v".to_string());
+        let submission = OpenConnectAuthResponseSubmission {
+            endpoint_tag: "t".into(),
+            challenge_id: "c".into(),
+            response: Some(open_connect_auth_response_submission::Response::Form(
+                OpenConnectAuthFormResponse { values },
+            )),
+        };
+        // Field 3 (form) holds field 1: one map entry (key 1, value 2).
+        assert_eq!(
+            submission.encode_to_vec(),
+            [0x0a, 1, b't', 0x12, 1, b'c', 0x1a, 8, 0x0a, 6, 0x0a, 1, b'k', 0x12, 1, b'v']
+        );
+    }
+
+    #[test]
+    fn openconnect_browser_submission_uses_upstream_field_numbers() {
+        let submission = OpenConnectAuthResponseSubmission {
+            endpoint_tag: "t".into(),
+            challenge_id: "c".into(),
+            response: Some(open_connect_auth_response_submission::Response::Browser(
+                OpenConnectBrowserResult {
+                    final_url: "u".into(),
+                    cookies: vec![OpenConnectBrowserCookie {
+                        name: "n".into(),
+                        value: "v".into(),
+                    }],
+                    headers: vec![OpenConnectBrowserHeader {
+                        name: "h".into(),
+                        values: vec!["x".into()],
+                    }],
+                },
+            )),
+        };
+        assert_eq!(
+            submission.encode_to_vec(),
+            [
+                0x0a, 1, b't', 0x12, 1, b'c', // tag, challenge id
+                0x22, 19, // field 4: the browser result
+                0x0a, 1, b'u', // final URL
+                0x12, 6, 0x0a, 1, b'n', 0x12, 1, b'v', // one cookie
+                0x1a, 6, 0x0a, 1, b'h', 0x12, 1, b'x', // one header
+            ]
+        );
+    }
+
+    #[test]
+    fn cancel_requests_use_fields_1_and_2() {
+        let expected = [0x0a, 1, b't', 0x12, 1, b'c'];
+        assert_eq!(
+            OpenConnectAuthChallengeCancel {
+                endpoint_tag: "t".into(),
+                challenge_id: "c".into()
+            }
+            .encode_to_vec(),
+            expected
+        );
+        assert_eq!(
+            OpenVpnChallengeCancel {
+                endpoint_tag: "t".into(),
+                challenge_id: "c".into()
+            }
+            .encode_to_vec(),
+            expected
+        );
+    }
+
+    #[test]
+    fn openvpn_submission_uses_upstream_field_numbers() {
+        assert_eq!(
+            OpenVpnChallengeSubmission {
+                endpoint_tag: "t".into(),
+                challenge_id: "c".into(),
+                username: "u".into(),
+                password: "p".into(),
+                secret: "s".into(),
+            }
+            .encode_to_vec(),
+            [0x0a, 1, b't', 0x12, 1, b'c', 0x1a, 1, b'u', 0x22, 1, b'p', 0x2a, 1, b's']
+        );
+    }
+
+    /// Response oddities: the challenge oneof arms are fields 5 and 6; the
+    /// OpenVPN tunnel skips reserved field 2; the USB/IP enums are varints in
+    /// fields 4 and 5 of the shared device.
+    #[test]
+    fn vpn_responses_decode_from_upstream_bytes() {
+        // authChallenge { id "1", browser { url "u" } }
+        let status = OpenConnectEndpointStatus::decode(
+            &[0x22, 8, 0x0a, 1, b'1', 0x32, 3, 0x0a, 1, b'u'][..],
+        )
+        .unwrap();
+        let challenge = status.auth_challenge.unwrap();
+        assert_eq!(challenge.id, "1");
+        assert_eq!(
+            challenge.challenge,
+            Some(open_connect_auth_challenge::Challenge::Browser(
+                OpenConnectBrowserRequest {
+                    url: "u".into(),
+                    ..Default::default()
+                }
+            ))
+        );
+
+        // form { fields [{ submissionKey "k", kind "select",
+        //                  options [{ value "a" }] }] }
+        let challenge = OpenConnectAuthChallenge::decode(
+            &[
+                0x2a, 18, 0x0a, 16, 0x0a, 1, b'k', 0x22, 6, b's', b'e', b'l', b'e', b'c', b't',
+                0x32, 3, 0x0a, 1, b'a',
+            ][..],
+        )
+        .unwrap();
+        let Some(open_connect_auth_challenge::Challenge::Form(form)) = challenge.challenge else {
+            panic!("expected a form challenge");
+        };
+        assert_eq!(form.fields[0].submission_key, "k");
+        assert_eq!(form.fields[0].kind, "select");
+        assert_eq!(form.fields[0].options[0].value, "a");
+
+        let tunnel = OpenVpnTunnelInfo::decode(
+            &[0x1a, 1, b'n', 0x38, 0xdc, 0x0b, 0x40, 9, 0x4a, 1, b'c'][..],
+        )
+        .unwrap();
+        assert_eq!(
+            (tunnel.network.as_str(), tunnel.mtu, tunnel.connected_since),
+            ("n", 1500, 9)
+        );
+        assert_eq!(tunnel.cipher, "c");
+
+        let challenge = OpenVpnChallenge::decode(&[0x12, 1, b's', 0x38, 1, 0x48, 42][..]).unwrap();
+        assert_eq!((challenge.kind.as_str(), challenge.echo), ("s", true));
+        assert_eq!(challenge.deadline, 42);
+
+        // descriptor { vendorId 0x501 }, busId "1", backend 2, state 1
+        let device = UsbSharedDevice::decode(
+            &[0x0a, 3, 0x28, 0x81, 0x0a, 0x12, 1, b'1', 0x20, 2, 0x28, 1][..],
+        )
+        .unwrap();
+        assert_eq!(device.descriptor.unwrap().vendor_id, 0x501);
+        assert_eq!(device.bus_id, "1");
+        assert_eq!((device.backend, device.state), (2, 1));
+    }
+}

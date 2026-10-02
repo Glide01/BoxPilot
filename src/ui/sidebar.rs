@@ -28,6 +28,8 @@ pub fn sidebar(
     // (download, upload) 已格式化速率;仅在已连接时为 `Some`,否则隐藏网速行。
     speed: Option<(String, String)>,
     speed_color: Hsla,
+    // VPN 页入口:仅当运行中的配置含 OpenConnect / OpenVPN / USB/IP 时显示。
+    show_vpn: bool,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let items = [
@@ -37,6 +39,17 @@ pub fn sidebar(
         (ActivePage::Logs, "Logs", IconName::SquareTerminal),
         (ActivePage::Settings, "Settings", IconName::Settings),
     ];
+    // VPN 入口(按需)插在 Groups 之后;图标不在默认图标集里,走 assets/icons。
+    let items = items.into_iter().flat_map(|(page, label, icon)| {
+        let vpn = (show_vpn && page == ActivePage::Groups).then(|| {
+            (
+                ActivePage::Vpn,
+                "VPN",
+                Icon::default().path("icons/shield-check.svg"),
+            )
+        });
+        std::iter::once((page, label, Icon::from(icon))).chain(vpn)
+    });
 
     Sidebar::new("nav")
         .collapsible(false)

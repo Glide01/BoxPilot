@@ -10,3 +10,4 @@ pub mod subscription;
 pub mod process;
 pub mod paths;
 pub mod timefmt;
+pub mod vpn;
