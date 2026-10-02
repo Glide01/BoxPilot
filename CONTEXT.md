@@ -1,7 +1,8 @@
 # BoxPilot
 
-Windows desktop manager for the sing-box proxy: fetches subscription configs,
-controls the sing-box process lifecycle, and surfaces its runtime state.
+Windows and Linux desktop manager for the sing-box proxy: fetches subscription
+configs, controls the sing-box process lifecycle, and surfaces its runtime
+state.
 
 ## Language
 

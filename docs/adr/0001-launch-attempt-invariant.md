@@ -31,6 +31,14 @@ generate at will. Accepted deliberately: the same page can already spam *valid*
 links, which cost a confirmation dialog rather than a toast, so rate-limiting
 failures would buy nothing.
 
+On Linux, `xdg-open` likewise starts a new process per link, and the same flow
+applies: the attempt is forwarded over a Unix socket instead of the named pipe
+and ends in the same `ActivateRequested`. Wayland's focus-stealing prevention
+may turn `activate_window()` into a "request attention" hint (a flashing
+taskbar entry) rather than a raise, because the forwarding process has no
+activation token to hand over. The invariant still stands; on Wayland,
+"surfaces the window" can mean the compositor's attention hint.
+
 ## Considered options
 
 **Move the receiver to `RootView`** — spawning the drain task where the
