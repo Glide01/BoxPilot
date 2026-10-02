@@ -2,6 +2,8 @@ use crate::core::process::{
     cleanup_after_process_stop, describe_exit, prepare_process_start, reap_child, signal_stop,
     start_sing_box, terminate_child,
 };
+#[cfg(target_os = "linux")]
+use crate::core::privilege::{forget_sing_box_pid, record_sing_box_pid, stop_stale_sing_box};
 use crate::core::settings::{StatusEvent, StatusLevel, SING_EXECUTABLE};
 use crate::state::log_buffer::LogBuffer;
 use gpui::{Context, Entity, EventEmitter, Task};
@@ -53,6 +55,10 @@ pub enum ProcessState {
 pub struct ProcessSession {
     pub state: ProcessState,
     pub logs: Entity<LogBuffer>,
+    /// Where the running sing-box's pid file lives (its working dir), for
+    /// the stop that reaps it to remove (`core::privilege`). Linux only.
+    #[cfg(target_os = "linux")]
+    pid_dir: Option<PathBuf>,
 }
 
 impl EventEmitter<StatusEvent> for ProcessSession {}
@@ -62,6 +68,8 @@ impl ProcessSession {
         Self {
             state: ProcessState::Stopped { cleanup: None },
             logs,
+            #[cfg(target_os = "linux")]
+            pid_dir: None,
         }
     }
 
@@ -98,8 +106,17 @@ impl ProcessSession {
             }
 
             let is_tun_mode = !pending.proxy_mode;
+            #[cfg(target_os = "linux")]
+            let working_dir = pending.working_dir.clone();
             cx.background_executor()
-                .spawn(async move { prepare_process_start(is_tun_mode) })
+                .spawn(async move {
+                    // A granted copy outlives a crashed BoxPilot (no
+                    // PDEATHSIG across a file-caps exec) and would hold the
+                    // TUN device and ports this start needs.
+                    #[cfg(target_os = "linux")]
+                    stop_stale_sing_box(&working_dir, STOP_GRACE);
+                    prepare_process_start(is_tun_mode)
+                })
                 .await;
 
             let _ = this.update(cx, |session, cx| {
@@ -114,6 +131,11 @@ impl ProcessSession {
     fn spawn_child(&mut self, pending: PendingStart, cx: &mut Context<Self>) {
         match start_sing_box(&pending.sing_path, &pending.config_path, &pending.working_dir) {
             Ok((child, log_rx)) => {
+                #[cfg(target_os = "linux")]
+                {
+                    record_sing_box_pid(&pending.working_dir, child.id());
+                    self.pid_dir = Some(pending.working_dir.clone());
+                }
                 let weak_logs = self.logs.downgrade();
                 let drain = cx.spawn(async move |_this, cx| {
                     loop {
@@ -215,9 +237,15 @@ impl ProcessSession {
             } => {
                 let _ = signal_stop(&mut child);
                 drain.detach();
+                #[cfg(target_os = "linux")]
+                let pid_dir = self.pid_dir.take();
                 let cleanup = cx.background_executor().spawn(async move {
                     let mut child = child;
                     let _ = reap_child(&mut child, STOP_GRACE);
+                    #[cfg(target_os = "linux")]
+                    if let Some(dir) = pid_dir {
+                        forget_sing_box_pid(&dir, child.id());
+                    }
                     cleanup_after_process_stop(running_set_system_proxy, !running_mode);
                 });
                 self.state = ProcessState::Stopped {
@@ -252,6 +280,10 @@ impl Drop for ProcessSession {
             } => {
                 let mut child = child;
                 let _ = terminate_child(&mut child, STOP_GRACE);
+                #[cfg(target_os = "linux")]
+                if let Some(dir) = self.pid_dir.take() {
+                    forget_sing_box_pid(&dir, child.id());
+                }
                 cleanup_after_process_stop(running_set_system_proxy, !running_mode);
             }
             // A recent stop()'s background cleanup may still be in flight;
