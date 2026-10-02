@@ -18,9 +18,10 @@ dedicated reader thread holds each long-lived stream, as before.
 ## Consequences
 
 - **sing-box ≥ 1.14.0 is required.** Older binaries reject the `api` service
-  type. The MSI bundles a new enough one. For the portable exe,
-  `start_process` refuses with a clear message when the reported sing-box
-  version is older.
+  type. The MSI and AppImage bundle a new enough one. For a standalone
+  binary run next to a sing-box of the user's own (the portable exe, or a
+  Linux build from source), `start_process` refuses with a clear message
+  when the reported sing-box version is older.
 - **Groups are pushed, not polled.** `SubscribeGroups` sends a snapshot on
   subscribe and again on every URL-test change. So delay badges now also show
   the results of urltest groups' own periodic checks.
