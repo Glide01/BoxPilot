@@ -1,11 +1,14 @@
 # .github/workflows/release.yml
-# Build and package the Windows release of BoxPilot.
+# Build and package the Windows and Linux releases of BoxPilot.
 #
-# GPUI's Windows backend (DirectX 11 + MSVC `windows` crate bindings) does not
-# support MinGW cross-compilation; Zed upstream rejects MinGW builds. Production
-# runs natively on `windows-latest` with MSVC.
+# windows — MSI. GPUI's Windows backend (DirectX 11 + MSVC `windows` crate
+#           bindings) does not support MinGW cross-compilation; Zed upstream
+#           rejects MinGW builds, so this runs natively on `windows-latest`.
+# linux   — x86_64 AppImage, built on ubuntu-22.04 so the binary only needs
+#           the older glibc that ships there.
+# publish — attaches both to the GitHub release once both builds succeed.
 
-name: Build Windows Release
+name: Build Release
 
 on:
   push:
@@ -29,23 +32,24 @@ on:
         required: false
         default: ""
 
-# sing-box version bundled into the MSI. Pinned explicitly (no implicit
-# "latest") so builds are reproducible and never silently grab the wrong
-# version. Set the repo/org Actions variable SINGBOX_VERSION, or override
-# per-run via the workflow_dispatch input above. The download step fails fast
-# if neither is set. Optionally set SINGBOX_SHA256 to the .zip asset digest
-# shown on the sing-box release page to pin the archive contents.
+# sing-box version bundled into the MSI and the AppImage. Pinned explicitly
+# (no implicit "latest") so builds are reproducible and never silently grab
+# the wrong version. Set the repo/org Actions variable SINGBOX_VERSION, or
+# override per-run via the workflow_dispatch input above. The download steps
+# fail fast if neither is set. Optionally set SINGBOX_SHA256 (Windows .zip)
+# and SINGBOX_SHA256_LINUX (linux-amd64 .tar.gz) to the asset digests shown
+# on the sing-box release page to pin the archive contents.
 env:
   SINGBOX_VERSION: ${{ inputs.singbox_version || vars.SINGBOX_VERSION }}
 
-# Needed so the built-in GITHUB_TOKEN can create/update the rolling CI release
-# (and its tag). Release assets do NOT count against the Actions artifact
-# storage quota, which is why we publish there instead of upload-artifact.
+# The build jobs only read the repo. The publish job alone gets
+# contents: write, which the built-in GITHUB_TOKEN needs to create/update the
+# releases (and the rolling ci-latest tag).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
 
     steps:
@@ -164,12 +168,177 @@ jobs:
       - name: Build MSI installer
         run: cargo wix --no-build --nocapture --target x86_64-pc-windows-msvc -o release/
 
-      # Publish to a single rolling pre-release ("ci-latest") instead of
-      # actions/upload-artifact — release assets don't count against the
-      # Actions artifact storage quota, and each push overwrites the assets so
-      # there's always one current build to download. Skipped on pull_request
-      # (PRs only build/test; fork PRs lack write access anyway). Both exes
-      # are bundled inside the MSI, so the MSI is the only attached asset.
+      # Hand the MSI to the publish job. Artifacts count against the Actions
+      # storage quota (release assets don't), so keep them only as long as
+      # the hand-off needs. Both exes are bundled inside the MSI, so the MSI
+      # is the only Windows asset.
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxpilot-windows
+          path: release/*.msi
+          if-no-files-found: error
+          retention-days: 3
+
+  linux:
+    # 22.04 rather than ubuntu-latest: the AppImage links the host glibc, so
+    # building against an older one lets it run on more distributions.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read Cargo.toml version
+        run: |
+          cargo_version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$cargo_version" ]; then
+            echo "::error::Could not read the package version from Cargo.toml."
+            exit 1
+          fi
+          echo "CARGO_VERSION=$cargo_version" >> "$GITHUB_ENV"
+
+      # Same check as the Windows job: the AppImage file name comes from
+      # Cargo.toml, so a mismatched tag would publish assets that claim a
+      # different version than the tag says. The tag name is read via the
+      # runner-provided env var, never interpolated into the script.
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag 'v$tag' does not match Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml (and Cargo.lock) before tagging."
+            exit 1
+          fi
+          echo "Tag v$tag matches Cargo.toml version $CARGO_VERSION"
+
+      # Link-time deps of gpui's X11/Wayland backends and its font stack
+      # (xkbcommon + xkbcommon-x11, fontconfig, freetype). Wayland and Vulkan
+      # are loaded at runtime, but their headers keep the -sys crates happy.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libwayland-dev \
+            libvulkan-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      # Same keying and fallback as the Windows cache (see there).
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-gnu-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gnu-
+
+      - name: Test
+        run: cargo test --target x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Download sing-box from official GitHub release
+        run: |
+          # Read the version from the env var (set at workflow level), never
+          # interpolated into the script — avoids workflow injection.
+          ver=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
+          ver="${ver#v}"
+          if [ -z "$ver" ]; then
+            echo "::error::SINGBOX_VERSION is not set. Set the repo variable SINGBOX_VERSION (e.g. 1.11.0) or pass 'singbox_version' via Run workflow."
+            exit 1
+          fi
+          # Validate the format up front: digits + dots, optional pre-release
+          # suffix. Rejects anything that isn't a plausible sing-box tag.
+          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::SINGBOX_VERSION '$ver' is not a valid version (expected e.g. 1.11.0)."
+            exit 1
+          fi
+          asset="sing-box-$ver-linux-amd64"
+          url="https://github.com/SagerNet/sing-box/releases/download/v$ver/$asset.tar.gz"
+          echo "Downloading sing-box $ver from $url"
+          curl -fsSL --retry 3 -o sing-box.tar.gz "$url"
+
+      # Verify the archive as downloaded, before anything touches it. The
+      # expected hash is the asset digest GitHub shows on the sing-box release
+      # page — copy it into the SINGBOX_SHA256_LINUX variable when bumping
+      # SINGBOX_VERSION (it hashes the .tar.gz, not the inner binary).
+      - name: Verify sing-box archive integrity
+        if: vars.SINGBOX_SHA256_LINUX != ''
+        env:
+          SINGBOX_SHA256_LINUX: ${{ vars.SINGBOX_SHA256_LINUX }}
+        run: |
+          expected=$(printf '%s' "$SINGBOX_SHA256_LINUX" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          expected="${expected#sha256:}"
+          hash=$(sha256sum sing-box.tar.gz | cut -d ' ' -f 1)
+          if [ "$hash" != "$expected" ]; then
+            echo "::error::sing-box.tar.gz SHA256 mismatch! Expected: $expected, Got: $hash"
+            exit 1
+          fi
+          echo "sing-box.tar.gz SHA256 verified: $hash"
+
+      - name: Extract and stage sing-box
+        run: |
+          mkdir -p release singbox-extract
+          tar -xzf sing-box.tar.gz -C singbox-extract
+          # Robust against future folder-layout changes: just find the binary.
+          bin=$(find singbox-extract -type f -name sing-box | head -n 1)
+          if [ -z "$bin" ]; then
+            echo "::error::sing-box not found inside the downloaded archive."
+            exit 1
+          fi
+          install -m 0755 "$bin" release/sing-box
+          echo "Bundled sing-box from $bin"
+
+      - name: Build AppImage
+        run: |
+          packaging/linux/build-appimage.sh \
+            target/x86_64-unknown-linux-gnu/release/box_pilot_gui \
+            release/sing-box \
+            "$CARGO_VERSION" \
+            release
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxpilot-linux
+          path: release/*.AppImage
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [windows, linux]
+    # PRs only build/test (fork PRs lack write access anyway).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      # Publish to a single rolling pre-release ("ci-latest") — release
+      # assets don't count against the Actions artifact storage quota, and
+      # each push overwrites the assets so there's always one current build
+      # to download. Skipped on pull_request.
       - name: Publish to rolling CI release
         if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
         # Third-party action holding contents:write — pinned to a full commit
@@ -182,8 +351,10 @@ jobs:
           prerelease: true
           body: |
             Rolling CI build from `${{ github.ref_name }}` @ `${{ github.sha }}`.
-            sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI.
-          files: release/*.msi
+            sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI and the AppImage.
+          files: |
+            release/*.msi
+            release/*.AppImage
 
       # Version tags publish a real (non-prerelease) release with immutable
       # assets. The winget manifest records this URL + the MSI's SHA256, so
@@ -195,11 +366,14 @@ jobs:
         with:
           name: BoxPilot ${{ github.ref_name }}
           body: |
-            BoxPilot ${{ github.ref_name }} — sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI.
+            BoxPilot ${{ github.ref_name }} — sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI and the AppImage.
 
-            Install via winget: `winget install Glide01.BoxPilot`
+            Windows: install via winget: `winget install Glide01.BoxPilot`, or run the MSI.
+            Linux (x86_64): download the AppImage, `chmod +x` it and run it.
 
-            BoxPilot is MIT licensed. The bundled `sing-box.exe` is the official
-            [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binary,
-            distributed under its own GPL-3.0-or-later license.
-          files: release/*.msi
+            BoxPilot is MIT licensed. The bundled `sing-box` binaries are the official
+            [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binaries,
+            distributed under their own GPL-3.0-or-later license.
+          files: |
+            release/*.msi
+            release/*.AppImage
