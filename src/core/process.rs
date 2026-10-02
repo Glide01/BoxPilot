@@ -1,4 +1,3 @@
-use crate::core::settings::{LogEntry, LogLevel};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -8,29 +7,24 @@ use std::thread;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-pub fn classify_log_level(line: &str) -> LogLevel {
-    if line.contains("\"error\"") || line.contains("\"fatal\"") {
-        LogLevel::Error
-    } else if line.contains("\"warn\"") {
-        LogLevel::Warn
-    } else {
-        LogLevel::Info
-    }
-}
-
-pub fn spawn_pipe_reader<R: Read + Send + 'static>(
-    pipe: R,
-    prefix: &str,
-    sender: mpsc::Sender<LogEntry>,
-) {
-    let prefix = prefix.to_string();
+/// Forward each line of a sing-box pipe, raw, until EOF. Parsing (level,
+/// ANSI colours) and dedup against the API stream happen in
+/// `core::log_merge`. Lossy UTF-8, so one bad byte can't end the reader.
+pub fn spawn_pipe_reader<R: Read + Send + 'static>(pipe: R, sender: mpsc::Sender<String>) {
     thread::spawn(move || {
-        let reader = BufReader::new(pipe);
-        for line in reader.lines() {
-            if let Ok(line_content) = line {
-                let level = classify_log_level(&line_content);
-                let message = format!("[{}] {}", prefix, line_content);
-                let _ = sender.send(LogEntry { message, level });
+        let mut reader = BufReader::new(pipe);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let line = String::from_utf8_lossy(&buf);
+                    let line = line.trim_end_matches(['\n', '\r']);
+                    if sender.send(line.to_string()).is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -333,7 +327,7 @@ pub fn start_sing_box(
     sing_path: &Path,
     config_path: &Path,
     working_dir: &Path,
-) -> std::io::Result<(Child, mpsc::Receiver<LogEntry>)> {
+) -> std::io::Result<(Child, mpsc::Receiver<String>)> {
     let mut cmd = Command::new(sing_path);
     cmd.arg("run")
         .arg("-D")
@@ -354,10 +348,10 @@ pub fn start_sing_box(
     let (sender, receiver) = mpsc::channel();
 
     if let Some(stdout) = child.stdout.take() {
-        spawn_pipe_reader(stdout, "STDOUT", sender.clone());
+        spawn_pipe_reader(stdout, sender.clone());
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_pipe_reader(stderr, "STDERR", sender);
+        spawn_pipe_reader(stderr, sender);
     }
 
     Ok((child, receiver))
@@ -366,32 +360,6 @@ pub fn start_sing_box(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// sing-box console lines carry the level as a quoted JSON-ish token,
-    /// e.g. `... "level":"error" ...` — the classifier keys on the quoted
-    /// word, so an unquoted mention (a URL containing "error") stays Info.
-    #[test]
-    fn classifies_quoted_levels() {
-        assert_eq!(classify_log_level(r#"{"level":"error","msg":"x"}"#), LogLevel::Error);
-        assert_eq!(classify_log_level(r#"{"level":"fatal","msg":"x"}"#), LogLevel::Error);
-        assert_eq!(classify_log_level(r#"{"level":"warn","msg":"x"}"#), LogLevel::Warn);
-        assert_eq!(classify_log_level(r#"{"level":"info","msg":"x"}"#), LogLevel::Info);
-    }
-
-    #[test]
-    fn unquoted_keywords_do_not_escalate() {
-        assert_eq!(classify_log_level("GET https://example.com/error/page"), LogLevel::Info);
-        assert_eq!(classify_log_level("warning: something"), LogLevel::Info);
-        assert_eq!(classify_log_level(""), LogLevel::Info);
-    }
-
-    #[test]
-    fn error_takes_precedence_over_warn() {
-        assert_eq!(
-            classify_log_level(r#""level":"error" after a "warn" retry"#),
-            LogLevel::Error
-        );
-    }
 
     /// The native SetupAPI path uninstalls only adapters whose FriendlyName
     /// begins with "sing-tun" (case-insensitive). Getting this wrong would
@@ -441,20 +409,17 @@ mod tests {
     }
 
     #[test]
-    fn pipe_reader_forwards_lines_with_prefix_and_level() {
+    fn pipe_reader_forwards_raw_lines() {
         let (sender, receiver) = mpsc::channel();
-        let input: &[u8] = b"plain line\n\"error\" line\n";
-        spawn_pipe_reader(input, "STDOUT", sender);
+        let input: &[u8] = b"\x1b[36mINFO\x1b[0m[0000] started\r\nbad \xff byte\nlast";
+        spawn_pipe_reader(input, sender);
 
-        let first = receiver.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert_eq!(first.message, "[STDOUT] plain line");
-        assert_eq!(first.level, LogLevel::Info);
-
-        let second = receiver.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert_eq!(second.message, "[STDOUT] \"error\" line");
-        assert_eq!(second.level, LogLevel::Error);
+        let recv = || receiver.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(recv().unwrap(), "\x1b[36mINFO\x1b[0m[0000] started");
+        assert_eq!(recv().unwrap(), "bad \u{fffd} byte");
+        assert_eq!(recv().unwrap(), "last", "an unterminated last line still arrives");
 
         // Pipe exhausted -> reader thread exits -> channel disconnects.
-        assert!(receiver.recv_timeout(std::time::Duration::from_secs(5)).is_err());
+        assert!(recv().is_err());
     }
 }

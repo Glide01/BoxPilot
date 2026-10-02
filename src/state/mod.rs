@@ -1,7 +1,8 @@
 //! GPUI reactive state.
 //!
 //! Five `Entity<T>` types form the reactive graph:
-//! - [`LogBuffer`] — log `VecDeque` + filter
+//! - [`LogBuffer`] — the Logs page lines (pipes + sing-box API log stream,
+//!   merged by `core::log_merge`) + level filter
 //! - [`ProcessSession`] — child process lifecycle, encoded as a single
 //!   `ProcessState` enum (`Stopped` / `Preparing` / `Running`)
 //! - [`ProxyGroups`] — selector outbound groups (sing-box API group stream,

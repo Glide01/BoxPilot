@@ -1,6 +1,7 @@
 pub mod bytefmt;
 pub mod connections_view;
 pub mod deeplink;
+pub mod log_merge;
 pub mod network_tools;
 pub mod orchestration;
 pub mod presentation;

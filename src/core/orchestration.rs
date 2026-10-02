@@ -6,7 +6,8 @@
 
 /// What the app must do in response to a process Running/Stopped transition.
 /// `AppState`'s process observer maps these onto the `ProxyGroups`,
-/// `Traffic`, `ClashMode`, `Connections` and `NetworkTools` entities.
+/// `Traffic`, `LogBuffer`, `ClashMode`, `Connections`, `NetworkTools` and
+/// `TailscaleState` entities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessEdgeEffect {
     /// Stopped→Running: subscribe to live groups from the sing-box API.
@@ -19,6 +20,10 @@ pub enum ProcessEdgeEffect {
     StartConnections,
     /// Stopped→Running: load the outbound list the Tools page tests through.
     StartNetworkTools,
+    /// Stopped→Running: stream Tailscale endpoint status + Taildrop inboxes.
+    StartTailscale,
+    /// Stopped→Running: a new log run; stream the sing-box API's log.
+    StartLogs,
     /// Running→Stopped: groups are shown only while connected; ends the
     /// group stream.
     ClearGroups,
@@ -31,10 +36,10 @@ pub enum ProcessEdgeEffect {
     StopConnections,
     /// Running→Stopped: cancel any running test and clear the Tools page.
     StopNetworkTools,
-    /// Stopped→Running: stream Tailscale endpoint status + Taildrop inboxes.
-    StartTailscale,
     /// Running→Stopped: forget the endpoints (hides the Tailscale page).
     ClearTailscale,
+    /// Running→Stopped: end the log stream; stderr after exit still shows.
+    StopLogs,
 }
 
 /// Decide the effects of an observed process-state change. gpui observers
@@ -51,6 +56,7 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
             ProcessEdgeEffect::StartConnections,
             ProcessEdgeEffect::StartNetworkTools,
             ProcessEdgeEffect::StartTailscale,
+            ProcessEdgeEffect::StartLogs,
         ],
         (true, false) => &[
             ProcessEdgeEffect::ClearGroups,
@@ -59,6 +65,7 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
             ProcessEdgeEffect::StopConnections,
             ProcessEdgeEffect::StopNetworkTools,
             ProcessEdgeEffect::ClearTailscale,
+            ProcessEdgeEffect::StopLogs,
         ],
         _ => &[],
     }
@@ -69,7 +76,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn started_edge_starts_groups_traffic_and_clash_mode() {
+    fn started_edge_starts_every_api_consumer() {
         assert_eq!(
             process_edge_effects(false, true),
             &[
@@ -79,12 +86,13 @@ mod tests {
                 ProcessEdgeEffect::StartConnections,
                 ProcessEdgeEffect::StartNetworkTools,
                 ProcessEdgeEffect::StartTailscale,
+                ProcessEdgeEffect::StartLogs,
             ]
         );
     }
 
     #[test]
-    fn stopped_edge_clears_groups_traffic_and_clash_mode() {
+    fn stopped_edge_stops_every_api_consumer() {
         assert_eq!(
             process_edge_effects(true, false),
             &[
@@ -94,6 +102,7 @@ mod tests {
                 ProcessEdgeEffect::StopConnections,
                 ProcessEdgeEffect::StopNetworkTools,
                 ProcessEdgeEffect::ClearTailscale,
+                ProcessEdgeEffect::StopLogs,
             ]
         );
     }

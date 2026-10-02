@@ -35,33 +35,6 @@ pub struct StatusEvent {
     pub message: String,
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub enum LogLevel {
-    Info,
-    Warn,
-    Error,
-}
-
-pub struct LogEntry {
-    pub message: String,
-    pub level: LogLevel,
-}
-
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub enum LogFilter {
-    All,
-    Error,
-    Warn,
-}
-
-pub fn matches_filter(level: LogLevel, filter: LogFilter) -> bool {
-    match filter {
-        LogFilter::All => true,
-        LogFilter::Error => level == LogLevel::Error,
-        LogFilter::Warn => matches!(level, LogLevel::Warn | LogLevel::Error),
-    }
-}
-
 /// Where a profile's config comes from. Serialized as an internally-tagged
 /// object (`"source": { "kind": "remote", "url": … }`). A `Remote` profile is
 /// fetched over HTTP and auto-updated on its interval; a `Local` profile is a
@@ -335,27 +308,6 @@ pub fn wsl_proxy_command(port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn filter_all_passes_every_level() {
-        for level in [LogLevel::Info, LogLevel::Warn, LogLevel::Error] {
-            assert!(matches_filter(level, LogFilter::All));
-        }
-    }
-
-    #[test]
-    fn filter_warn_passes_warn_and_error_only() {
-        assert!(!matches_filter(LogLevel::Info, LogFilter::Warn));
-        assert!(matches_filter(LogLevel::Warn, LogFilter::Warn));
-        assert!(matches_filter(LogLevel::Error, LogFilter::Warn));
-    }
-
-    #[test]
-    fn filter_error_passes_error_only() {
-        assert!(!matches_filter(LogLevel::Info, LogFilter::Error));
-        assert!(!matches_filter(LogLevel::Warn, LogFilter::Error));
-        assert!(matches_filter(LogLevel::Error, LogFilter::Error));
-    }
 
     /// Settings files written by releases that predate `set_system_proxy` /
     /// `proxy_port` / `tun_ipv6` must still deserialize with the documented

@@ -31,14 +31,17 @@ pub enum ProcessState {
     /// Background task running `prepare_process_start` (TUN cleanup + DNS
     /// flush). Dropping `_prep` cancels the task.
     Preparing { _prep: Task<()> },
-    /// Child process is alive. `_drain` reads from the log channel into
-    /// `LogBuffer`. `_wait` polls `child.try_wait()` and transitions back to
-    /// `Stopped` on exit. Both tasks exit cleanly when the entity drops.
+    /// Child process is alive. `drain` reads from the pipe channel into
+    /// `LogBuffer`; `stop()` detaches it rather than cancelling it, so
+    /// whatever sing-box wrote on its way out (a fatal error, a panic) still
+    /// lands — it ends on its own when both pipes close. `_wait` polls
+    /// `child.try_wait()` and transitions back to `Stopped` on exit. Both
+    /// tasks exit cleanly when their entities drop.
     Running {
         child: Child,
         running_mode: bool,
         running_set_system_proxy: bool,
-        _drain: Task<()>,
+        drain: Task<()>,
         _wait: Task<()>,
     },
 }
@@ -125,7 +128,7 @@ impl ProcessSession {
                         }
                         if !batch.is_empty() {
                             if weak_logs
-                                .update(cx, |logs, cx| logs.extend(batch, cx))
+                                .update(cx, |logs, cx| logs.push_pipe(batch, cx))
                                 .is_err()
                             {
                                 return;
@@ -168,7 +171,7 @@ impl ProcessSession {
                     child,
                     running_mode: pending.proxy_mode,
                     running_set_system_proxy: pending.set_system_proxy,
-                    _drain: drain,
+                    drain,
                     _wait: wait,
                 };
             }
@@ -198,9 +201,11 @@ impl ProcessSession {
                 mut child,
                 running_mode,
                 running_set_system_proxy,
+                drain,
                 ..
             } => {
                 let _ = child.kill();
+                drain.detach();
                 let cleanup = cx.background_executor().spawn(async move {
                     let mut child = child;
                     let _ = child.wait();

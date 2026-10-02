@@ -35,6 +35,13 @@ dedicated reader thread holds each long-lived stream, as before.
   per-request override.
 - **Traffic** comes from `SubscribeStatus` at a 1s interval, whose
   `uplink`/`downlink` are per-interval byte deltas, so bytes/sec.
+- **Logs** come from `SubscribeLog`, which carries every level whatever
+  `log.level` says, but only since the `api` service started and only while
+  sing-box runs. The stdout/stderr pipes stay for the rest: early startup,
+  config errors, deprecation warnings, panics, and output after exit.
+  sing-box writes each line to both, so `core::log_merge` merges them
+  without showing a line twice. The Logs page filters by level, defaulting
+  to `GetDefaultLogLevel`; its Clear also calls `ClearLogs`.
 - The settings field `clash_api_port` became `api_port`; the old name is
   still read. Any `api` service a subscription carries is dropped, the same
   ownership rule as `inbounds` and `experimental`.
