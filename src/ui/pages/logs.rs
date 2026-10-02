@@ -18,9 +18,9 @@ use std::collections::VecDeque;
 ///
 /// 只读靠 `Textarea::readonly(true)`:只拒绝用户编辑,聚焦 / 选中 / 复制照常;
 /// `appearance(false)` 去掉边框背景,看起来就是一块普通文本面板。日志内容在
-/// `observe_in` 里随 LogBuffer / 过滤变化重新灌入(`set_value`,仅在文本真的变化时调用)。注意 `set_value` 会把
-/// 滚动条复位到顶部,所以流式刷新时视图会回到顶部——停止后内容稳定,选中 /
-/// 复制 / 滚动都不受影响。
+/// `observe_in` 里随 LogBuffer / 过滤变化重新灌入(`set_value`,仅在文本真的
+/// 变化时调用)。注意 `set_value` 会把滚动条复位到顶部,所以流式刷新时视图会
+/// 回到顶部——停止后内容稳定,选中 / 复制 / 滚动都不受影响。
 pub struct LogsPage {
     app_state: Entity<AppState>,
     /// 只读 Textarea,承载日志文本,供鼠标选中 / 复制 / 横向滚动。
