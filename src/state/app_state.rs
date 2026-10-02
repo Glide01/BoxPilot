@@ -16,6 +16,7 @@ use crate::core::timefmt::{file_mtime, to_unix_secs};
 use crate::state::log_buffer::LogBuffer;
 use crate::state::process_session::{PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
+use crate::state::tailscale::TailscaleState;
 use crate::state::traffic::Traffic;
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_channel::oneshot;
@@ -111,6 +112,8 @@ pub struct AppState {
     pub proxy_groups: Entity<ProxyGroups>,
     /// Live up/down network rate; streamed while sing-box is running.
     pub traffic: Entity<Traffic>,
+    /// Tailscale endpoints of the running config; streamed while running.
+    pub tailscale: Entity<TailscaleState>,
     /// Last `is_running()` seen by the process observer — detects
     /// Running/Stopped edges so groups + traffic refresh exactly once per
     /// transition.
@@ -212,6 +215,7 @@ impl AppState {
         let api = SingBoxApi::new(settings.api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
+        let tailscale = cx.new(|_| TailscaleState::new(api));
 
         cx.new(|cx| {
             // Drive ProxyGroups + Traffic from process Running/Stopped edges.
@@ -238,6 +242,12 @@ impl AppState {
                         }
                         ProcessEdgeEffect::StopTraffic => {
                             this.traffic.update(cx, |traffic, cx| traffic.stop(cx))
+                        }
+                        ProcessEdgeEffect::StartTailscale => {
+                            this.tailscale.update(cx, |tailscale, cx| tailscale.start(cx))
+                        }
+                        ProcessEdgeEffect::ClearTailscale => {
+                            this.tailscale.update(cx, |tailscale, cx| tailscale.clear(cx))
                         }
                     }
                 }
@@ -414,6 +424,7 @@ impl AppState {
                 logs,
                 proxy_groups,
                 traffic,
+                tailscale,
                 groups_saw_running: false,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
@@ -600,6 +611,7 @@ impl AppState {
         let api = SingBoxApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.tailscale.update(cx, |tailscale, _| tailscale.set_api(api));
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

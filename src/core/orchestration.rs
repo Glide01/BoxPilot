@@ -18,6 +18,10 @@ pub enum ProcessEdgeEffect {
     ClearGroups,
     /// Running→Stopped: stop the stream and zero the readout.
     StopTraffic,
+    /// Stopped→Running: stream Tailscale endpoint status + Taildrop inboxes.
+    StartTailscale,
+    /// Running→Stopped: forget the endpoints (hides the Tailscale page).
+    ClearTailscale,
 }
 
 /// Decide the effects of an observed process-state change. gpui observers
@@ -30,10 +34,12 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
         (false, true) => &[
             ProcessEdgeEffect::StartGroups,
             ProcessEdgeEffect::StartTraffic,
+            ProcessEdgeEffect::StartTailscale,
         ],
         (true, false) => &[
             ProcessEdgeEffect::ClearGroups,
             ProcessEdgeEffect::StopTraffic,
+            ProcessEdgeEffect::ClearTailscale,
         ],
         _ => &[],
     }
@@ -49,7 +55,8 @@ mod tests {
             process_edge_effects(false, true),
             &[
                 ProcessEdgeEffect::StartGroups,
-                ProcessEdgeEffect::StartTraffic
+                ProcessEdgeEffect::StartTraffic,
+                ProcessEdgeEffect::StartTailscale
             ]
         );
     }
@@ -60,7 +67,8 @@ mod tests {
             process_edge_effects(true, false),
             &[
                 ProcessEdgeEffect::ClearGroups,
-                ProcessEdgeEffect::StopTraffic
+                ProcessEdgeEffect::StopTraffic,
+                ProcessEdgeEffect::ClearTailscale
             ]
         );
     }

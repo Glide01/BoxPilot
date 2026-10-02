@@ -28,11 +28,14 @@ pub fn sidebar(
     // (download, upload) 已格式化速率;仅在已连接时为 `Some`,否则隐藏网速行。
     speed: Option<(String, String)>,
     speed_color: Hsla,
+    // Tailscale 页仅在运行中的配置有 Tailscale endpoint 时出现。
+    show_tailscale: bool,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let items = [
         (ActivePage::Home, "Home", IconName::LayoutDashboard),
         (ActivePage::Groups, "Groups", IconName::Globe),
+        (ActivePage::Tailscale, "Tailscale", IconName::Frame),
         (ActivePage::Profiles, "Profiles", IconName::GalleryVerticalEnd),
         (ActivePage::Logs, "Logs", IconName::SquareTerminal),
         (ActivePage::Settings, "Settings", IconName::Settings),
@@ -49,7 +52,9 @@ pub fn sidebar(
                     .child("BoxPilot"),
             ),
         )
-        .child(SidebarMenu::new().children(items.map(|(page, label, icon)| {
+        .child(SidebarMenu::new().children(items.into_iter().filter(|(page, ..)| {
+            *page != ActivePage::Tailscale || show_tailscale
+        }).map(|(page, label, icon)| {
             let on_nav = on_nav.clone();
             SidebarMenuItem::new(label)
                 .icon(icon)

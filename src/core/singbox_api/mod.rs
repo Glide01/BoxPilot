@@ -38,6 +38,7 @@ mod notifications;
 mod pb;
 mod service;
 mod status;
+mod taildrop;
 mod tailscale;
 mod transport;
 
@@ -49,6 +50,7 @@ pub use logs::*;
 pub use notifications::*;
 pub use service::*;
 pub use status::*;
+pub use taildrop::*;
 pub use tailscale::*;
 pub use transport::{grpc_code, ApiError, IDLE_STREAM_READ_TIMEOUT};
 

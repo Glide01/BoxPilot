@@ -4,6 +4,7 @@ use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
 use crate::ui::pages::{ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage};
+use crate::ui::pages::TailscalePage;
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
@@ -21,6 +22,10 @@ pub struct RootView {
     profiles: Entity<ProfilesPage>,
     logs: Entity<LogsPage>,
     settings: Entity<SettingsPage>,
+    tailscale: Entity<TailscalePage>,
+    /// Whether the sidebar currently offers the Tailscale page (the running
+    /// config has Tailscale endpoints).
+    tailscale_visible: bool,
     toasts: Entity<Toasts>,
 }
 
@@ -31,6 +36,7 @@ impl RootView {
         let profiles = cx.new(|cx| ProfilesPage::new(app_state.clone(), cx));
         let logs = cx.new(|cx| LogsPage::new(app_state.clone(), window, cx));
         let settings = cx.new(|cx| SettingsPage::new(app_state.clone(), window, cx));
+        let tailscale = cx.new(|cx| TailscalePage::new(app_state.clone(), window, cx));
         let toasts = toast::init(cx);
 
         // Every StatusEvent emitter routes to the same single toast slot.
@@ -39,6 +45,22 @@ impl RootView {
         Self::route_status_toasts(&process_session, window, cx);
         let proxy_groups = app_state.read(cx).proxy_groups.clone();
         Self::route_status_toasts(&proxy_groups, window, cx);
+        let tailscale_state = app_state.read(cx).tailscale.clone();
+        Self::route_status_toasts(&tailscale_state, window, cx);
+        // Show/hide the Tailscale sidebar item; leave the page if it goes
+        // away under the user (sing-box stopped). Only visibility changes
+        // re-render — status pushes are frequent.
+        cx.observe(&tailscale_state, |this: &mut Self, state, cx| {
+            let visible = state.read(cx).has_endpoints();
+            if visible != this.tailscale_visible {
+                this.tailscale_visible = visible;
+                if !visible && this.active_page == ActivePage::Tailscale {
+                    this.active_page = ActivePage::Home;
+                }
+                cx.notify();
+            }
+        })
+        .detach();
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();
@@ -89,6 +111,8 @@ impl RootView {
             profiles,
             logs,
             settings,
+            tailscale,
+            tailscale_visible: false,
             toasts,
         }
     }
@@ -190,6 +214,7 @@ impl Render for RootView {
         let page: AnyView = match self.active_page {
             ActivePage::Home => self.home.clone().into(),
             ActivePage::Groups => self.groups.clone().into(),
+            ActivePage::Tailscale => self.tailscale.clone().into(),
             ActivePage::Profiles => self.profiles.clone().into(),
             ActivePage::Logs => self.logs.clone().into(),
             ActivePage::Settings => self.settings.clone().into(),
@@ -212,6 +237,7 @@ impl Render for RootView {
                 status_label,
                 speed,
                 speed_color,
+                self.tailscale_visible,
                 on_nav,
             ))
             .child(div().flex_1().min_w_0().v_flex().p_6().child(page))

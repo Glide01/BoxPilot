@@ -697,3 +697,221 @@ mod tests {
         assert_eq!(ping.latency_ms, 12.5);
     }
 }
+
+// --- Taildrop and Tailscale certificates ----------------------------------
+// (`taildrop.rs`; kept apart from the Tailscale section above.)
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SubscribeTaildropInboxRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct MarkTaildropInboxReadRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TaildropInbox {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(message, repeated, tag = "2")]
+    pub files: Vec<TaildropFile>,
+    #[prost(message, repeated, tag = "3")]
+    pub receiving: Vec<TaildropReceivingFile>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TaildropFile {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(int64, tag = "2")]
+    pub size: i64,
+    #[prost(string, tag = "3")]
+    pub sender_name: String,
+    /// Unix seconds.
+    #[prost(int64, tag = "4")]
+    pub modified_at: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TaildropReceivingFile {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// -1 when the sender announced no length.
+    #[prost(int64, tag = "2")]
+    pub size: i64,
+    #[prost(int64, tag = "3")]
+    pub received_bytes: i64,
+    /// `senderID` upstream.
+    #[prost(string, tag = "4")]
+    pub sender_id: String,
+    #[prost(string, tag = "5")]
+    pub sender_name: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DownloadTaildropFileRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+}
+
+/// The first message carries only `size`; the rest only `data`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DownloadTaildropFileChunk {
+    #[prost(int64, tag = "1")]
+    pub size: i64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DeleteTaildropFileRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct CancelTaildropReceivingRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    /// `senderID` upstream.
+    #[prost(string, tag = "2")]
+    pub sender_id: String,
+    #[prost(string, tag = "3")]
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleCertificateRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub domain: String,
+    #[prost(int64, tag = "3")]
+    pub min_validity_seconds: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleCertificate {
+    /// `certificatePEM` upstream.
+    #[prost(bytes = "vec", tag = "1")]
+    pub certificate_pem: Vec<u8>,
+    /// `privateKeyPEM` upstream.
+    #[prost(bytes = "vec", tag = "2")]
+    pub private_key_pem: Vec<u8>,
+}
+
+/// Same byte-for-byte pinning as `tests` above, for the Taildrop and
+/// certificate messages.
+#[cfg(test)]
+mod taildrop_tests {
+    use super::*;
+    use prost::Message;
+
+    fn bytes(message: &impl Message) -> Vec<u8> {
+        message.encode_to_vec()
+    }
+
+    #[test]
+    fn taildrop_requests_use_upstream_field_numbers() {
+        assert_eq!(
+            bytes(&SubscribeTaildropInboxRequest {
+                endpoint_tag: "t".into()
+            }),
+            [0x0a, 1, b't']
+        );
+        assert_eq!(
+            bytes(&MarkTaildropInboxReadRequest {
+                endpoint_tag: "t".into()
+            }),
+            [0x0a, 1, b't']
+        );
+        assert_eq!(
+            bytes(&DownloadTaildropFileRequest {
+                endpoint_tag: "t".into(),
+                name: "n".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b'n']
+        );
+        assert_eq!(
+            bytes(&DeleteTaildropFileRequest {
+                endpoint_tag: "t".into(),
+                name: "n".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b'n']
+        );
+        assert_eq!(
+            bytes(&CancelTaildropReceivingRequest {
+                endpoint_tag: "t".into(),
+                sender_id: "s".into(),
+                name: "n".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b's', 0x1a, 1, b'n']
+        );
+    }
+
+    #[test]
+    fn certificate_request_uses_upstream_field_numbers() {
+        assert_eq!(
+            bytes(&TailscaleCertificateRequest {
+                endpoint_tag: "t".into(),
+                domain: "d".into(),
+                min_validity_seconds: 300,
+            }),
+            [0x0a, 1, b't', 0x12, 1, b'd', 0x18, 0xac, 0x02]
+        );
+    }
+
+    /// Responses decoded from hand-built upstream bytes: nested inbox
+    /// entries (fields 2 and 3), a negative receiving size (10-byte varint),
+    /// and the bytes fields of the chunk and certificate.
+    #[test]
+    fn taildrop_responses_decode_from_upstream_bytes() {
+        #[rustfmt::skip]
+        let inbox = [
+            0x0a, 1, b't', // endpointTag
+            0x12, 7, 0x0a, 1, b'f', 0x10, 3, 0x20, 9, // files[0]
+            0x1a, 18, // receiving[0]: size -1, receivedBytes 2, senderID "s", senderName ""
+            0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+            0x18, 2, 0x22, 1, b's', 0x2a, 0,
+        ];
+        let inbox = TaildropInbox::decode(&inbox[..]).unwrap();
+        assert_eq!(inbox.endpoint_tag, "t");
+        assert_eq!(
+            inbox.files,
+            vec![TaildropFile {
+                name: "f".into(),
+                size: 3,
+                sender_name: String::new(),
+                modified_at: 9
+            }]
+        );
+        assert_eq!(
+            inbox.receiving,
+            vec![TaildropReceivingFile {
+                name: String::new(),
+                size: -1,
+                received_bytes: 2,
+                sender_id: "s".into(),
+                sender_name: String::new(),
+            }]
+        );
+
+        let header = DownloadTaildropFileChunk::decode(&[0x08, 0x80, 0x01][..]).unwrap();
+        assert_eq!((header.size, header.data.len()), (128, 0));
+        let data = DownloadTaildropFileChunk::decode(&[0x12, 2, 0xde, 0xad][..]).unwrap();
+        assert_eq!((data.size, data.data), (0, vec![0xde, 0xad]));
+
+        let certificate =
+            TailscaleCertificate::decode(&[0x0a, 1, b'c', 0x12, 1, b'k'][..]).unwrap();
+        assert_eq!(certificate.certificate_pem, b"c");
+        assert_eq!(certificate.private_key_pem, b"k");
+    }
+}

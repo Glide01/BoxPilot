@@ -1,7 +1,7 @@
 //! Tailscale endpoints (`endpoints[]` of type `tailscale`):
 //! `SubscribeTailscaleStatus`, `StartTailscalePing`, `SetTailscaleExitNode`,
-//! `TailscaleLogout`. Taildrop, certificates and SSH are not wrapped (see
-//! the ADR for client-streaming limits).
+//! `TailscaleLogout`. Taildrop and certificates live in `taildrop.rs`; SSH
+//! is not wrapped (see the ADR for client-streaming limits).
 
 use super::transport::{ApiError, IDLE_STREAM_READ_TIMEOUT};
 use super::{pb, SingBoxApi};
