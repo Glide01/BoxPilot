@@ -14,6 +14,13 @@ _Avoid_: core, kernel, 内核, engine
 The version the sing-box binary reports about itself. Distinct from the
 BoxPilot version; "Unknown" when the binary is missing or unreadable.
 
+**sing-box API**:
+The control interface of the running sing-box: its `api` service (gRPC,
+sing-box ≥ 1.14), which BoxPilot injects on a loopback port and uses for
+groups, node switching, delay tests and traffic. Replaced the Clash API
+(`experimental.clash_api`), which BoxPilot no longer enables.
+_Avoid_: Clash API, external controller, core API
+
 **BoxPilot version**:
 The version of the BoxPilot app itself (the Cargo package version).
 

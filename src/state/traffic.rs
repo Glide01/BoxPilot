@@ -1,9 +1,9 @@
-//! Live up/down network rate, streamed from sing-box's Clash API `/traffic`
-//! endpoint. Owned by `AppState`; started on the process Stopped→Running edge
+//! Live up/down network rate, streamed from the sing-box API service's
+//! `SubscribeStatus`. Owned by `AppState`; started on the process Stopped→Running edge
 //! and stopped on the reverse edge (see the observer in `AppState::new`), the
 //! same way `ProxyGroups` is driven.
 
-use crate::core::clash_api::{ClashApi, TrafficSample};
+use crate::core::singbox_api::{SingBoxApi, TrafficSample};
 use gpui::{Context, Task};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -16,20 +16,20 @@ use std::time::Duration;
 /// responsive without per-sample render churn (mirrors the log-drain pattern).
 const DRAIN_INTERVAL: Duration = Duration::from_millis(500);
 /// Delay before the reader thread reconnects after a stream ends while still
-/// running — covers the brief window before sing-box's Clash API is listening
+/// running — covers the brief window before the sing-box API is listening
 /// and any transient drop. Bounded by the `running` flag so it never spins.
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
 /// Current network rate in bytes/sec. Session-scoped: zeroed when sing-box
 /// stops, never persisted.
 pub struct Traffic {
-    /// Upload rate, bytes/sec, from the latest `/traffic` sample.
+    /// Upload rate, bytes/sec, from the latest status sample.
     pub up: u64,
-    /// Download rate, bytes/sec, from the latest `/traffic` sample.
+    /// Download rate, bytes/sec, from the latest status sample.
     pub down: u64,
-    /// Clash API 句柄(端口 Settings 可配)。`start()` streams `/traffic` from
-    /// it;改端口经 `set_api` 换新句柄,运行中由 AppState 重启才生效。
-    api: ClashApi,
+    /// sing-box API 句柄(端口 Settings 可配)。`start()` 从它订阅
+    /// `SubscribeStatus`;改端口经 `set_api` 换新句柄,运行中由 AppState 重启才生效。
+    api: SingBoxApi,
     /// Liveness flag for the current streaming session. Cleared by `stop()`
     /// and `Drop` so the detached reader thread self-terminates instead of
     /// outliving the session.
@@ -40,7 +40,7 @@ pub struct Traffic {
 }
 
 impl Traffic {
-    pub fn new(api: ClashApi) -> Self {
+    pub fn new(api: SingBoxApi) -> Self {
         Self {
             up: 0,
             down: 0,
@@ -50,10 +50,10 @@ impl Traffic {
         }
     }
 
-    /// Swap the Clash API handle after a Settings port change. The next
+    /// Swap the sing-box API handle after a Settings port change. The next
     /// `start()` streams from it; AppState restarts sing-box when running so
     /// a live session moves to the new port.
-    pub fn set_api(&mut self, api: ClashApi) {
+    pub fn set_api(&mut self, api: SingBoxApi) {
         self.api = api;
     }
 
@@ -76,11 +76,13 @@ impl Traffic {
         // Dedicated blocking reader thread: gpui's executor is not built for
         // blocking stream reads (same reason the stdout/stderr pipe readers
         // use raw threads). It reconnects while `running` so it tolerates the
-        // startup window before the Clash API is up, and exits once the flag
+        // startup window before the API is up, and exits once the flag
         // clears or the receiver is gone (drain task dropped on stop()).
         thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
-                api.stream_traffic(|sample| {
+                // Why a stream ended doesn't matter here: either sing-box is
+                // going away (the edge observer stops us) or it isn't up yet.
+                let _ = api.stream_status(|sample| {
                     running.load(Ordering::SeqCst) && tx.send(sample).is_ok()
                 });
                 if !running.load(Ordering::SeqCst) {

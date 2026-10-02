@@ -1,10 +1,10 @@
 //! 分组页:分组纵向堆叠,每组 = 标题行(chevron + 组名 + 当前节点 + Test
 //! 按钮)+ 两列节点卡片网格(名字 + 延迟徽标 / 协议类型)。点标题行左半区
-//! 折叠/展开该组(默认全部折叠,展开状态仅存内存)。运行中(Clash API)点卡片
-//! 切换节点、可整组测速;sing-box 未启动(或启动后连不上 Clash API)时
+//! 折叠/展开该组(默认全部折叠,展开状态仅存内存)。运行中(sing-box API)点
+//! 卡片切换节点、可整组测速;sing-box 未启动(或启动后连不上 sing-box API)时
 //! 节点列表为空,显示空状态。
 
-use crate::core::clash_api::{classify_delay, DelayLevel, GroupKind};
+use crate::core::singbox_api::{classify_delay, DelayLevel, GroupKind};
 use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::card_frame;
 use crate::ui::widgets::{empty_card, page_header, pill, PillTone};
@@ -174,7 +174,7 @@ impl Render for GroupsPage {
                     .gap_3()
                     .children(groups.iter().enumerate().map(|(gi, group)| {
                         let is_testing = testing.contains(&group.name);
-                        // urltest 自动选路:展示但不可手选(API 也会拒绝 PUT)。
+                        // urltest 自动选路:展示但不可手选(API 也会拒绝 SelectOutbound)。
                         let selectable = enabled && group.kind == GroupKind::Selector;
                         let test_btn = {
                             let proxy_groups = groups_entity.clone();

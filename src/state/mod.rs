@@ -4,8 +4,9 @@
 //! - [`LogBuffer`] — log `VecDeque` + filter
 //! - [`ProcessSession`] — child process lifecycle, encoded as a single
 //!   `ProcessState` enum (`Stopped` / `Preparing` / `Running`)
-//! - [`ProxyGroups`] — selector outbound groups (Clash API / config-derived)
-//! - [`Traffic`] — live up/down network rate (Clash API `/traffic` stream)
+//! - [`ProxyGroups`] — selector outbound groups (sing-box API group stream,
+//!   ordered by config)
+//! - [`Traffic`] — live up/down network rate (sing-box API status stream)
 //! - [`AppState`] — settings, paths, status, owns the other four entities
 
 pub mod app_state;

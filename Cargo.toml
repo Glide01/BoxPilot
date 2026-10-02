@@ -54,6 +54,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12.5", features = ["blocking", "rustls-tls"], default-features = false }
 dirs = "5.0"
+# Protobuf messages for the sing-box API service (`core/singbox_api.rs`).
+# Hand-derived structs, no build-time codegen — so no `protoc` on the
+# Windows/MSVC build. The transport is gRPC-Web over the blocking reqwest
+# client above, so no tonic/tokio either.
+prost ={ version = "0.14", default-features = false, features = ["derive", "std"] }
 
 # Used by `ensure_elevated()` in `src/main.rs` (token elevation check +
 # `ShellExecuteW("runas", ...)` self-relaunch), by the deep-link

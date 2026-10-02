@@ -2,7 +2,7 @@
 
 use crate::core::presentation::sanitize_port;
 use crate::core::settings::{
-    powershell_proxy_command, wsl_proxy_command, StatusLevel, CLASH_API_PORT, PROXY_PORT,
+    powershell_proxy_command, wsl_proxy_command, StatusLevel, API_PORT, PROXY_PORT,
 };
 use crate::state::AppState;
 use crate::ui::widgets::{page_header, setting_row};
@@ -18,7 +18,7 @@ use gpui_component::{
 pub struct SettingsPage {
     app_state: Entity<AppState>,
     port_input: Entity<InputState>,
-    clash_api_port_input: Entity<InputState>,
+    api_port_input: Entity<InputState>,
 }
 
 impl SettingsPage {
@@ -29,14 +29,14 @@ impl SettingsPage {
 
         let proxy_port = app_state.read(cx).settings.proxy_port;
         let port_input = Self::port_field(proxy_port, PROXY_PORT, AppState::set_proxy_port, window, cx);
-        let clash_port = app_state.read(cx).settings.clash_api_port;
-        let clash_api_port_input =
-            Self::port_field(clash_port, CLASH_API_PORT, AppState::set_clash_api_port, window, cx);
+        let api_port = app_state.read(cx).settings.api_port;
+        let api_port_input =
+            Self::port_field(api_port, API_PORT, AppState::set_api_port, window, cx);
 
         Self {
             app_state,
             port_input,
-            clash_api_port_input,
+            api_port_input,
         }
     }
 
@@ -132,11 +132,11 @@ impl Render for SettingsPage {
                         ),
                     )
                     .child(
-                        setting_row(theme, "Clash API port", None).child(
+                        setting_row(theme, "sing-box API port", None).child(
                             div()
                                 .w(px(96.))
                                 .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                                .child(Input::new(&self.clash_api_port_input).cleanable(false)),
+                                .child(Input::new(&self.api_port_input).cleanable(false)),
                         ),
                     ),
             )

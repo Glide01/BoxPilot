@@ -1,4 +1,3 @@
-use crate::core::clash_api::ClashApi;
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
 use crate::core::orchestration::{process_edge_effects, ProcessEdgeEffect};
 use crate::core::process::query_sing_box_version;
@@ -9,6 +8,7 @@ use crate::core::settings::{
     default_auto_update_interval, AppSettings, Profile, ProfileSource, StatusEvent, StatusLevel,
     CONFIG_FILENAME, SING_EXECUTABLE,
 };
+use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::subscription::{
     import_local_config, perform_update, prepare_config, RuntimeOptions, UpdateOutcome,
 };
@@ -209,7 +209,7 @@ impl AppState {
             move |_| ProcessSession::new(logs)
         });
 
-        let api = ClashApi::new(settings.clash_api_port);
+        let api = SingBoxApi::new(settings.api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
 
@@ -227,9 +227,9 @@ impl AppState {
                 this.groups_saw_running = running;
                 for effect in effects {
                     match effect {
-                        ProcessEdgeEffect::RefreshGroups => this
+                        ProcessEdgeEffect::StartGroups => this
                             .proxy_groups
-                            .update(cx, |groups, cx| groups.refresh_from_api(cx)),
+                            .update(cx, |groups, cx| groups.start(cx)),
                         ProcessEdgeEffect::StartTraffic => {
                             this.traffic.update(cx, |traffic, cx| traffic.start(cx))
                         }
@@ -498,6 +498,22 @@ impl AppState {
             return;
         }
 
+        // The runtime config carries the `api` service, which older binaries
+        // reject; say so instead of letting sing-box die on an unknown type.
+        // Unknown version (query failed / still running) → let it try.
+        if let Some(version) = self.sing_box_version.as_deref() {
+            if !supports_api_service(version) {
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Error,
+                    message: format!(
+                        "sing-box {} is too old: BoxPilot needs {} or newer.",
+                        version, MIN_SING_BOX_VERSION
+                    ),
+                });
+                return;
+            }
+        }
+
         if !self.active_config_path().exists() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Error,
@@ -573,15 +589,15 @@ impl AppState {
         cx.notify();
     }
 
-    /// Settings 页改 Clash API 端口:持久化 + 给 ProxyGroups/Traffic 换新的
-    /// `ClashApi` 句柄(下次刷新/启动用它)+ 运行中重启 sing-box 让新
-    /// external_controller 生效。
-    pub fn set_clash_api_port(&mut self, value: u16, cx: &mut Context<Self>) {
-        if self.settings.clash_api_port == value {
+    /// Settings 页改 sing-box API 端口:持久化 + 给 ProxyGroups/Traffic 换新的
+    /// `SingBoxApi` 句柄(下次启动用它)+ 运行中重启 sing-box 让新的 api
+    /// 服务端口生效。
+    pub fn set_api_port(&mut self, value: u16, cx: &mut Context<Self>) {
+        if self.settings.api_port == value {
             return;
         }
-        self.settings.clash_api_port = value;
-        let api = ClashApi::new(value);
+        self.settings.api_port = value;
+        let api = SingBoxApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
         self.save_settings();

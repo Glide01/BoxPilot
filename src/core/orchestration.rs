@@ -9,11 +9,12 @@
 /// `Traffic` entities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessEdgeEffect {
-    /// Stopped→Running: pull live groups from the Clash API.
-    RefreshGroups,
-    /// Stopped→Running: start streaming `/traffic`.
+    /// Stopped→Running: subscribe to live groups from the sing-box API.
+    StartGroups,
+    /// Stopped→Running: start streaming traffic from the sing-box API.
     StartTraffic,
-    /// Running→Stopped: groups are shown only while connected.
+    /// Running→Stopped: groups are shown only while connected; ends the
+    /// group stream.
     ClearGroups,
     /// Running→Stopped: stop the stream and zero the readout.
     StopTraffic,
@@ -27,7 +28,7 @@ pub enum ProcessEdgeEffect {
 pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [ProcessEdgeEffect] {
     match (prev_running, now_running) {
         (false, true) => &[
-            ProcessEdgeEffect::RefreshGroups,
+            ProcessEdgeEffect::StartGroups,
             ProcessEdgeEffect::StartTraffic,
         ],
         (true, false) => &[
@@ -43,11 +44,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn started_edge_refreshes_groups_and_starts_traffic() {
+    fn started_edge_starts_groups_and_traffic() {
         assert_eq!(
             process_edge_effects(false, true),
             &[
-                ProcessEdgeEffect::RefreshGroups,
+                ProcessEdgeEffect::StartGroups,
                 ProcessEdgeEffect::StartTraffic
             ]
         );
@@ -66,7 +67,7 @@ mod tests {
 
     /// Observers fire on every notify (e.g. Preparing→Running keeps
     /// `is_running` false through several notifies) — a non-edge must be a
-    /// no-op or groups would refresh repeatedly per transition.
+    /// no-op or groups would restart repeatedly per transition.
     #[test]
     fn no_edge_means_no_effects() {
         assert!(process_edge_effects(false, false).is_empty());

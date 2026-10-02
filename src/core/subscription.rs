@@ -1,5 +1,5 @@
-use crate::core::clash_api::ClashApi;
-use crate::core::settings::{AppSettings, CLASH_API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
+use crate::core::singbox_api::SingBoxApi;
+use crate::core::settings::{AppSettings, API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs;
@@ -33,10 +33,12 @@ pub enum UpdateOutcome {
 }
 
 /// Strip BoxPilot-managed sections from config (used when saving subscription
-/// data). Both `inbounds` and `experimental` are re-injected mode-specifically
-/// at process start by `prepare_config`, so the canonical on-disk form
-/// contains neither. Subscription-provided `experimental` content is
-/// intentionally discarded — same ownership rule as inbounds.
+/// data). `inbounds`, `experimental` and the `api` service are re-injected at
+/// process start by `prepare_config`, so the canonical on-disk form contains
+/// none of them. Subscription-provided content in those places is
+/// intentionally discarded — same ownership rule as inbounds. Other services
+/// stay; a `services` array left empty is removed so strip ∘ prepare stays the
+/// identity on canonical configs.
 pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
     let mut json: Value = serde_json::from_str(config_data)
         .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
@@ -45,6 +47,12 @@ pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
         .ok_or_else(|| "Config is not a JSON object".to_string())?;
     obj.remove("inbounds");
     obj.remove("experimental");
+    if let Some(services) = obj.get_mut("services").and_then(Value::as_array_mut) {
+        services.retain(|service| service["type"].as_str() != Some("api"));
+        if services.is_empty() {
+            obj.remove("services");
+        }
+    }
     serde_json::to_string_pretty(&json)
         .map_err(|e| format!("Failed to serialize config: {}", e))
 }
@@ -64,7 +72,7 @@ pub struct RuntimeOptions {
     pub proxy_mode: bool,
     pub set_system_proxy: bool,
     pub proxy_port: u16,
-    pub clash_api_port: u16,
+    pub api_port: u16,
     /// TUN mode only: give the TUN interface an IPv6 address so IPv6 traffic
     /// is routed into the tunnel. Off means the interface carries no IPv6
     /// route at all and IPv6 traffic leaves via the physical interface — this
@@ -79,7 +87,7 @@ impl Default for RuntimeOptions {
             proxy_mode: false,
             set_system_proxy: false,
             proxy_port: PROXY_PORT,
-            clash_api_port: CLASH_API_PORT,
+            api_port: API_PORT,
             tun_ipv6: false,
         }
     }
@@ -91,7 +99,7 @@ impl From<&AppSettings> for RuntimeOptions {
             proxy_mode: settings.proxy_mode,
             set_system_proxy: settings.set_system_proxy,
             proxy_port: settings.proxy_port,
-            clash_api_port: settings.clash_api_port,
+            api_port: settings.api_port,
             tun_ipv6: settings.tun_ipv6,
         }
     }
@@ -132,18 +140,35 @@ pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String,
 
     json["inbounds"] = inbounds;
 
-    // Clash API for runtime selector switching. With cache_file enabled,
-    // sing-box (≥1.8) automatically persists the chosen selector node across
-    // restarts (cache.db) — the old `store_selected` field was removed
-    // upstream and now fails config validation as an unknown field.
+    // With cache_file enabled, sing-box (≥1.8) automatically persists the
+    // chosen selector node across restarts (cache.db) — the old
+    // `store_selected` field was removed upstream and now fails config
+    // validation as an unknown field. BoxPilot owns this section, so a
+    // subscription's own clash_api (often on 0.0.0.0) never runs.
     json["experimental"] = serde_json::json!({
-        "clash_api": {
-            "external_controller": ClashApi::new(opts.clash_api_port).external_controller()
-        },
         "cache_file": {
             "enabled": true
         }
     });
+
+    // The sing-box API service (≥1.14) for groups, node switching, delay
+    // tests and the traffic readout. BoxPilot owns the control plane the same
+    // way: any `api` service the subscription brings is dropped (it could
+    // listen beyond loopback, and two would clash over the tag/port), while
+    // its other services pass through untouched.
+    let mut services: Vec<Value> = json
+        .get("services")
+        .and_then(Value::as_array)
+        .map(|services| {
+            services
+                .iter()
+                .filter(|service| service["type"].as_str() != Some("api"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    services.push(SingBoxApi::new(opts.api_port).service_config());
+    json["services"] = Value::Array(services);
 
     serde_json::to_string_pretty(&json)
         .map_err(|e| format!("Failed to serialize config: {}", e))
@@ -285,7 +310,7 @@ fn validate_downloaded_config(
     app_dir: &Path,
     stripped: &str,
 ) -> Result<(), String> {
-    // 校验用的入站/Clash API 端口与运行时无关,固定默认值即可;proxy_mode
+    // 校验用的入站/API 端口与运行时无关,固定默认值即可;proxy_mode
     // 显式设 true,校验的就是注释里说的那个 mixed 形态。
     let prepared = prepare_config(
         stripped,
@@ -370,19 +395,17 @@ mod tests {
         assert!(json.get("experimental").is_none());
     }
 
-    /// BoxPilot owns the `experimental` section: clash_api on the loopback port
-    /// for node switching, cache_file so sing-box persists the user's selector
-    /// choices across restarts and subscription updates (automatic when
-    /// enabled — sing-box ≥1.8 removed `store_selected` and rejects it as an
-    /// unknown field, so we must NOT inject it).
+    /// BoxPilot owns the `experimental` section: only cache_file, so sing-box
+    /// persists the user's selector choices across restarts and subscription
+    /// updates (automatic when enabled — sing-box ≥1.8 removed
+    /// `store_selected` and rejects it as an unknown field, so we must NOT
+    /// inject it). The subscription's clash_api is gone: the sing-box API
+    /// service replaced it.
     #[test]
-    fn prepare_injects_clash_api_and_cache_file() {
+    fn prepare_injects_cache_file_and_drops_clash_api() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
         let prepared = parse(&prepare_config(&stripped, proxy_opts()).unwrap());
-        assert_eq!(
-            prepared["experimental"]["clash_api"]["external_controller"],
-            format!("127.0.0.1:{}", CLASH_API_PORT)
-        );
+        assert!(prepared["experimental"].get("clash_api").is_none());
         assert_eq!(prepared["experimental"]["cache_file"]["enabled"], true);
         assert!(
             prepared["experimental"]["cache_file"]
@@ -390,6 +413,53 @@ mod tests {
                 .is_none(),
             "store_selected was removed upstream; injecting it fails sing-box config validation"
         );
+    }
+
+    #[test]
+    fn prepare_injects_api_service_on_loopback() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        let prepared = parse(&prepare_config(&stripped, proxy_opts()).unwrap());
+        let services = prepared["services"].as_array().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0]["type"], "api");
+        assert_eq!(services[0]["listen"], "127.0.0.1");
+        assert_eq!(services[0]["listen_port"], API_PORT);
+    }
+
+    /// A subscription's own `api` service is replaced by ours; its other
+    /// services survive in order.
+    #[test]
+    fn prepare_replaces_subscription_api_service_and_keeps_others() {
+        let config = r#"{
+            "outbounds": [{"type": "direct", "tag": "direct"}],
+            "services": [
+                {"type": "resolved", "tag": "resolved"},
+                {"type": "api", "tag": "api", "listen": "0.0.0.0", "listen_port": 9090},
+                {"type": "derp", "tag": "derp"}
+            ]
+        }"#;
+        let prepared = parse(&prepare_config(config, proxy_opts()).unwrap());
+        let services = prepared["services"].as_array().unwrap();
+        let types: Vec<&str> = services.iter().map(|s| s["type"].as_str().unwrap()).collect();
+        assert_eq!(types, vec!["resolved", "derp", "api"]);
+        assert_eq!(services[2]["listen"], "127.0.0.1");
+    }
+
+    #[test]
+    fn strip_removes_api_services_and_keeps_others() {
+        let config = r#"{
+            "services": [
+                {"type": "api", "tag": "api", "listen": "0.0.0.0", "listen_port": 9090},
+                {"type": "resolved", "tag": "resolved"}
+            ]
+        }"#;
+        let json = parse(&strip_inbounds(config).unwrap());
+        let services = json["services"].as_array().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0]["type"], "resolved");
+
+        let only_api = r#"{"services": [{"type": "api", "tag": "api"}]}"#;
+        assert!(parse(&strip_inbounds(only_api).unwrap()).get("services").is_none());
     }
 
     #[test]
@@ -428,22 +498,19 @@ mod tests {
     }
 
     #[test]
-    fn prepare_uses_custom_clash_api_port() {
+    fn prepare_uses_custom_api_port() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
         let prepared = parse(
             &prepare_config(
                 &stripped,
                 RuntimeOptions {
-                    clash_api_port: 17900,
+                    api_port: 17900,
                     ..proxy_opts()
                 },
             )
             .unwrap(),
         );
-        assert_eq!(
-            prepared["experimental"]["clash_api"]["external_controller"],
-            "127.0.0.1:17900"
-        );
+        assert_eq!(prepared["services"][0]["listen_port"], 17900);
     }
 
     #[test]
