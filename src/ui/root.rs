@@ -3,14 +3,16 @@ use crate::core::bytefmt::format_speed;
 use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
-use crate::ui::pages::{ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage};
+use crate::ui::pages::{
+    ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage, ToolsPage,
+};
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt};
 
 /// Top-level view: sidebar navigation + the active page, owns the
-/// keyboard-shortcut action handlers and the toast routing. All five page
+/// keyboard-shortcut action handlers and the toast routing. All page
 /// entities stay alive across switches (so input state survives); only the
 /// active one is rendered.
 pub struct RootView {
@@ -20,6 +22,7 @@ pub struct RootView {
     groups: Entity<GroupsPage>,
     profiles: Entity<ProfilesPage>,
     logs: Entity<LogsPage>,
+    tools: Entity<ToolsPage>,
     settings: Entity<SettingsPage>,
     toasts: Entity<Toasts>,
 }
@@ -30,6 +33,7 @@ impl RootView {
         let groups = cx.new(|cx| GroupsPage::new(app_state.clone(), cx));
         let profiles = cx.new(|cx| ProfilesPage::new(app_state.clone(), cx));
         let logs = cx.new(|cx| LogsPage::new(app_state.clone(), window, cx));
+        let tools = cx.new(|cx| ToolsPage::new(app_state.clone(), window, cx));
         let settings = cx.new(|cx| SettingsPage::new(app_state.clone(), window, cx));
         let toasts = toast::init(cx);
 
@@ -88,6 +92,7 @@ impl RootView {
             groups,
             profiles,
             logs,
+            tools,
             settings,
             toasts,
         }
@@ -192,6 +197,7 @@ impl Render for RootView {
             ActivePage::Groups => self.groups.clone().into(),
             ActivePage::Profiles => self.profiles.clone().into(),
             ActivePage::Logs => self.logs.clone().into(),
+            ActivePage::Tools => self.tools.clone().into(),
             ActivePage::Settings => self.settings.clone().into(),
         };
 

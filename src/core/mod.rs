@@ -1,5 +1,6 @@
 pub mod bytefmt;
 pub mod deeplink;
+pub mod network_tools;
 pub mod orchestration;
 pub mod presentation;
 pub mod profile_draft;

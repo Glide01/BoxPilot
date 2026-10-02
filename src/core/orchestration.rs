@@ -5,19 +5,23 @@
 //! way so the core test shim keeps working.
 
 /// What the app must do in response to a process Running/Stopped transition.
-/// `AppState`'s process observer maps these onto the `ProxyGroups` and
-/// `Traffic` entities.
+/// `AppState`'s process observer maps these onto the `ProxyGroups`,
+/// `Traffic` and `NetworkTools` entities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessEdgeEffect {
     /// Stopped→Running: subscribe to live groups from the sing-box API.
     StartGroups,
     /// Stopped→Running: start streaming traffic from the sing-box API.
     StartTraffic,
+    /// Stopped→Running: load the outbound list the Tools page tests through.
+    StartNetworkTools,
     /// Running→Stopped: groups are shown only while connected; ends the
     /// group stream.
     ClearGroups,
     /// Running→Stopped: stop the stream and zero the readout.
     StopTraffic,
+    /// Running→Stopped: cancel any running test and clear the Tools page.
+    StopNetworkTools,
 }
 
 /// Decide the effects of an observed process-state change. gpui observers
@@ -30,10 +34,12 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
         (false, true) => &[
             ProcessEdgeEffect::StartGroups,
             ProcessEdgeEffect::StartTraffic,
+            ProcessEdgeEffect::StartNetworkTools,
         ],
         (true, false) => &[
             ProcessEdgeEffect::ClearGroups,
             ProcessEdgeEffect::StopTraffic,
+            ProcessEdgeEffect::StopNetworkTools,
         ],
         _ => &[],
     }
@@ -49,7 +55,8 @@ mod tests {
             process_edge_effects(false, true),
             &[
                 ProcessEdgeEffect::StartGroups,
-                ProcessEdgeEffect::StartTraffic
+                ProcessEdgeEffect::StartTraffic,
+                ProcessEdgeEffect::StartNetworkTools,
             ]
         );
     }
@@ -60,7 +67,8 @@ mod tests {
             process_edge_effects(true, false),
             &[
                 ProcessEdgeEffect::ClearGroups,
-                ProcessEdgeEffect::StopTraffic
+                ProcessEdgeEffect::StopTraffic,
+                ProcessEdgeEffect::StopNetworkTools,
             ]
         );
     }

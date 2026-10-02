@@ -1,4 +1,4 @@
-//! Left navigation column: app title header, five page items, and a footer
+//! Left navigation column: app title header, the page items, and a footer
 //! holding a live up/down network-speed row (only while connected) above the
 //! connection-status row (dot + label). Pure function — `RootView` supplies the
 //! active page, status, speeds, and the navigation callback.
@@ -35,6 +35,7 @@ pub fn sidebar(
         (ActivePage::Groups, "Groups", IconName::Globe),
         (ActivePage::Profiles, "Profiles", IconName::GalleryVerticalEnd),
         (ActivePage::Logs, "Logs", IconName::SquareTerminal),
+        (ActivePage::Tools, "Tools", IconName::Network),
         (ActivePage::Settings, "Settings", IconName::Settings),
     ];
 

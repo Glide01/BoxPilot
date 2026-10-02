@@ -14,6 +14,7 @@ use crate::core::subscription::{
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
 use crate::state::log_buffer::LogBuffer;
+use crate::state::network_tools::NetworkTools;
 use crate::state::process_session::{PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
 use crate::state::traffic::Traffic;
@@ -111,6 +112,8 @@ pub struct AppState {
     pub proxy_groups: Entity<ProxyGroups>,
     /// Live up/down network rate; streamed while sing-box is running.
     pub traffic: Entity<Traffic>,
+    /// Tools page test runs; enabled while sing-box is running.
+    pub network_tools: Entity<NetworkTools>,
     /// Last `is_running()` seen by the process observer — detects
     /// Running/Stopped edges so groups + traffic refresh exactly once per
     /// transition.
@@ -212,6 +215,7 @@ impl AppState {
         let api = SingBoxApi::new(settings.api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
+        let network_tools = cx.new(|_| NetworkTools::new(api));
 
         cx.new(|cx| {
             // Drive ProxyGroups + Traffic from process Running/Stopped edges.
@@ -239,6 +243,12 @@ impl AppState {
                         ProcessEdgeEffect::StopTraffic => {
                             this.traffic.update(cx, |traffic, cx| traffic.stop(cx))
                         }
+                        ProcessEdgeEffect::StartNetworkTools => this
+                            .network_tools
+                            .update(cx, |tools, cx| tools.start(cx)),
+                        ProcessEdgeEffect::StopNetworkTools => this
+                            .network_tools
+                            .update(cx, |tools, cx| tools.stop(cx)),
                     }
                 }
             })
@@ -414,6 +424,7 @@ impl AppState {
                 logs,
                 proxy_groups,
                 traffic,
+                network_tools,
                 groups_saw_running: false,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
@@ -600,6 +611,7 @@ impl AppState {
         let api = SingBoxApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.network_tools.update(cx, |tools, _| tools.set_api(api));
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();
