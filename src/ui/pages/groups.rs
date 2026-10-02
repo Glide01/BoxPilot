@@ -260,7 +260,10 @@ impl Render for GroupsPage {
                                     }),
                                 );
                                 if pair.len() == 1 {
-                                    row = row.child(div().flex_1());
+                                    // 占位与 node_card 同样的 px_3 + border_1:flex_1 的
+                                    // 基准尺寸不小于内边距+边框,占位少了它们,单张卡会比
+                                    // 上面成对的卡宽一截。
+                                    row = row.child(div().flex_1().px_3().border_1());
                                 }
                                 row
                             });

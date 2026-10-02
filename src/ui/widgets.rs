@@ -45,16 +45,21 @@ pub fn empty_card(
 }
 
 /// A labeled settings row: label (+ optional hint) on the left, the caller's
-/// control appended as the right-hand child.
+/// control appended as the right-hand child. The text column takes the
+/// leftover width and wraps, so a long hint never pushes the control out of
+/// its card.
 pub fn setting_row(theme: &Theme, label: &'static str, description: Option<&'static str>) -> Div {
     div()
         .h_flex()
         .items_center()
         .justify_between()
+        .gap_4()
         .w_full()
         .child(
             div()
                 .v_flex()
+                .flex_1()
+                .min_w_0()
                 .gap_1()
                 .child(
                     div()

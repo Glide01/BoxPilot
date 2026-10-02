@@ -13,6 +13,7 @@ use gpui::*;
 use gpui_component::{
     button::Button,
     input::{Input, InputEvent, InputState},
+    scroll::ScrollableElement,
     switch::Switch,
     ActiveTheme, Disableable, Sizable, StyledExt,
 };
@@ -147,11 +148,9 @@ impl Render for SettingsPage {
                 "Copied fish proxy command.",
             ));
 
-        div()
+        let cards = div()
             .v_flex()
-            .size_full()
             .gap_4()
-            .child(page_header(theme, "Settings"))
             .child(
                 card_frame(theme)
                     .child(section_label("NETWORK"))
@@ -229,6 +228,13 @@ impl Render for SettingsPage {
                                 .child(sing_box_version),
                         ),
                     ),
-            )
+            );
+
+        div()
+            .v_flex()
+            .size_full()
+            .gap_4()
+            .child(page_header(theme, "Settings"))
+            .child(div().flex_1().min_h_0().child(cards.overflow_y_scrollbar()))
     }
 }

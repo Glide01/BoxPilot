@@ -9,7 +9,8 @@ use crate::ui::card_frame;
 use crate::ui::widgets::setting_row;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    button::{Button, ButtonVariants}, spinner::Spinner, switch::Switch, tab::TabBar,
+    button::{Button, ButtonVariants}, scroll::ScrollableElement, spinner::Spinner,
+    switch::Switch, tab::TabBar,
     theme::Theme, ActiveTheme, Disableable,
     Icon, Sizable, StyledExt,
 };
@@ -385,6 +386,9 @@ impl Render for HomePage {
                         ),
                 ),
             )
+            // 窗口矮(最小 500 高、已连接时多出状态条和 Clash 模式卡)时
+            // 整页滚动;够高时内容 min_h_full,Hero 区照旧吃掉剩余空间。
+            .overflow_y_scrollbar()
             .into_any_element()
     }
 }
