@@ -3,14 +3,16 @@ use crate::core::bytefmt::format_speed;
 use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
-use crate::ui::pages::{ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage};
+use crate::ui::pages::{
+    ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
+};
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt};
 
 /// Top-level view: sidebar navigation + the active page, owns the
-/// keyboard-shortcut action handlers and the toast routing. All five page
+/// keyboard-shortcut action handlers and the toast routing. All page
 /// entities stay alive across switches (so input state survives); only the
 /// active one is rendered.
 pub struct RootView {
@@ -18,6 +20,7 @@ pub struct RootView {
     active_page: ActivePage,
     home: Entity<HomePage>,
     groups: Entity<GroupsPage>,
+    connections: Entity<ConnectionsPage>,
     profiles: Entity<ProfilesPage>,
     logs: Entity<LogsPage>,
     settings: Entity<SettingsPage>,
@@ -28,6 +31,7 @@ impl RootView {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let home = cx.new(|cx| HomePage::new(app_state.clone(), cx));
         let groups = cx.new(|cx| GroupsPage::new(app_state.clone(), cx));
+        let connections = cx.new(|cx| ConnectionsPage::new(app_state.clone(), window, cx));
         let profiles = cx.new(|cx| ProfilesPage::new(app_state.clone(), cx));
         let logs = cx.new(|cx| LogsPage::new(app_state.clone(), window, cx));
         let settings = cx.new(|cx| SettingsPage::new(app_state.clone(), window, cx));
@@ -41,6 +45,8 @@ impl RootView {
         Self::route_status_toasts(&proxy_groups, window, cx);
         let clash_mode = app_state.read(cx).clash_mode.clone();
         Self::route_status_toasts(&clash_mode, window, cx);
+        let connection_list = app_state.read(cx).connections.clone();
+        Self::route_status_toasts(&connection_list, window, cx);
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();
@@ -88,6 +94,7 @@ impl RootView {
             active_page: ActivePage::Home,
             home,
             groups,
+            connections,
             profiles,
             logs,
             settings,
@@ -192,6 +199,7 @@ impl Render for RootView {
         let page: AnyView = match self.active_page {
             ActivePage::Home => self.home.clone().into(),
             ActivePage::Groups => self.groups.clone().into(),
+            ActivePage::Connections => self.connections.clone().into(),
             ActivePage::Profiles => self.profiles.clone().into(),
             ActivePage::Logs => self.logs.clone().into(),
             ActivePage::Settings => self.settings.clone().into(),

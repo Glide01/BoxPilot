@@ -21,6 +21,16 @@ groups, node switching, delay tests and traffic. Replaced the Clash API
 (`experimental.clash_api`), which BoxPilot no longer enables.
 _Avoid_: Clash API, external controller, core API
 
+**Connection**:
+One network flow (a TCP stream or UDP association) that sing-box is
+proxying, as the sing-box API reports it: its destination, the inbound that
+accepted it, the route rule that matched, and the outbound chain that
+carries it (shown group → node). Listed on the Connections page while open,
+and for a while after it closes — sing-box remembers the last 1000 closed
+ones. Unrelated to BoxPilot's "Connected" status, which means sing-box is
+running.
+_Avoid_: request, session
+
 **BoxPilot version**:
 The version of the BoxPilot app itself (the Cargo package version).
 

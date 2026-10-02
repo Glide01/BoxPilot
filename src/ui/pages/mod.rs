@@ -1,12 +1,14 @@
 //! Page views for the sidebar-navigation layout. One entity per page;
-//! `RootView` keeps all five alive and renders the active one.
+//! `RootView` keeps all of them alive and renders the active one.
 
+pub mod connections;
 pub mod groups;
 pub mod home;
 pub mod logs;
 pub mod profiles;
 pub mod settings;
 
+pub use connections::ConnectionsPage;
 pub use groups::GroupsPage;
 pub use home::HomePage;
 pub use logs::LogsPage;
@@ -19,6 +21,7 @@ pub use settings::SettingsPage;
 pub enum ActivePage {
     Home,
     Groups,
+    Connections,
     Profiles,
     Logs,
     Settings,

@@ -6,7 +6,7 @@
 
 /// What the app must do in response to a process Running/Stopped transition.
 /// `AppState`'s process observer maps these onto the `ProxyGroups`,
-/// `Traffic` and `ClashMode` entities.
+/// `Traffic`, `ClashMode` and `Connections` entities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessEdgeEffect {
     /// Stopped→Running: subscribe to live groups from the sing-box API.
@@ -15,6 +15,8 @@ pub enum ProcessEdgeEffect {
     StartTraffic,
     /// Stopped→Running: load the clash mode list and follow the current mode.
     StartClashMode,
+    /// Stopped→Running: subscribe to the live connection list.
+    StartConnections,
     /// Running→Stopped: groups are shown only while connected; ends the
     /// group stream.
     ClearGroups,
@@ -22,6 +24,9 @@ pub enum ProcessEdgeEffect {
     StopTraffic,
     /// Running→Stopped: end the mode stream; the switcher hides.
     ClearClashMode,
+    /// Running→Stopped: end the connection stream and empty the list —
+    /// connections belong to one sing-box run.
+    StopConnections,
 }
 
 /// Decide the effects of an observed process-state change. gpui observers
@@ -35,11 +40,13 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
             ProcessEdgeEffect::StartGroups,
             ProcessEdgeEffect::StartTraffic,
             ProcessEdgeEffect::StartClashMode,
+            ProcessEdgeEffect::StartConnections,
         ],
         (true, false) => &[
             ProcessEdgeEffect::ClearGroups,
             ProcessEdgeEffect::StopTraffic,
             ProcessEdgeEffect::ClearClashMode,
+            ProcessEdgeEffect::StopConnections,
         ],
         _ => &[],
     }
@@ -56,7 +63,8 @@ mod tests {
             &[
                 ProcessEdgeEffect::StartGroups,
                 ProcessEdgeEffect::StartTraffic,
-                ProcessEdgeEffect::StartClashMode
+                ProcessEdgeEffect::StartClashMode,
+                ProcessEdgeEffect::StartConnections,
             ]
         );
     }
@@ -68,7 +76,8 @@ mod tests {
             &[
                 ProcessEdgeEffect::ClearGroups,
                 ProcessEdgeEffect::StopTraffic,
-                ProcessEdgeEffect::ClearClashMode
+                ProcessEdgeEffect::ClearClashMode,
+                ProcessEdgeEffect::StopConnections,
             ]
         );
     }
