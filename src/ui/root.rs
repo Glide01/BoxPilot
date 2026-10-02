@@ -5,6 +5,7 @@ use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
 use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
+    ToolsPage,
 };
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
@@ -23,6 +24,7 @@ pub struct RootView {
     connections: Entity<ConnectionsPage>,
     profiles: Entity<ProfilesPage>,
     logs: Entity<LogsPage>,
+    tools: Entity<ToolsPage>,
     settings: Entity<SettingsPage>,
     toasts: Entity<Toasts>,
 }
@@ -34,6 +36,7 @@ impl RootView {
         let connections = cx.new(|cx| ConnectionsPage::new(app_state.clone(), window, cx));
         let profiles = cx.new(|cx| ProfilesPage::new(app_state.clone(), cx));
         let logs = cx.new(|cx| LogsPage::new(app_state.clone(), window, cx));
+        let tools = cx.new(|cx| ToolsPage::new(app_state.clone(), window, cx));
         let settings = cx.new(|cx| SettingsPage::new(app_state.clone(), window, cx));
         let toasts = toast::init(cx);
 
@@ -97,6 +100,7 @@ impl RootView {
             connections,
             profiles,
             logs,
+            tools,
             settings,
             toasts,
         }
@@ -202,6 +206,7 @@ impl Render for RootView {
             ActivePage::Connections => self.connections.clone().into(),
             ActivePage::Profiles => self.profiles.clone().into(),
             ActivePage::Logs => self.logs.clone().into(),
+            ActivePage::Tools => self.tools.clone().into(),
             ActivePage::Settings => self.settings.clone().into(),
         };
 

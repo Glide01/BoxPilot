@@ -8,6 +8,7 @@ use std::borrow::Cow;
 const POWER_SVG: &[u8] = include_bytes!("../../assets/icons/power.svg");
 const PENCIL_SVG: &[u8] = include_bytes!("../../assets/icons/pencil.svg");
 const REFRESH_CW_SVG: &[u8] = include_bytes!("../../assets/icons/refresh-cw.svg");
+const GAUGE_SVG: &[u8] = include_bytes!("../../assets/icons/gauge.svg");
 
 pub struct AppAssets;
 
@@ -17,6 +18,7 @@ impl AssetSource for AppAssets {
             "icons/power.svg" => Ok(Some(Cow::Borrowed(POWER_SVG))),
             "icons/pencil.svg" => Ok(Some(Cow::Borrowed(PENCIL_SVG))),
             "icons/refresh-cw.svg" => Ok(Some(Cow::Borrowed(REFRESH_CW_SVG))),
+            "icons/gauge.svg" => Ok(Some(Cow::Borrowed(GAUGE_SVG))),
             _ => Assets.load(path),
         }
     }

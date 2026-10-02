@@ -31,12 +31,14 @@ pub fn sidebar(
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let items = [
-        (ActivePage::Home, "Home", IconName::LayoutDashboard),
-        (ActivePage::Groups, "Groups", IconName::Globe),
-        (ActivePage::Connections, "Connections", IconName::Network),
-        (ActivePage::Profiles, "Profiles", IconName::GalleryVerticalEnd),
-        (ActivePage::Logs, "Logs", IconName::SquareTerminal),
-        (ActivePage::Settings, "Settings", IconName::Settings),
+        (ActivePage::Home, "Home", Icon::new(IconName::LayoutDashboard)),
+        (ActivePage::Groups, "Groups", Icon::new(IconName::Globe)),
+        (ActivePage::Connections, "Connections", Icon::new(IconName::Network)),
+        (ActivePage::Profiles, "Profiles", Icon::new(IconName::GalleryVerticalEnd)),
+        (ActivePage::Logs, "Logs", Icon::new(IconName::SquareTerminal)),
+        // gauge.svg isn't in gpui-component's IconName set; AppAssets serves it.
+        (ActivePage::Tools, "Tools", Icon::empty().path("icons/gauge.svg")),
+        (ActivePage::Settings, "Settings", Icon::new(IconName::Settings)),
     ];
 
     Sidebar::new("nav")
