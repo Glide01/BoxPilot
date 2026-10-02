@@ -127,7 +127,7 @@ impl Render for SettingsPage {
                         setting_row(theme, "Local proxy port", None).child(
                             div()
                                 .w(px(96.))
-                                .on_mouse_down_out(|_, window, _| window.blur())
+                                .on_mouse_down_out(|_, window, cx| window.blur(cx))
                                 .child(Input::new(&self.port_input).cleanable(false)),
                         ),
                     )
@@ -135,7 +135,7 @@ impl Render for SettingsPage {
                         setting_row(theme, "Clash API port", None).child(
                             div()
                                 .w(px(96.))
-                                .on_mouse_down_out(|_, window, _| window.blur())
+                                .on_mouse_down_out(|_, window, cx| window.blur(cx))
                                 .child(Input::new(&self.clash_api_port_input).cleanable(false)),
                         ),
                     ),

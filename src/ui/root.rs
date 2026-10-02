@@ -7,7 +7,7 @@ use crate::ui::pages::{ActivePage, GroupsPage, HomePage, LogsPage, ProfilesPage,
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
-use gpui_component::{ActiveTheme, Root, StyledExt, WindowExt};
+use gpui_component::{ActiveTheme, StyledExt, WindowExt};
 
 /// Top-level view: sidebar navigation + the active page, owns the
 /// keyboard-shortcut action handlers and the toast routing. All five page
@@ -155,7 +155,7 @@ impl RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let process = self.app_state.read(cx).process.clone();
         let process = process.read(cx);
         let is_running = process.is_running();
@@ -195,8 +195,6 @@ impl Render for RootView {
             ActivePage::Settings => self.settings.clone().into(),
         };
 
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-
         div()
             .key_context("BoxPilot")
             .on_action(cx.listener(Self::on_update_sub))
@@ -218,6 +216,5 @@ impl Render for RootView {
             ))
             .child(div().flex_1().min_w_0().v_flex().p_6().child(page))
             .child(self.toasts.clone())
-            .children(dialog_layer)
     }
 }

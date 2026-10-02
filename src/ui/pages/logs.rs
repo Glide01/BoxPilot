@@ -6,33 +6,32 @@ use crate::ui::widgets::{empty_card, page_header};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
-    input::{Input, InputState},
+    input::{Textarea, TextareaState},
     ActiveTheme, IconName, Sizable, StyledExt,
 };
 use std::collections::VecDeque;
 
 /// 日志页:标题行(标题 + 计数 + 过滤 pills + 清空)在内容卡片**外面**(与
-/// Groups 页一致);卡片内是一个只读的多行 `Input`,承载(按当前过滤后的)
+/// Groups 页一致);卡片内是一个只读的 `Textarea`,承载(按当前过滤后的)
 /// 日志文本——这样用户能用鼠标拖选、复制(⌘/Ctrl+C 或右键菜单),并在关掉
 /// 软换行后横向滚动查看长行。卡片 `flex_1 + min_h_0` 占满标题行外的剩余高度。
 ///
-/// 只读靠 `Input::disabled(true)`:gpui-component 里 `disabled` 只拦截编辑动作,
-/// 聚焦 / 选中 / 复制的监听器仍无条件挂着;`appearance(false)` 去掉边框背景,
-/// 看起来就是一块普通文本面板。日志内容在 `observe_in` 里随 LogBuffer / 过滤
-/// 变化重新灌入(`set_value`,仅在文本真的变化时调用)。注意 `set_value` 会把
+/// 只读靠 `Textarea::readonly(true)`:只拒绝用户编辑,聚焦 / 选中 / 复制照常;
+/// `appearance(false)` 去掉边框背景,看起来就是一块普通文本面板。日志内容在
+/// `observe_in` 里随 LogBuffer / 过滤变化重新灌入(`set_value`,仅在文本真的变化时调用)。注意 `set_value` 会把
 /// 滚动条复位到顶部,所以流式刷新时视图会回到顶部——停止后内容稳定,选中 /
 /// 复制 / 滚动都不受影响。
 pub struct LogsPage {
     app_state: Entity<AppState>,
-    /// 只读多行 Input,承载日志文本,供鼠标选中 / 复制 / 横向滚动。
-    viewer: Entity<InputState>,
+    /// 只读 Textarea,承载日志文本,供鼠标选中 / 复制 / 横向滚动。
+    viewer: Entity<TextareaState>,
 }
 
 impl LogsPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let logs = app_state.read(cx).logs.clone();
 
-        let viewer = cx.new(|cx| InputState::new(window, cx).multi_line(true).soft_wrap(false));
+        let viewer = cx.new(|cx| TextareaState::new(window, cx).soft_wrap(false));
 
         // 初始灌入已有日志(启动时通常为空)。
         let initial = {
@@ -164,14 +163,14 @@ impl Render for LogsPage {
             )
             .into_any_element()
         } else {
-            // 只读、无边框、不换行的多行 Input:鼠标可拖选 + 复制 + 横向滚动。
+            // 只读、无边框、不换行的 Textarea:鼠标可拖选 + 复制 + 横向滚动。
             card_frame(theme)
                 .flex_1()
                 .min_h_0()
                 .child(
-                    Input::new(&self.viewer)
+                    Textarea::new(&self.viewer)
                         .appearance(false)
-                        .disabled(true)
+                        .readonly(true)
                         .h_full()
                         .text_sm()
                         .font_family("monospace"),
