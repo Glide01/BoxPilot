@@ -30,6 +30,8 @@ pub fn sidebar(
     speed_color: Hsla,
     // Tailscale 页仅在运行中的配置有 Tailscale endpoint 时出现。
     show_tailscale: bool,
+    // VPN 页入口:仅当运行中的配置含 OpenConnect / OpenVPN / USB/IP 时显示。
+    show_vpn: bool,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let items = [
@@ -37,12 +39,20 @@ pub fn sidebar(
         (ActivePage::Groups, "Groups", Icon::new(IconName::Globe)),
         (ActivePage::Connections, "Connections", Icon::new(IconName::Network)),
         (ActivePage::Tailscale, "Tailscale", Icon::new(IconName::Frame)),
+        // gauge.svg / shield-check.svg aren't in gpui-component's IconName
+        // set; AppAssets serves them.
+        (ActivePage::Vpn, "VPN", Icon::empty().path("icons/shield-check.svg")),
         (ActivePage::Profiles, "Profiles", Icon::new(IconName::GalleryVerticalEnd)),
         (ActivePage::Logs, "Logs", Icon::new(IconName::SquareTerminal)),
-        // gauge.svg isn't in gpui-component's IconName set; AppAssets serves it.
         (ActivePage::Tools, "Tools", Icon::empty().path("icons/gauge.svg")),
         (ActivePage::Settings, "Settings", Icon::new(IconName::Settings)),
     ];
+    // Tailscale / VPN are offered only while the running config needs them.
+    let items = items.into_iter().filter(|(page, ..)| match page {
+        ActivePage::Tailscale => show_tailscale,
+        ActivePage::Vpn => show_vpn,
+        _ => true,
+    });
 
     Sidebar::new("nav")
         .collapsible(false)
@@ -55,9 +65,7 @@ pub fn sidebar(
                     .child("BoxPilot"),
             ),
         )
-        .child(SidebarMenu::new().children(items.into_iter().filter(|(page, ..)| {
-            *page != ActivePage::Tailscale || show_tailscale
-        }).map(|(page, label, icon)| {
+        .child(SidebarMenu::new().children(items.map(|(page, label, icon)| {
             let on_nav = on_nav.clone();
             SidebarMenuItem::new(label)
                 .icon(icon)

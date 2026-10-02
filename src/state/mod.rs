@@ -14,6 +14,8 @@
 //!   stream), plus closing one or all of them
 //! - [`NetworkTools`] — Tools page: network quality / STUN test runs
 //! - [`TailscaleState`] — Tailscale endpoints, Taildrop inboxes, peer ping
+//! - [`VpnStatus`] — OpenConnect / OpenVPN endpoints and USB/IP servers
+//!   (sing-box API status streams + sign-in challenges)
 //! - [`AppState`] — settings, paths, status, owns the other entities
 
 pub mod app_state;
@@ -25,6 +27,7 @@ pub mod process_session;
 pub mod proxy_groups;
 pub mod tailscale;
 pub mod traffic;
+pub mod vpn;
 
 pub use app_state::{ActivateRequested, AppState, ImportRequested};
 pub use clash_mode::ClashMode;
@@ -35,3 +38,4 @@ pub use process_session::{PendingStart, ProcessSession, ProcessState};
 pub use proxy_groups::{DelayState, GroupSource, ProxyGroups};
 pub use tailscale::TailscaleState;
 pub use traffic::Traffic;
+pub use vpn::{ChallengeRequested, VpnStatus};

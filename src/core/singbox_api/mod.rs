@@ -35,12 +35,15 @@ mod diagnostics;
 mod groups;
 mod logs;
 mod notifications;
+mod openconnect;
+mod openvpn;
 mod pb;
 mod service;
 mod status;
 mod taildrop;
 mod tailscale;
 mod transport;
+mod usbip;
 
 pub use clash_mode::*;
 pub use connections::*;
@@ -48,11 +51,14 @@ pub use diagnostics::*;
 pub use groups::*;
 pub use logs::*;
 pub use notifications::*;
+pub use openconnect::*;
+pub use openvpn::*;
 pub use service::*;
 pub use status::*;
 pub use taildrop::*;
 pub use tailscale::*;
 pub use transport::{grpc_code, ApiError, IDLE_STREAM_READ_TIMEOUT};
+pub use usbip::*;
 
 use serde_json::Value;
 

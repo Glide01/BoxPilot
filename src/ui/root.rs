@@ -5,7 +5,7 @@ use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
 use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
-    TailscalePage, ToolsPage,
+    TailscalePage, ToolsPage, VpnPage,
 };
 use crate::ui::sidebar::sidebar;
 use crate::ui::toast::{self, Toasts};
@@ -30,6 +30,7 @@ pub struct RootView {
     /// Whether the sidebar currently offers the Tailscale page (the running
     /// config has Tailscale endpoints).
     tailscale_visible: bool,
+    vpn: Entity<VpnPage>,
     toasts: Entity<Toasts>,
 }
 
@@ -43,6 +44,7 @@ impl RootView {
         let tools = cx.new(|cx| ToolsPage::new(app_state.clone(), window, cx));
         let settings = cx.new(|cx| SettingsPage::new(app_state.clone(), window, cx));
         let tailscale = cx.new(|cx| TailscalePage::new(app_state.clone(), window, cx));
+        let vpn = cx.new(|cx| VpnPage::new(app_state.clone(), window, cx));
         let toasts = toast::init(cx);
 
         // Every StatusEvent emitter routes to the same single toast slot.
@@ -71,6 +73,10 @@ impl RootView {
             }
         })
         .detach();
+        let vpn_status = app_state.read(cx).vpn.clone();
+        Self::route_status_toasts(&vpn_status, window, cx);
+        // The VPN sidebar entry comes and goes with the running config.
+        cx.observe(&vpn_status, |_, _, cx| cx.notify()).detach();
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();
@@ -125,6 +131,7 @@ impl RootView {
             settings,
             tailscale,
             tailscale_visible: false,
+            vpn,
             toasts,
         }
     }
@@ -212,6 +219,12 @@ impl Render for RootView {
             (format_speed(traffic.down), format_speed(traffic.up))
         });
 
+        let show_vpn = self.app_state.read(cx).vpn.read(cx).is_visible();
+        if self.active_page == ActivePage::Vpn && !show_vpn {
+            // Its entry just disappeared (sing-box stopped): fall back.
+            self.active_page = ActivePage::Home;
+        }
+
         let view = cx.entity().downgrade();
         let on_nav = move |page: ActivePage, _: &mut Window, cx: &mut App| {
             view.update(cx, |this, cx| {
@@ -228,6 +241,7 @@ impl Render for RootView {
             ActivePage::Groups => self.groups.clone().into(),
             ActivePage::Connections => self.connections.clone().into(),
             ActivePage::Tailscale => self.tailscale.clone().into(),
+            ActivePage::Vpn => self.vpn.clone().into(),
             ActivePage::Profiles => self.profiles.clone().into(),
             ActivePage::Logs => self.logs.clone().into(),
             ActivePage::Tools => self.tools.clone().into(),
@@ -252,6 +266,7 @@ impl Render for RootView {
                 speed,
                 speed_color,
                 self.tailscale_visible,
+                show_vpn,
                 on_nav,
             ))
             .child(div().flex_1().min_w_0().v_flex().p_6().child(page))
