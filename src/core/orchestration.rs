@@ -31,6 +31,10 @@ pub enum ProcessEdgeEffect {
     StopConnections,
     /// Running→Stopped: cancel any running test and clear the Tools page.
     StopNetworkTools,
+    /// Stopped→Running: stream Tailscale endpoint status + Taildrop inboxes.
+    StartTailscale,
+    /// Running→Stopped: forget the endpoints (hides the Tailscale page).
+    ClearTailscale,
 }
 
 /// Decide the effects of an observed process-state change. gpui observers
@@ -46,6 +50,7 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
             ProcessEdgeEffect::StartClashMode,
             ProcessEdgeEffect::StartConnections,
             ProcessEdgeEffect::StartNetworkTools,
+            ProcessEdgeEffect::StartTailscale,
         ],
         (true, false) => &[
             ProcessEdgeEffect::ClearGroups,
@@ -53,6 +58,7 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
             ProcessEdgeEffect::ClearClashMode,
             ProcessEdgeEffect::StopConnections,
             ProcessEdgeEffect::StopNetworkTools,
+            ProcessEdgeEffect::ClearTailscale,
         ],
         _ => &[],
     }
@@ -72,6 +78,7 @@ mod tests {
                 ProcessEdgeEffect::StartClashMode,
                 ProcessEdgeEffect::StartConnections,
                 ProcessEdgeEffect::StartNetworkTools,
+                ProcessEdgeEffect::StartTailscale,
             ]
         );
     }
@@ -86,6 +93,7 @@ mod tests {
                 ProcessEdgeEffect::ClearClashMode,
                 ProcessEdgeEffect::StopConnections,
                 ProcessEdgeEffect::StopNetworkTools,
+                ProcessEdgeEffect::ClearTailscale,
             ]
         );
     }
