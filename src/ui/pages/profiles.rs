@@ -361,9 +361,11 @@ impl ProfilesPage {
                             .gap_2()
                             .child(
                                 div()
+                                    .min_w_0()
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.foreground)
+                                    .truncate()
                                     .child(profile.name.clone()),
                             )
                             .when(is_active, |this| {

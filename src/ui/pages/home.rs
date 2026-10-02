@@ -353,22 +353,30 @@ impl Render for HomePage {
                         .h_flex()
                         .items_center()
                         .justify_between()
+                        .gap_2()
                         .w_full()
                         .child(
+                            // 名字过长时截断,不把 Update 按钮挤出卡片。
                             div()
                                 .h_flex()
                                 .items_center()
                                 .gap_2()
+                                .flex_1()
+                                .min_w_0()
                                 .child(
                                     div()
+                                        .min_w_0()
                                         .text_sm()
                                         .text_color(theme.foreground)
+                                        .truncate()
                                         .child(profile_name),
                                 )
                                 .child(
                                     div()
+                                        .flex_shrink_0()
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
+                                        .whitespace_nowrap()
                                         .child(format!("· {}", sub_label)),
                                 ),
                         )
