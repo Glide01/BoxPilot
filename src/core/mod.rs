@@ -1,6 +1,8 @@
 pub mod bytefmt;
 pub mod connections_view;
 pub mod deeplink;
+#[cfg(target_os = "linux")]
+pub mod desktop_integration;
 pub mod log_merge;
 pub mod network_tools;
 pub mod orchestration;

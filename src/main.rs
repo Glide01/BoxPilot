@@ -126,6 +126,11 @@ fn main() {
         }
     }
 
+    // AppImage: make this image the handler for our link schemes. Primary
+    // only, and on a background thread — never delays the window.
+    #[cfg(target_os = "linux")]
+    box_pilot_gui::core::desktop_integration::register_if_appimage();
+
     gpui_platform::application().with_assets(AppAssets).run(move |cx| {
         gpui_component::init(cx);
         let theme = Theme::global_mut(cx);

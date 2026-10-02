@@ -1,19 +1,26 @@
-//! Windows single-instance plumbing for the URL scheme.
+//! Single-instance plumbing for the URL scheme (Windows and Linux).
 //!
-//! When the browser opens a `sing-box://` / `boxpilot://` link, Windows
-//! always launches a **new** `box-pilot.exe` with the URI as argv[1] — it
-//! never reuses the running instance. So:
+//! When the browser opens a `sing-box://` / `boxpilot://` link, the OS
+//! always launches a **new** BoxPilot process with the URI as argv[1] — it
+//! never reuses the running instance (Windows' shell handler and Linux's
+//! `xdg-open` behave the same here). So:
 //!
 //! 1. Every fresh process first calls [`try_forward`] **before** the
-//!    elevation check in `main`: if a primary instance is already listening
-//!    on the named pipe, the URI is handed over and the new process exits —
-//!    no UAC prompt at all on the common path.
-//! 2. The (elevated) process that finds no pipe becomes the primary: it
-//!    takes the instance mutex and runs the pipe server thread, feeding
-//!    received payloads into the UI as [`LaunchAttempt`]s via the callback
-//!    (`main` wires it to a futures channel drained by `AppState`). The
-//!    empty-string "no URI" sentinel is a wire-protocol detail and is
-//!    decoded away here — see [`LaunchAttempt::from_wire`].
+//!    elevation check in `main`: if a primary instance is already listening,
+//!    the URI is handed over and the new process exits — no UAC prompt at
+//!    all on the common Windows path.
+//! 2. The process that finds no listener becomes the primary: it takes the
+//!    instance lock and runs the server thread, feeding received payloads
+//!    into the UI as [`LaunchAttempt`]s via the callback (`main` wires it to
+//!    a futures channel drained by `AppState`). The empty-string "no URI"
+//!    sentinel is a wire-protocol detail and is decoded away here — see
+//!    [`LaunchAttempt::from_wire`].
+//!
+//! The wire format is the same on both platforms: the client connects,
+//! writes the URI (or nothing, for a plain launch) and closes; the server
+//! reads to EOF.
+//!
+//! **Windows** — a named pipe plus a session-local mutex.
 //!
 //! DACL note: the pipe carries an explicit SDDL security descriptor
 //! (`D:(A;;GRGW;;;WD)` + low-integrity label). The default DACL of an
@@ -24,10 +31,17 @@
 //! pipe only carries import-link strings, and every import goes through an
 //! explicit user confirmation dialog before anything is fetched.
 //!
-//! All of this is `#[cfg(target_os = "windows")]`; other platforms get
-//! no-op stubs so `main` can call unconditionally. None of it can be
-//! compile-checked on macOS (see CLAUDE.md) — CI's MSVC build is the
-//! verifier.
+//! **Linux** — a Unix socket plus an `flock` on a lock file, both in
+//! `$XDG_RUNTIME_DIR` (falling back to `boxpilot-<uid>.*` in the temp dir).
+//! The lock, not the socket, decides who is primary: a crashed instance
+//! leaves its socket file behind, but the kernel drops its lock. The winner
+//! deletes any stale socket, binds a fresh one and makes it owner-only
+//! (0600). No elevation is involved, so sender and server always run as the
+//! same user.
+//!
+//! Other platforms get no-op stubs so `main` can call unconditionally. The
+//! Windows half can't be compile-checked off Windows (see CLAUDE.md) — CI's
+//! MSVC build is the verifier.
 
 use crate::core::deeplink::LaunchAttempt;
 
@@ -77,7 +91,12 @@ pub fn try_forward(uri: Option<&str>) -> bool {
     true
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub fn try_forward(uri: Option<&str>) -> bool {
+    linux::try_forward_at(&linux::InstancePaths::from_env(), uri)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn try_forward(_uri: Option<&str>) -> bool {
     false
 }
@@ -112,7 +131,12 @@ pub fn start_server(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStar
     ServerStart::Primary
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub fn start_server(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStart {
+    linux::start_server_at(&linux::InstancePaths::from_env(), on_attempt)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn start_server(_on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStart {
     ServerStart::Primary
 }
@@ -208,6 +232,306 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
         }
         unsafe {
             let _ = CloseHandle(pipe);
+        }
+    }
+}
+
+/// Linux backend. Paths are parameters rather than read from the
+/// environment inside, so the tests run against a temp dir instead of the
+/// real `$XDG_RUNTIME_DIR` (where they would collide with a running
+/// BoxPilot).
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::ServerStart;
+    use crate::core::deeplink::LaunchAttempt;
+    use std::fs::{File, OpenOptions, TryLockError};
+    use std::io::{ErrorKind, Read, Write};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    /// Where the instance lock and the forwarding socket live.
+    #[derive(Debug, Clone, PartialEq)]
+    pub(super) struct InstancePaths {
+        pub lock: PathBuf,
+        pub socket: PathBuf,
+    }
+
+    impl InstancePaths {
+        pub fn from_env() -> Self {
+            // SAFETY: getuid has no preconditions and cannot fail.
+            let uid = unsafe { libc::getuid() };
+            Self::resolve(
+                std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+                &std::env::temp_dir(),
+                uid,
+            )
+        }
+
+        /// `$XDG_RUNTIME_DIR` is per-user and 0700 already, so plain names
+        /// suffice there. The shared temp dir needs the uid in the name, or
+        /// two users on one machine would fight over a single lock.
+        pub fn resolve(runtime_dir: Option<PathBuf>, temp_dir: &Path, uid: u32) -> Self {
+            match runtime_dir.filter(|dir| !dir.as_os_str().is_empty()) {
+                Some(dir) => Self {
+                    lock: dir.join("boxpilot.lock"),
+                    socket: dir.join("boxpilot.sock"),
+                },
+                None => Self {
+                    lock: temp_dir.join(format!("boxpilot-{uid}.lock")),
+                    socket: temp_dir.join(format!("boxpilot-{uid}.sock")),
+                },
+            }
+        }
+    }
+
+    pub(super) fn try_forward_at(paths: &InstancePaths, uri: Option<&str>) -> bool {
+        let payload = uri.unwrap_or("");
+        for _attempt in 0..5 {
+            match UnixStream::connect(&paths.socket) {
+                Ok(mut stream) => {
+                    let _ = stream.write_all(payload.as_bytes());
+                    let _ = stream.flush();
+                    return true;
+                }
+                // The lock, not the socket, says whether an instance is
+                // running: a crashed one leaves a stale socket file behind
+                // (ECONNREFUSED), and a socket that can't be used at all
+                // (e.g. a path past the 108-byte `sun_path` limit) must not
+                // stop the first launch from starting. No lock holder ⇒
+                // start up normally.
+                Err(_) if !lock_is_held(&paths.lock) => return false,
+                // A primary that hasn't bound yet (the LostRace path lands
+                // here) — retry briefly.
+                Err(_) => std::thread::sleep(Duration::from_millis(120)),
+            }
+        }
+        // Same call as on Windows: a primary exists but never let us in.
+        // A duplicate primary would fight over sing-box and the system
+        // proxy, which is worse than a dropped import link.
+        eprintln!("Deep-link socket is unreachable but an instance holds the lock; exiting duplicate instance.");
+        true
+    }
+
+    /// Probe with a *shared* lock, released at once: it only fails while
+    /// a primary holds the exclusive one.
+    fn lock_is_held(lock: &Path) -> bool {
+        match File::open(lock) {
+            Ok(file) => matches!(file.try_lock_shared(), Err(TryLockError::WouldBlock)),
+            Err(_) => false,
+        }
+    }
+
+    pub(super) fn start_server_at(
+        paths: &InstancePaths,
+        on_attempt: Box<dyn Fn(LaunchAttempt) + Send>,
+    ) -> ServerStart {
+        match claim_lock(&paths.lock) {
+            // The file is intentionally leaked: the lock must live exactly
+            // as long as the process, and the kernel releases it on exit
+            // (or crash).
+            Ok(file) => std::mem::forget(file),
+            Err(TryLockError::WouldBlock) => return ServerStart::LostRace,
+            // Unlike a held lock this isn't someone else being primary,
+            // it's a broken lock (unwritable dir, a filesystem without
+            // flock). Refusing to start would brick BoxPilot on every
+            // launch, so run unguarded instead.
+            Err(TryLockError::Error(e)) => {
+                eprintln!(
+                    "Failed to take the single-instance lock {}: {e}; running without single-instance protection.",
+                    paths.lock.display()
+                );
+                return ServerStart::Primary;
+            }
+        }
+
+        match bind_socket(&paths.socket) {
+            Ok(listener) => {
+                std::thread::spawn(move || socket_server_loop(listener, on_attempt));
+            }
+            // Still the primary — the lock says so — just deaf to later
+            // launch attempts; they give up after their forward retries.
+            Err(e) => eprintln!(
+                "Failed to bind the deep-link socket {}: {e}; later launches can't reach this instance.",
+                paths.socket.display()
+            ),
+        }
+        ServerStart::Primary
+    }
+
+    fn claim_lock(lock: &Path) -> Result<File, TryLockError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(lock)
+            .map_err(TryLockError::Error)?;
+        file.try_lock()?;
+        Ok(file)
+    }
+
+    /// Only the lock holder calls this, so any existing socket file is a
+    /// leftover from a crashed instance and safe to delete.
+    fn bind_socket(socket: &Path) -> std::io::Result<UnixListener> {
+        match std::fs::remove_file(socket) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let listener = UnixListener::bind(socket)?;
+        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        Ok(listener)
+    }
+
+    /// Blocking accept loop, one client at a time, mirroring the pipe
+    /// server. The read timeout keeps a client that connects and never
+    /// closes from wedging every later launch attempt.
+    fn socket_server_loop(listener: UnixListener, on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut data = Vec::new();
+            if stream.read_to_end(&mut data).is_err() {
+                continue;
+            }
+            if let Ok(text) = String::from_utf8(data) {
+                on_attempt(LaunchAttempt::from_wire(&text));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::sync::mpsc;
+
+        fn temp_paths(tag: &str) -> InstancePaths {
+            let dir =
+                std::env::temp_dir().join(format!("boxpilot-si-test-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            InstancePaths {
+                lock: dir.join("boxpilot.lock"),
+                socket: dir.join("boxpilot.sock"),
+            }
+        }
+
+        type Callback = Box<dyn Fn(LaunchAttempt) + Send>;
+
+        fn channel_callback() -> (Callback, mpsc::Receiver<LaunchAttempt>) {
+            let (tx, rx) = mpsc::channel();
+            let callback: Callback = Box::new(move |attempt| {
+                let _ = tx.send(attempt);
+            });
+            (callback, rx)
+        }
+
+        #[test]
+        fn paths_prefer_xdg_runtime_dir() {
+            let paths = InstancePaths::resolve(
+                Some(PathBuf::from("/run/user/1000")),
+                Path::new("/tmp"),
+                1000,
+            );
+            assert_eq!(paths.lock, PathBuf::from("/run/user/1000/boxpilot.lock"));
+            assert_eq!(paths.socket, PathBuf::from("/run/user/1000/boxpilot.sock"));
+        }
+
+        #[test]
+        fn paths_fall_back_to_uid_names_in_temp_dir() {
+            for runtime_dir in [None, Some(PathBuf::new())] {
+                let paths = InstancePaths::resolve(runtime_dir, Path::new("/tmp"), 1234);
+                assert_eq!(paths.lock, PathBuf::from("/tmp/boxpilot-1234.lock"));
+                assert_eq!(paths.socket, PathBuf::from("/tmp/boxpilot-1234.sock"));
+            }
+        }
+
+        #[test]
+        fn forward_without_an_instance_returns_false() {
+            let paths = temp_paths("none");
+            assert!(!try_forward_at(&paths, Some("sing-box://x")));
+        }
+
+        #[test]
+        fn stale_socket_without_a_lock_holder_returns_false() {
+            let paths = temp_paths("stale");
+            // A crashed instance leaves its socket file behind.
+            drop(UnixListener::bind(&paths.socket).unwrap());
+            assert!(paths.socket.exists());
+            assert!(!try_forward_at(&paths, Some("sing-box://x")));
+        }
+
+        #[test]
+        fn unusable_socket_path_still_lets_the_first_launch_start() {
+            let mut paths = temp_paths("long");
+            // Past the 108-byte `sun_path` limit: connect and bind both fail.
+            paths.socket = paths.socket.with_file_name("s".repeat(120));
+            assert!(!try_forward_at(&paths, Some("sing-box://x")));
+            let (on_attempt, _rx) = channel_callback();
+            assert!(matches!(
+                start_server_at(&paths, on_attempt),
+                ServerStart::Primary
+            ));
+        }
+
+        #[test]
+        fn round_trip_and_a_second_primary_loses() {
+            let paths = temp_paths("roundtrip");
+            // A stale socket must not stop the primary from binding.
+            drop(UnixListener::bind(&paths.socket).unwrap());
+
+            let (on_attempt, rx) = channel_callback();
+            assert!(matches!(
+                start_server_at(&paths, on_attempt),
+                ServerStart::Primary
+            ));
+            let mode = std::fs::metadata(&paths.socket)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+
+            let uri = "sing-box://import-remote-profile?url=http%3A%2F%2F127.0.0.1%2Fx&name=t";
+            assert!(try_forward_at(&paths, Some(uri)));
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                LaunchAttempt::DeepLink(uri.to_string())
+            );
+            assert!(try_forward_at(&paths, None));
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                LaunchAttempt::Plain
+            );
+
+            let (on_attempt, _rx) = channel_callback();
+            assert!(matches!(
+                start_server_at(&paths, on_attempt),
+                ServerStart::LostRace
+            ));
+        }
+
+        #[test]
+        fn forward_waits_for_a_lock_holder_that_has_not_bound_yet() {
+            // The LostRace path: the winner holds the lock, but its socket
+            // isn't up yet when the loser forwards.
+            let paths = temp_paths("late_bind");
+            let _lock = claim_lock(&paths.lock).unwrap();
+            let (on_attempt, rx) = channel_callback();
+            let socket = paths.socket.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                let listener = bind_socket(&socket).unwrap();
+                socket_server_loop(listener, on_attempt);
+            });
+
+            assert!(try_forward_at(&paths, Some("boxpilot://late")));
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                LaunchAttempt::DeepLink("boxpilot://late".to_string())
+            );
         }
     }
 }
