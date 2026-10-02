@@ -82,8 +82,8 @@ impl Traffic {
             while running.load(Ordering::SeqCst) {
                 // Why a stream ended doesn't matter here: either sing-box is
                 // going away (the edge observer stops us) or it isn't up yet.
-                let _ = api.stream_status(|sample| {
-                    running.load(Ordering::SeqCst) && tx.send(sample).is_ok()
+                let _ = api.stream_status(|status| {
+                    running.load(Ordering::SeqCst) && tx.send(status.traffic()).is_ok()
                 });
                 if !running.load(Ordering::SeqCst) {
                     break;

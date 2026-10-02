@@ -11,7 +11,7 @@ We now use that instead, and the runtime config no longer carries a
 The service listens on TCP only (there is no named-pipe option), and one port
 serves native gRPC over h2c, gRPC-Web and gRPC-Web over WebSocket. BoxPilot
 speaks **gRPC-Web over HTTP/1.1** through the blocking reqwest client it
-already had, with hand-derived prost messages (`core/singbox_api.rs`). Server
+already had, with hand-derived prost messages (`core/singbox_api/`). Server
 streams arrive as length-prefixed frames on an ordinary response body. A
 dedicated reader thread holds each long-lived stream, as before.
 

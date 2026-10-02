@@ -171,7 +171,7 @@ impl ProxyGroups {
                     break;
                 }
                 if let Err(e) = result {
-                    if tx.send(StreamEvent::Error(e)).is_err() {
+                    if tx.send(StreamEvent::Error(e.to_string())).is_err() {
                         break;
                     }
                 }
@@ -343,7 +343,10 @@ impl ProxyGroups {
             let request_node = node.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { api.select_outbound(&request_group, &request_node) })
+                .spawn(async move {
+                    api.select_outbound(&request_group, &request_node)
+                        .map_err(|e| format!("Failed to switch node: {}", e))
+                })
                 .await;
             if let Err(message) = result {
                 let _ = this.update(cx, |state, cx| {
@@ -394,7 +397,10 @@ impl ProxyGroups {
             let request_group = group.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { api.url_test(&request_group) })
+                .spawn(async move {
+                    api.url_test(&request_group)
+                        .map_err(|e| format!("Delay test failed: {}", e))
+                })
                 .await;
             if let Err(message) = result {
                 let _ = this.update(cx, |state, cx| {
