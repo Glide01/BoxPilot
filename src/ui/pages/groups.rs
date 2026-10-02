@@ -1,6 +1,7 @@
 //! 分组页:分组纵向堆叠,每组 = 标题行(chevron + 组名 + 当前节点 + Test
 //! 按钮)+ 两列节点卡片网格(名字 + 延迟徽标 / 协议类型)。点标题行左半区
-//! 折叠/展开该组(默认全部折叠,展开状态仅存内存)。运行中(sing-box API)点
+//! 折叠/展开该组(默认折叠;展开状态经 sing-box API 存进 cache_file,下次
+//! 运行照旧,见 `ProxyGroups::set_expanded`)。运行中(sing-box API)点
 //! 卡片切换节点、可整组测速;sing-box 未启动(或启动后连不上 sing-box API)时
 //! 节点列表为空,显示空状态。
 
@@ -10,7 +11,6 @@ use crate::ui::card_frame;
 use crate::ui::widgets::{empty_card, page_header, pill, PillTone};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::collections::HashSet;
 use gpui_component::{
     button::Button,
     scroll::ScrollableElement,
@@ -20,27 +20,13 @@ use gpui_component::{
 
 pub struct GroupsPage {
     proxy_groups: Entity<ProxyGroups>,
-    /// 展开的组名,空集 = 全部折叠(默认)。仅内存:切页保留(页面实体
-    /// 常驻),重启回到全折叠。按名字键控,分组列表重建后状态自然延续,
-    /// 新出现的组默认折叠;陈旧键无害。
-    expanded: HashSet<String>,
 }
 
 impl GroupsPage {
     pub fn new(app_state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let proxy_groups = app_state.read(cx).proxy_groups.clone();
         cx.observe(&proxy_groups, |_, _, cx| cx.notify()).detach();
-        Self {
-            proxy_groups,
-            expanded: HashSet::new(),
-        }
-    }
-
-    fn toggle_group(&mut self, group: &str, cx: &mut Context<Self>) {
-        if !self.expanded.remove(group) {
-            self.expanded.insert(group.to_string());
-        }
-        cx.notify();
+        Self { proxy_groups }
     }
 }
 
@@ -191,13 +177,16 @@ impl Render for GroupsPage {
                                     });
                                 })
                         };
-                        let is_collapsed = !self.expanded.contains(&group.name);
-                        let toggle = cx.listener({
+                        let is_collapsed = !group.expanded;
+                        let toggle = {
+                            let proxy_groups = groups_entity.clone();
                             let name = group.name.clone();
-                            move |this: &mut Self, _: &ClickEvent, _, cx| {
-                                this.toggle_group(&name, cx)
+                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                proxy_groups.update(cx, |state, cx| {
+                                    state.set_expanded(name.clone(), is_collapsed, cx)
+                                });
                             }
-                        });
+                        };
                         // 左半区(chevron+组名+当前节点)是折叠开关;Test
                         // 按钮独立在右侧,不嵌套在点击区内以免触发折叠。
                         let header = div()

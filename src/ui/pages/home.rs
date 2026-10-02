@@ -1,13 +1,16 @@
-//! 主页:焦点式大圆连接按钮 + 设置行(代理模式 / 系统代理)+ 订阅条。
+//! 主页:焦点式大圆连接按钮(运行中下附运行时长 + sing-box 版本)+ 运行
+//! 状态条(内存 / 连接数 / 累计上传下载,仅运行中)+ Clash 模式切换(仅运行中
+//! 且 ≥2 个模式)+ 设置行(代理模式 / 系统代理)+ 订阅条。
 
-use crate::core::presentation::{updated_label, ConnectionStatus};
-use crate::state::AppState;
+use crate::core::bytefmt::format_bytes;
+use crate::core::presentation::{runtime_subtitle, updated_label, ConnectionStatus};
+use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
 use crate::ui::widgets::setting_row;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants}, spinner::Spinner, switch::Switch, tab::TabBar,
-    ActiveTheme, Disableable,
+    theme::Theme, ActiveTheme, Disableable,
     Icon, Sizable, StyledExt,
 };
 use std::time::SystemTime;
@@ -23,10 +26,67 @@ pub struct HomePage {
 impl HomePage {
     pub fn new(app_state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let process = app_state.read(cx).process.clone();
+        let traffic = app_state.read(cx).traffic.clone();
+        let clash_mode = app_state.read(cx).clash_mode.clone();
         cx.observe(&app_state, |_, _, cx| cx.notify()).detach();
         cx.observe(&process, |_, _, cx| cx.notify()).detach();
+        // Status samples arrive once a second, which is also what ticks the
+        // uptime label.
+        cx.observe(&traffic, |_, _, cx| cx.notify()).detach();
+        cx.observe(&clash_mode, |_, _, cx| cx.notify()).detach();
         Self { app_state }
     }
+}
+
+/// One cell of the runtime stats strip: small caption over the value.
+fn stat_cell(theme: &Theme, label: &'static str, value: String) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .v_flex()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.foreground)
+                .whitespace_nowrap()
+                .child(value),
+        )
+}
+
+/// Clash mode switcher card. `None` unless there is a choice to offer
+/// (running, ≥2 modes).
+fn clash_mode_card(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Option<Div> {
+    let state = clash_mode.read(cx);
+    if !state.is_switchable() {
+        return None;
+    }
+    let modes = state.modes.clone();
+    let selected = state.current_index();
+    let tab_modes = modes.clone();
+    Some(
+        card_frame(theme).child(
+            setting_row(theme, "Clash Mode", None).child(
+                TabBar::new("clash-mode")
+                    .segmented()
+                    .when_some(selected, |this, ix| this.selected_index(ix))
+                    .on_click(move |ix: &usize, _, cx| {
+                        let Some(mode) = modes.get(*ix).cloned() else {
+                            return;
+                        };
+                        clash_mode.update(cx, |state, cx| state.select(mode, cx));
+                    })
+                    .children(tab_modes),
+            ),
+        ),
+    )
 }
 
 impl Render for HomePage {
@@ -87,6 +147,20 @@ impl Render for HomePage {
         let proxy_mode = state.settings.proxy_mode;
         let system_proxy = state.settings.set_system_proxy;
         let status_title = status.label();
+        let connected = status == ConnectionStatus::Connected;
+
+        let traffic = state.traffic.read(cx);
+        let runtime = traffic.status;
+        let subtitle = if connected {
+            runtime_subtitle(
+                traffic.started_at,
+                traffic.version.as_deref(),
+                SystemTime::now(),
+            )
+        } else {
+            None
+        };
+        let clash_mode = state.clash_mode.clone();
 
         let active = state.settings.active_profile();
         let profile_name = active.map(|p| p.name.clone()).unwrap_or_default();
@@ -178,15 +252,58 @@ impl Render for HomePage {
                     .child(div().flex_1())
                     .child(power_button)
                     .child(
-                        // 状态标题(网速行已移至侧边栏底部连接状态上方)。
+                        // 状态标题(网速行已移至侧边栏底部连接状态上方);
+                        // 运行中下附"Running for … · sing-box x.y.z"。
                         div()
-                            .text_xl()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.foreground)
-                            .child(status_title),
+                            .v_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(theme.foreground)
+                                    .child(status_title),
+                            )
+                            .children(subtitle.map(|text| {
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .child(text)
+                            })),
                     )
                     .child(div().flex_1().max_h_24()),
             )
+            // —— 运行状态条(仅运行中):内存 / 连接数 / 累计上传 / 累计下载 ——
+            .when(connected, |this| {
+                this.child(
+                    card_frame(theme).child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_4()
+                            .w_full()
+                            .child(stat_cell(theme, "Memory", format_bytes(runtime.memory)))
+                            .child(stat_cell(
+                                theme,
+                                "Connections",
+                                runtime.connections_in.to_string(),
+                            ))
+                            .child(stat_cell(
+                                theme,
+                                "Uploaded",
+                                format_bytes(runtime.uplink_total),
+                            ))
+                            .child(stat_cell(
+                                theme,
+                                "Downloaded",
+                                format_bytes(runtime.downlink_total),
+                            )),
+                    ),
+                )
+            })
+            // —— Clash 模式(仅运行中且 ≥2 个模式;停止时 ClashMode 已清空) ——
+            .children(clash_mode_card(theme, clash_mode, cx))
             // —— 设置行:代理模式 + 系统代理(两张等宽小卡) ——
             // 注意:不要用 h_flex()(自带 items_center,卡片不等高时不拉伸)。
             .child(

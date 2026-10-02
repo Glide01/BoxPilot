@@ -1,9 +1,12 @@
-//! Live up/down network rate, streamed from the sing-box API service's
-//! `SubscribeStatus`. Owned by `AppState`; started on the process Stopped→Running edge
-//! and stopped on the reverse edge (see the observer in `AppState::new`), the
+//! Live runtime status of the running sing-box: the up/down rate, memory,
+//! connection counts and transfer totals, all from the one `SubscribeStatus`
+//! stream of the sing-box API service — plus when it started and which
+//! version it is (`GetStartedAt` / `GetVersion`, fetched once per run).
+//! Owned by `AppState`; started on the process Stopped→Running edge and
+//! stopped on the reverse edge (see the observer in `AppState::new`), the
 //! same way `ProxyGroups` is driven.
 
-use crate::core::singbox_api::{SingBoxApi, TrafficSample};
+use crate::core::singbox_api::{ApiError, RuntimeStatus, SingBoxApi};
 use gpui::{Context, Task};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -19,14 +22,28 @@ const DRAIN_INTERVAL: Duration = Duration::from_millis(500);
 /// running — covers the brief window before the sing-box API is listening
 /// and any transient drop. Bounded by the `running` flag so it never spins.
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
+/// How many times (`RECONNECT_DELAY` apart) to ask for the start time and
+/// version before giving up for this run. Both answer as soon as the API
+/// listens, which is within a second or two of the process starting.
+const INFO_ATTEMPTS: usize = 30;
 
-/// Current network rate in bytes/sec. Session-scoped: zeroed when sing-box
-/// stops, never persisted.
+/// Current runtime status. Session-scoped: zeroed when sing-box stops, never
+/// persisted.
 pub struct Traffic {
-    /// Upload rate, bytes/sec, from the latest status sample.
+    /// Upload rate, bytes/sec, from the latest status sample
+    /// (= `status.uplink`; the sidebar speed footer reads it).
     pub up: u64,
-    /// Download rate, bytes/sec, from the latest status sample.
+    /// Download rate, bytes/sec, from the latest status sample
+    /// (= `status.downlink`).
     pub down: u64,
+    /// The latest full status sample: memory, goroutines, connection counts,
+    /// totals. All zero until the first sample and after a stop.
+    pub status: RuntimeStatus,
+    /// When the running sing-box started, unix milliseconds
+    /// (`GetStartedAt`); the Home uptime ticks from it.
+    pub started_at: Option<i64>,
+    /// The running sing-box's own version (`GetVersion`).
+    pub version: Option<String>,
     /// sing-box API 句柄(端口 Settings 可配)。`start()` 从它订阅
     /// `SubscribeStatus`;改端口经 `set_api` 换新句柄,运行中由 AppState 重启才生效。
     api: SingBoxApi,
@@ -37,6 +54,9 @@ pub struct Traffic {
     /// UI-thread task draining samples into `up`/`down`. Dropping it cancels
     /// the task; the spawn closure's `WeakEntity` also stops it on entity drop.
     _drain: Option<Task<()>>,
+    /// Fetches `started_at` + `version` once per run; dropped with the
+    /// session like `_drain`.
+    _info: Option<Task<()>>,
 }
 
 impl Traffic {
@@ -44,9 +64,13 @@ impl Traffic {
         Self {
             up: 0,
             down: 0,
+            status: RuntimeStatus::default(),
+            started_at: None,
+            version: None,
             api,
             running: Arc::new(AtomicBool::new(false)),
             _drain: None,
+            _info: None,
         }
     }
 
@@ -57,7 +81,7 @@ impl Traffic {
         self.api = api;
     }
 
-    /// Start streaming live rates. Tears down any prior session first (clears
+    /// Start streaming live status. Tears down any prior session first (clears
     /// the old flag, drops the old drain task) so a restart can't leave two
     /// reader threads racing onto one display.
     pub fn start(&mut self, cx: &mut Context<Self>) {
@@ -67,10 +91,9 @@ impl Traffic {
         self.running.store(false, Ordering::SeqCst);
         let running = Arc::new(AtomicBool::new(true));
         self.running = running.clone();
-        self.up = 0;
-        self.down = 0;
+        self.reset();
 
-        let (tx, rx) = mpsc::channel::<TrafficSample>();
+        let (tx, rx) = mpsc::channel::<RuntimeStatus>();
         let api = self.api;
 
         // Dedicated blocking reader thread: gpui's executor is not built for
@@ -83,7 +106,7 @@ impl Traffic {
                 // Why a stream ended doesn't matter here: either sing-box is
                 // going away (the edge observer stops us) or it isn't up yet.
                 let _ = api.stream_status(|status| {
-                    running.load(Ordering::SeqCst) && tx.send(status.traffic()).is_ok()
+                    running.load(Ordering::SeqCst) && tx.send(status).is_ok()
                 });
                 if !running.load(Ordering::SeqCst) {
                     break;
@@ -98,7 +121,8 @@ impl Traffic {
                 cx.background_executor().timer(DRAIN_INTERVAL).await;
 
                 // Coalesce everything queued since the last tick; only the
-                // newest sample is the current rate.
+                // newest sample is current (totals are cumulative, rates are
+                // per-second, so nothing is lost by skipping one).
                 let mut latest = None;
                 let mut disconnected = false;
                 loop {
@@ -115,8 +139,7 @@ impl Traffic {
                 if let Some(sample) = latest {
                     if this
                         .update(cx, |traffic, cx| {
-                            traffic.up = sample.up;
-                            traffic.down = sample.down;
+                            traffic.apply(sample);
                             cx.notify();
                         })
                         .is_err()
@@ -127,12 +150,11 @@ impl Traffic {
 
                 if disconnected {
                     // Reader thread ended (process stopped or API gone). Zero
-                    // the rates so the readout doesn't freeze on a stale value,
-                    // then exit — a new session spawns a fresh drain task.
+                    // the readout so it doesn't freeze on a stale value, then
+                    // exit — a new session spawns a fresh drain task.
                     let _ = this.update(cx, |traffic, cx| {
-                        if traffic.up != 0 || traffic.down != 0 {
-                            traffic.up = 0;
-                            traffic.down = 0;
+                        if traffic.status != RuntimeStatus::default() {
+                            traffic.apply(RuntimeStatus::default());
                             cx.notify();
                         }
                     });
@@ -141,17 +163,54 @@ impl Traffic {
             }
         });
         self._drain = Some(drain);
+
+        // Start time + version: plain unary calls, retried until the API
+        // answers. On the background executor like `ProxyGroups::select` —
+        // each call is bounded by the transport's 2s unary timeout.
+        let info = cx.spawn(async move |this, cx| {
+            for _ in 0..INFO_ATTEMPTS {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        Ok::<_, ApiError>((api.get_started_at()?, api.get_version()?))
+                    })
+                    .await;
+                if let Ok((started_at, version)) = result {
+                    let _ = this.update(cx, |traffic, cx| {
+                        traffic.started_at = started_at;
+                        traffic.version = Some(version.version);
+                        cx.notify();
+                    });
+                    return;
+                }
+                cx.background_executor().timer(RECONNECT_DELAY).await;
+            }
+        });
+        self._info = Some(info);
         cx.notify();
     }
 
-    /// Stop streaming and clear the displayed rates. The reader thread notices
-    /// the cleared flag (or the broken connection when sing-box exits) and
-    /// terminates on its own; dropping `_drain` cancels the UI task.
+    fn apply(&mut self, status: RuntimeStatus) {
+        self.up = status.uplink;
+        self.down = status.downlink;
+        self.status = status;
+    }
+
+    /// Back to the stopped state: no sample, no run facts.
+    fn reset(&mut self) {
+        self.apply(RuntimeStatus::default());
+        self.started_at = None;
+        self.version = None;
+    }
+
+    /// Stop streaming and clear the readout. The reader thread notices the
+    /// cleared flag (or the broken connection when sing-box exits) and
+    /// terminates on its own; dropping `_drain`/`_info` cancels the UI tasks.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         self.running.store(false, Ordering::SeqCst);
         self._drain = None;
-        self.up = 0;
-        self.down = 0;
+        self._info = None;
+        self.reset();
         cx.notify();
     }
 }

@@ -39,6 +39,8 @@ impl RootView {
         Self::route_status_toasts(&process_session, window, cx);
         let proxy_groups = app_state.read(cx).proxy_groups.clone();
         Self::route_status_toasts(&proxy_groups, window, cx);
+        let clash_mode = app_state.read(cx).clash_mode.clone();
+        Self::route_status_toasts(&clash_mode, window, cx);
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();

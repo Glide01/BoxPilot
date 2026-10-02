@@ -1,7 +1,8 @@
 use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{
-    delay_states, merge_groups, parse_groups_from_config, parse_node_types_from_config,
-    url_test_done, GroupKind, GroupsSnapshot, ProxyGroup, SingBoxApi, UrlTestHistory,
+    apply_expand_overrides, delay_states, merge_groups, parse_groups_from_config,
+    parse_node_types_from_config, url_test_done, GroupKind, GroupsSnapshot, ProxyGroup, SingBoxApi,
+    UrlTestHistory,
 };
 use gpui::{Context, EventEmitter, Task};
 use std::collections::{HashMap, HashSet};
@@ -76,6 +77,11 @@ pub struct ProxyGroups {
     /// `Timeout`.
     tested: HashSet<String>,
     pending_tests: HashMap<String, PendingTest>,
+    /// Expand toggles made this run (group → expanded), laid over every
+    /// snapshot: `SetGroupExpand` doesn't push, so a snapshot can predate it.
+    /// sing-box stores them in `cache_file`, so the next run starts from
+    /// what the snapshot says.
+    expand_overrides: HashMap<String, bool>,
     /// When the last snapshot arrived — the clock for `URL_TEST_QUIET`.
     last_snapshot: Option<Instant>,
     /// Liveness flag for the current streaming session. Cleared by `clear()`
@@ -104,6 +110,7 @@ impl ProxyGroups {
             history: HashMap::new(),
             tested: HashSet::new(),
             pending_tests: HashMap::new(),
+            expand_overrides: HashMap::new(),
             last_snapshot: None,
             running: Arc::new(AtomicBool::new(false)),
             _task: None,
@@ -143,6 +150,7 @@ impl ProxyGroups {
         self.history.clear();
         self.tested.clear();
         self.pending_tests.clear();
+        self.expand_overrides.clear();
         self.last_snapshot = None;
         cx.notify();
     }
@@ -264,6 +272,7 @@ impl ProxyGroups {
         let mut node_types = config_types.clone();
         node_types.extend(snapshot.node_types);
         self.groups = merge_groups(config_groups, snapshot.groups);
+        apply_expand_overrides(&mut self.groups, &self.expand_overrides);
         self.source = GroupSource::Api;
         self.node_types = node_types;
         self.history = snapshot.history;
@@ -360,6 +369,42 @@ impl ProxyGroups {
                         message,
                     });
                     cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Expand or fold a group card. Applied locally at once, then stored by
+    /// sing-box (`SetGroupExpand` → `cache_file`) so the card comes back the
+    /// same way on the next run. A failed store only warns: the card stays
+    /// as the user left it for this run.
+    pub fn set_expanded(&mut self, group: String, expanded: bool, cx: &mut Context<Self>) {
+        if self.source != GroupSource::Api {
+            return;
+        }
+        let Some(entry) = self.groups.iter_mut().find(|g| g.name == group) else {
+            return;
+        };
+        if entry.expanded == expanded {
+            return;
+        }
+        entry.expanded = expanded;
+        self.expand_overrides.insert(group.clone(), expanded);
+        cx.notify();
+
+        let api = self.api;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { api.set_group_expand(&group, expanded) })
+                .await;
+            if let Err(e) = result {
+                let _ = this.update(cx, |_, cx| {
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Warning,
+                        message: format!("Failed to save group state: {}", e),
+                    });
                 });
             }
         })

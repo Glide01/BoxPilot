@@ -354,6 +354,18 @@ pub fn merge_groups(config_order: &[ProxyGroup], api_groups: Vec<ProxyGroup>) ->
     merged
 }
 
+/// Lay the expand toggles made this session over a snapshot's stored ones.
+/// `SetGroupExpand` doesn't push, so a snapshot sent before it landed (or
+/// after it failed) would otherwise fold a card the user just opened; once it
+/// lands the two agree anyway.
+pub fn apply_expand_overrides(groups: &mut [ProxyGroup], overrides: &HashMap<String, bool>) {
+    for group in groups {
+        if let Some(&expanded) = overrides.get(&group.name) {
+            group.expanded = expanded;
+        }
+    }
+}
+
 /// Nodes 页延迟徽标的色阶分档。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DelayLevel {
@@ -644,6 +656,21 @@ mod tests {
     fn node_types_from_config_tolerate_garbage() {
         assert!(parse_node_types_from_config("not json").is_empty());
         assert!(parse_node_types_from_config(r#"{"outbounds": "nope"}"#).is_empty());
+    }
+
+    #[test]
+    fn expand_overrides_win_over_the_snapshot() {
+        let mut groups = vec![group("A", "a1", &["a1"]), group("B", "b1", &["b1"])];
+        groups[1].expanded = true;
+        let overrides = HashMap::from([("A".to_string(), true), ("B".to_string(), false)]);
+        apply_expand_overrides(&mut groups, &overrides);
+        assert!(groups[0].expanded);
+        assert!(!groups[1].expanded);
+
+        let mut untouched = vec![group("C", "c1", &["c1"])];
+        untouched[0].expanded = true;
+        apply_expand_overrides(&mut untouched, &overrides);
+        assert!(untouched[0].expanded, "no override keeps sing-box's value");
     }
 
     #[test]

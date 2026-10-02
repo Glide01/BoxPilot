@@ -4,7 +4,7 @@
 //! place the results in layout. No gpui dependency.
 
 use crate::core::settings::ProfileSource;
-use crate::core::timefmt::{format_relative_time, from_unix_secs};
+use crate::core::timefmt::{format_relative_time, format_uptime, from_unix_secs, uptime_since};
 use std::time::SystemTime;
 
 /// The three-state connection status. The single source for its wording —
@@ -104,6 +104,27 @@ pub fn log_count_label(visible: usize, total: usize) -> String {
     }
 }
 
+/// Home hero subtitle while connected: "Running for 1h 23m · sing-box
+/// 1.14.2". Either half is left out until its API call has answered
+/// (`started_at_millis` from `GetStartedAt`, `version` from `GetVersion` —
+/// the *running* sing-box, which Settings' probed version need not be);
+/// `None` when neither has.
+pub fn runtime_subtitle(
+    started_at_millis: Option<i64>,
+    version: Option<&str>,
+    now: SystemTime,
+) -> Option<String> {
+    let uptime = started_at_millis
+        .map(|started| format!("Running for {}", format_uptime(uptime_since(started, now))));
+    let version = version
+        .filter(|v| !v.is_empty())
+        .map(|v| format!("sing-box {}", v));
+    match (uptime, version) {
+        (Some(uptime), Some(version)) => Some(format!("{} · {}", uptime, version)),
+        (uptime, version) => uptime.or(version),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +215,25 @@ mod tests {
         assert_eq!(log_count_label(10, 10), "10");
         assert_eq!(log_count_label(3, 10), "3 of 10");
         assert_eq!(log_count_label(0, 0), "0");
+    }
+
+    #[test]
+    fn runtime_subtitle_joins_uptime_and_version() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_759_405_000);
+        let started = Some(1_759_405_000_000 - (3600 + 23 * 60) * 1000);
+        assert_eq!(
+            runtime_subtitle(started, Some("1.14.2"), now).as_deref(),
+            Some("Running for 1h 23m · sing-box 1.14.2")
+        );
+        assert_eq!(
+            runtime_subtitle(started, None, now).as_deref(),
+            Some("Running for 1h 23m")
+        );
+        assert_eq!(
+            runtime_subtitle(None, Some("1.14.2"), now).as_deref(),
+            Some("sing-box 1.14.2")
+        );
+        assert_eq!(runtime_subtitle(None, Some(""), now), None);
+        assert_eq!(runtime_subtitle(None, None, now), None);
     }
 }

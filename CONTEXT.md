@@ -46,3 +46,10 @@ literal `sing-box` token in it to decide whether to serve sing-box JSON or
 Clash YAML, and read the version after the token to gate config-format
 features — so the token must always be present, and the version after it
 should be the real sing-box version whenever it is known.
+
+**Clash mode**:
+The selector that a profile's `clash_mode` route/DNS rules match on (e.g.
+Rule / Global / Direct), switched live from Home while sing-box runs. The
+modes come from the running config; sing-box remembers the chosen one in its
+cache file. Distinct from the **Proxy Mode** toggle (TUN vs. Proxy inbound).
+_Avoid_: routing mode, outbound mode

@@ -57,6 +57,12 @@ pub struct ClashModeStatus {
 }
 
 impl ClashModeStatus {
+    /// Whether there is anything to switch between. A config without
+    /// `clash_mode` rules yields just `["Rule"]` — no switcher then.
+    pub fn is_switchable(&self) -> bool {
+        is_switchable(&self.modes)
+    }
+
     fn from_proto(status: pb::ClashModeStatus) -> Self {
         Self {
             modes: status.mode_list,
@@ -65,9 +71,57 @@ impl ClashModeStatus {
     }
 }
 
+/// Whether a mode list offers a choice (two or more modes).
+pub fn is_switchable(modes: &[String]) -> bool {
+    modes.len() >= 2
+}
+
+/// Position of `mode` in `modes`, matched the way `SetClashMode` matches:
+/// exact first, then case-insensitively. `None` for an unknown or empty mode
+/// (`SubscribeClashMode` sends an empty one while the box isn't started).
+pub fn mode_index(modes: &[String], mode: &str) -> Option<usize> {
+    if mode.is_empty() {
+        return None;
+    }
+    let folded = mode.to_lowercase();
+    modes
+        .iter()
+        .position(|m| m == mode)
+        .or_else(|| modes.iter().position(|m| m.to_lowercase() == folded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn modes(list: &[&str]) -> Vec<String> {
+        list.iter().map(|m| m.to_string()).collect()
+    }
+
+    #[test]
+    fn switchable_needs_two_modes() {
+        assert!(!is_switchable(&[]));
+        assert!(!is_switchable(&modes(&["Rule"])));
+        assert!(is_switchable(&modes(&["Rule", "Global"])));
+        let status = ClashModeStatus {
+            modes: modes(&["Rule"]),
+            current: "Rule".into(),
+        };
+        assert!(!status.is_switchable());
+    }
+
+    #[test]
+    fn mode_index_matches_like_set_clash_mode() {
+        let list = modes(&["Proxy", "Rule", "Global", "Direct"]);
+        assert_eq!(mode_index(&list, "Global"), Some(2));
+        assert_eq!(mode_index(&list, "global"), Some(2));
+        assert_eq!(mode_index(&list, "DIRECT"), Some(3));
+        assert_eq!(mode_index(&list, "Unknown"), None);
+        assert_eq!(mode_index(&list, ""), None);
+        // Exact spelling wins over an earlier case-insensitive match.
+        let mixed = modes(&["global", "Global"]);
+        assert_eq!(mode_index(&mixed, "Global"), Some(1));
+    }
 
     #[test]
     fn clash_mode_status_keeps_list_order_and_current() {

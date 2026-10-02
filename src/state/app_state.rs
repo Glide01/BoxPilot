@@ -13,6 +13,7 @@ use crate::core::subscription::{
     import_local_config, perform_update, prepare_config, RuntimeOptions, UpdateOutcome,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
+use crate::state::clash_mode::ClashMode;
 use crate::state::log_buffer::LogBuffer;
 use crate::state::process_session::{PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
@@ -109,8 +110,11 @@ pub struct AppState {
     pub process: Entity<ProcessSession>,
     pub logs: Entity<LogBuffer>,
     pub proxy_groups: Entity<ProxyGroups>,
-    /// Live up/down network rate; streamed while sing-box is running.
+    /// Live runtime status (rates, memory, connections, totals, start time,
+    /// version); streamed while sing-box is running.
     pub traffic: Entity<Traffic>,
+    /// Clash mode list + current mode; followed while sing-box is running.
+    pub clash_mode: Entity<ClashMode>,
     /// Last `is_running()` seen by the process observer — detects
     /// Running/Stopped edges so groups + traffic refresh exactly once per
     /// transition.
@@ -212,6 +216,7 @@ impl AppState {
         let api = SingBoxApi::new(settings.api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
+        let clash_mode = cx.new(|_| ClashMode::new(api));
 
         cx.new(|cx| {
             // Drive ProxyGroups + Traffic from process Running/Stopped edges.
@@ -238,6 +243,12 @@ impl AppState {
                         }
                         ProcessEdgeEffect::StopTraffic => {
                             this.traffic.update(cx, |traffic, cx| traffic.stop(cx))
+                        }
+                        ProcessEdgeEffect::StartClashMode => {
+                            this.clash_mode.update(cx, |mode, cx| mode.start(cx))
+                        }
+                        ProcessEdgeEffect::ClearClashMode => {
+                            this.clash_mode.update(cx, |mode, cx| mode.clear(cx))
                         }
                     }
                 }
@@ -414,6 +425,7 @@ impl AppState {
                 logs,
                 proxy_groups,
                 traffic,
+                clash_mode,
                 groups_saw_running: false,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
@@ -600,6 +612,7 @@ impl AppState {
         let api = SingBoxApi::new(value);
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
         self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.clash_mode.update(cx, |mode, _| mode.set_api(api));
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

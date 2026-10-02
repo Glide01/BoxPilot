@@ -5,19 +5,23 @@
 //! way so the core test shim keeps working.
 
 /// What the app must do in response to a process Running/Stopped transition.
-/// `AppState`'s process observer maps these onto the `ProxyGroups` and
-/// `Traffic` entities.
+/// `AppState`'s process observer maps these onto the `ProxyGroups`,
+/// `Traffic` and `ClashMode` entities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessEdgeEffect {
     /// Stopped→Running: subscribe to live groups from the sing-box API.
     StartGroups,
     /// Stopped→Running: start streaming traffic from the sing-box API.
     StartTraffic,
+    /// Stopped→Running: load the clash mode list and follow the current mode.
+    StartClashMode,
     /// Running→Stopped: groups are shown only while connected; ends the
     /// group stream.
     ClearGroups,
     /// Running→Stopped: stop the stream and zero the readout.
     StopTraffic,
+    /// Running→Stopped: end the mode stream; the switcher hides.
+    ClearClashMode,
 }
 
 /// Decide the effects of an observed process-state change. gpui observers
@@ -30,10 +34,12 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
         (false, true) => &[
             ProcessEdgeEffect::StartGroups,
             ProcessEdgeEffect::StartTraffic,
+            ProcessEdgeEffect::StartClashMode,
         ],
         (true, false) => &[
             ProcessEdgeEffect::ClearGroups,
             ProcessEdgeEffect::StopTraffic,
+            ProcessEdgeEffect::ClearClashMode,
         ],
         _ => &[],
     }
@@ -44,23 +50,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn started_edge_starts_groups_and_traffic() {
+    fn started_edge_starts_groups_traffic_and_clash_mode() {
         assert_eq!(
             process_edge_effects(false, true),
             &[
                 ProcessEdgeEffect::StartGroups,
-                ProcessEdgeEffect::StartTraffic
+                ProcessEdgeEffect::StartTraffic,
+                ProcessEdgeEffect::StartClashMode
             ]
         );
     }
 
     #[test]
-    fn stopped_edge_clears_groups_and_stops_traffic() {
+    fn stopped_edge_clears_groups_traffic_and_clash_mode() {
         assert_eq!(
             process_edge_effects(true, false),
             &[
                 ProcessEdgeEffect::ClearGroups,
-                ProcessEdgeEffect::StopTraffic
+                ProcessEdgeEffect::StopTraffic,
+                ProcessEdgeEffect::ClearClashMode
             ]
         );
     }

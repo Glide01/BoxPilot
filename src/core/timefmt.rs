@@ -1,4 +1,5 @@
-//! Relative-time formatting for the subscription "last updated" label.
+//! Time formatting: the subscription "last updated" label and the Home
+//! uptime readout.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -39,6 +40,37 @@ pub fn to_unix_secs(t: SystemTime) -> Option<u64> {
 /// `to_unix_secs` 的逆:Unix 秒 → `SystemTime`,供显示层喂给 `format_relative_time`。
 pub fn from_unix_secs(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+}
+
+/// Compact elapsed-time label for the Home uptime readout: `42s` (under a
+/// minute), `12m 5s` (under an hour), `1h 23m` (under a day), `2d 4h`. Two
+/// units at most, so the label stays short; seconds show only within the
+/// first hour, where the per-second tick is what tells the user it's live.
+pub fn format_uptime(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let (days, hours, mins, s) = (
+        secs / 86400,
+        secs % 86400 / 3600,
+        secs % 3600 / 60,
+        secs % 60,
+    );
+    if secs < 60 {
+        format!("{}s", s)
+    } else if secs < 3600 {
+        format!("{}m {}s", mins, s)
+    } else if secs < 86400 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}d {}h", days, hours)
+    }
+}
+
+/// How long ago `started_at_millis` (unix milliseconds, as sing-box's
+/// `GetStartedAt` reports it) was, as of `now`. A start time in the future
+/// (clock adjusted since) counts as zero.
+pub fn uptime_since(started_at_millis: i64, now: SystemTime) -> Duration {
+    let started = SystemTime::UNIX_EPOCH + Duration::from_millis(started_at_millis.max(0) as u64);
+    now.duration_since(started).unwrap_or(Duration::ZERO)
 }
 
 #[cfg(test)]
@@ -119,5 +151,48 @@ mod tests {
         let then = from_unix_secs(1_000_000_000);
         let now = from_unix_secs(1_000_000_000 + 120);
         assert_eq!(format_relative_time(then, now), "2 min ago");
+    }
+
+    #[test]
+    fn uptime_under_a_minute_is_seconds() {
+        assert_eq!(format_uptime(Duration::ZERO), "0s");
+        assert_eq!(format_uptime(Duration::from_millis(59_999)), "59s");
+    }
+
+    #[test]
+    fn uptime_under_an_hour_ticks_seconds() {
+        assert_eq!(format_uptime(Duration::from_secs(60)), "1m 0s");
+        assert_eq!(format_uptime(Duration::from_secs(12 * 60 + 5)), "12m 5s");
+        assert_eq!(format_uptime(Duration::from_secs(3599)), "59m 59s");
+    }
+
+    #[test]
+    fn uptime_hours_and_days_drop_seconds() {
+        assert_eq!(format_uptime(Duration::from_secs(3600)), "1h 0m");
+        assert_eq!(
+            format_uptime(Duration::from_secs(3600 + 23 * 60 + 59)),
+            "1h 23m"
+        );
+        assert_eq!(format_uptime(Duration::from_secs(86399)), "23h 59m");
+        assert_eq!(format_uptime(Duration::from_secs(86400)), "1d 0h");
+        assert_eq!(
+            format_uptime(Duration::from_secs(2 * 86400 + 4 * 3600 + 59)),
+            "2d 4h"
+        );
+    }
+
+    #[test]
+    fn uptime_since_measures_from_unix_millis() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(1_759_400_065_500);
+        assert_eq!(
+            uptime_since(1_759_400_000_000, now),
+            Duration::from_millis(65_500)
+        );
+    }
+
+    #[test]
+    fn uptime_since_future_start_is_zero() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_759_400_000);
+        assert_eq!(uptime_since(1_759_400_005_000, now), Duration::ZERO);
     }
 }
