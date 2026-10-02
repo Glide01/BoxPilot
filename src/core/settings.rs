@@ -301,9 +301,17 @@ pub fn powershell_proxy_command(port: u16) -> String {
     )
 }
 
-pub fn wsl_proxy_command(port: u16) -> String {
+/// For POSIX shells: bash/zsh on Linux, and WSL on Windows.
+pub fn posix_proxy_command(port: u16) -> String {
     format!(
         "export http_proxy=\"http://127.0.0.1:{port}\" && export https_proxy=\"http://127.0.0.1:{port}\" && export all_proxy=\"socks5://127.0.0.1:{port}\"",
+        port = port,
+    )
+}
+
+pub fn fish_proxy_command(port: u16) -> String {
+    format!(
+        "set -gx http_proxy http://127.0.0.1:{port}; set -gx https_proxy http://127.0.0.1:{port}; set -gx all_proxy socks5://127.0.0.1:{port}",
         port = port,
     )
 }
@@ -311,6 +319,22 @@ pub fn wsl_proxy_command(port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_proxy_commands_use_the_port() {
+        assert_eq!(
+            powershell_proxy_command(7788),
+            "$env:HTTP_PROXY=\"http://127.0.0.1:7788\"; $env:HTTPS_PROXY=\"http://127.0.0.1:7788\"; $env:ALL_PROXY=\"socks5://127.0.0.1:7788\""
+        );
+        assert_eq!(
+            posix_proxy_command(7788),
+            "export http_proxy=\"http://127.0.0.1:7788\" && export https_proxy=\"http://127.0.0.1:7788\" && export all_proxy=\"socks5://127.0.0.1:7788\""
+        );
+        assert_eq!(
+            fish_proxy_command(1080),
+            "set -gx http_proxy http://127.0.0.1:1080; set -gx https_proxy http://127.0.0.1:1080; set -gx all_proxy socks5://127.0.0.1:1080"
+        );
+    }
 
     /// Settings files written by releases that predate `set_system_proxy` /
     /// `proxy_port` / `tun_ipv6` must still deserialize with the documented

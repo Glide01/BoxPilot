@@ -1,9 +1,11 @@
 //! 设置页:Shell 环境复制、清除缓存。订阅/profile 管理在 `ProfilesPage`。
 
 use crate::core::presentation::sanitize_port;
-use crate::core::settings::{
-    powershell_proxy_command, wsl_proxy_command, StatusLevel, API_PORT, PROXY_PORT,
-};
+#[cfg(not(target_os = "windows"))]
+use crate::core::settings::fish_proxy_command;
+#[cfg(target_os = "windows")]
+use crate::core::settings::powershell_proxy_command;
+use crate::core::settings::{posix_proxy_command, StatusLevel, API_PORT, PROXY_PORT};
 use crate::state::AppState;
 use crate::ui::widgets::{page_header, setting_row};
 use crate::ui::{card_frame, toast};
@@ -115,6 +117,36 @@ impl Render for SettingsPage {
                 })
         };
 
+        let shell_buttons = div().h_flex().gap_2().w_full();
+        #[cfg(target_os = "windows")]
+        let shell_buttons = shell_buttons
+            .child(copy_btn(
+                "ps-env",
+                "PowerShell",
+                powershell_proxy_command(proxy_port),
+                "Copied PowerShell proxy command.",
+            ))
+            .child(copy_btn(
+                "wsl-env",
+                "WSL",
+                posix_proxy_command(proxy_port),
+                "Copied WSL proxy command.",
+            ));
+        #[cfg(not(target_os = "windows"))]
+        let shell_buttons = shell_buttons
+            .child(copy_btn(
+                "posix-env",
+                "bash/zsh",
+                posix_proxy_command(proxy_port),
+                "Copied bash/zsh proxy command.",
+            ))
+            .child(copy_btn(
+                "fish-env",
+                "fish",
+                fish_proxy_command(proxy_port),
+                "Copied fish proxy command.",
+            ));
+
         div()
             .v_flex()
             .size_full()
@@ -156,24 +188,7 @@ impl Render for SettingsPage {
             .child(
                 card_frame(theme)
                     .child(section_label("SHELL ENVIRONMENT"))
-                    .child(
-                        div()
-                            .h_flex()
-                            .gap_2()
-                            .w_full()
-                            .child(copy_btn(
-                                "ps-env",
-                                "PowerShell",
-                                powershell_proxy_command(proxy_port),
-                                "Copied PowerShell proxy command.",
-                            ))
-                            .child(copy_btn(
-                                "wsl-env",
-                                "WSL",
-                                wsl_proxy_command(proxy_port),
-                                "Copied WSL proxy command.",
-                            )),
-                    ),
+                    .child(shell_buttons),
             )
             .child(
                 card_frame(theme).child(

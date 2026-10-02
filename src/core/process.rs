@@ -1,8 +1,9 @@
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -77,9 +78,135 @@ pub fn disable_system_proxy() -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Undo the system proxy sing-box set, if it is still there. sing-box clears
+/// it itself on SIGTERM, so this only matters after a crash or a SIGKILL.
+/// Mirrors sing-box's `common/settings/proxy_linux.go`: GNOME via
+/// `gsettings`, KDE via `kwriteconfig5`/`kwriteconfig6`. Each desktop is
+/// reset only while it still points at 127.0.0.1, so a proxy the user has
+/// set since is left alone. A missing tool means that desktop isn't in use
+/// and is skipped silently.
+#[cfg(target_os = "linux")]
+pub fn disable_system_proxy() -> Result<(), String> {
+    let mut errors = Vec::new();
+
+    if let (Some(mode), Some(host)) = (
+        read_command("gsettings", &["get", "org.gnome.system.proxy", "mode"]),
+        read_command("gsettings", &["get", "org.gnome.system.proxy.http", "host"]),
+    ) {
+        if is_our_gnome_proxy(&mode, &host) {
+            if let Err(e) = run_command(
+                "gsettings",
+                &["set", "org.gnome.system.proxy", "mode", "none"],
+            ) {
+                errors.push(e);
+            }
+        }
+    }
+
+    // Same preference order as sing-box; both versions edit the same
+    // ~/.config/kioslaverc.
+    let kde = ["5", "6"].into_iter().find_map(|v| {
+        let read = format!("kreadconfig{v}");
+        let proxy_type = read_command(&read, &kde_proxy_key("ProxyType"))?;
+        let http_proxy = read_command(&read, &kde_proxy_key("httpProxy"))?;
+        Some((format!("kwriteconfig{v}"), proxy_type, http_proxy))
+    });
+    if let Some((write, proxy_type, http_proxy)) = kde {
+        if is_our_kde_proxy(&proxy_type, &http_proxy) {
+            let mut args = kde_proxy_key("ProxyType");
+            args.push("0");
+            match run_command(&write, &args) {
+                // Tell running KIO apps to re-read it, as sing-box does.
+                Ok(()) => {
+                    let _ = run_command(
+                        "dbus-send",
+                        &[
+                            "--type=signal",
+                            "/KIO/Scheduler",
+                            "org.kde.KIO.Scheduler.reparseSlaveConfiguration",
+                            "string:''",
+                        ],
+                    );
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to disable system proxy: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn kde_proxy_key(key: &str) -> Vec<&str> {
+    vec![
+        "--file",
+        "kioslaverc",
+        "--group",
+        "Proxy Settings",
+        "--key",
+        key,
+    ]
+}
+
+/// Stdout of a successful run, or `None` if the tool is missing or fails.
+#[cfg(target_os = "linux")]
+fn read_command(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("Failed to run {program}: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{program} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn disable_system_proxy() -> Result<(), String> {
     Ok(())
+}
+
+/// The GNOME proxy is ours while it is still in manual mode on the loopback
+/// host sing-box writes. Takes raw `gsettings get` output (GVariant text,
+/// e.g. `'manual'`). Pure so it is tested on every platform.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_our_gnome_proxy(mode: &str, http_host: &str) -> bool {
+    let unquote = |s: &str| s.trim().trim_matches('\'').to_string();
+    unquote(mode) == "manual" && unquote(http_host) == "127.0.0.1"
+}
+
+/// The KDE proxy is ours while it is still manual (`ProxyType=1`) with an
+/// HTTP proxy on the loopback host (sing-box writes
+/// `http://127.0.0.1:<port>`). Takes raw `kreadconfig` output.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_our_kde_proxy(proxy_type: &str, http_proxy: &str) -> bool {
+    proxy_type.trim() == "1" && http_proxy.contains("127.0.0.1")
 }
 
 /// Match sing-box's wintun adapter by FriendlyName, case-insensitively. Pulled
@@ -219,8 +346,22 @@ pub fn remove_tun_adapter() {
     }
 }
 
+// Nothing to do on Linux: the tun device goes away with sing-box's fd, and
+// sing-box removes its routes itself on SIGTERM.
 #[cfg(not(target_os = "windows"))]
 pub fn remove_tun_adapter() {}
+
+/// Best-effort `resolvectl flush-caches` (systemd-resolved). Without it, or
+/// without permission to flush, the cache is simply kept.
+#[cfg(target_os = "linux")]
+pub fn flush_dns_linux() {
+    let _ = Command::new("resolvectl")
+        .arg("flush-caches")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
 
 /// Pre-start prep (TUN cleanup + DNS flush). Run on a background thread.
 pub fn prepare_process_start(is_tun_mode: bool) {
@@ -231,6 +372,8 @@ pub fn prepare_process_start(is_tun_mode: bool) {
     {
         let _ = flush_dns_windows();
     }
+    #[cfg(target_os = "linux")]
+    flush_dns_linux();
 }
 
 /// Post-stop cleanup (disable system proxy + TUN removal). Fire-and-forget on a thread.
@@ -344,6 +487,31 @@ pub fn start_sing_box(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    // Have the kernel SIGTERM sing-box if BoxPilot dies, so a crash doesn't
+    // orphan it with its routes and system proxy still in place. It fires
+    // when the spawning *thread* exits; this runs on the UI thread, which
+    // lives as long as the app. The kernel clears it on exec of a binary
+    // with file capabilities, so a setcap'd sing-box isn't covered.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: runs between fork and exec; only async-signal-safe
+        // syscalls (prctl, getppid) and no allocation on the success path.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                // BoxPilot may have died before prctl took effect.
+                if libc::getppid() != parent {
+                    return Err(io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                Ok(())
+            });
+        }
+    }
+
     let mut child = cmd.spawn()?;
     let (sender, receiver) = mpsc::channel();
 
@@ -357,9 +525,160 @@ pub fn start_sing_box(
     Ok((child, receiver))
 }
 
+/// Ask sing-box to stop, without waiting. On Linux that's SIGTERM, so it can
+/// remove its auto_route rules and system proxy on the way out; elsewhere
+/// it's `kill()`. Cheap enough for the UI thread. Follow with `reap_child`.
+pub fn signal_stop(child: &mut Child) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // A reaped child's pid may already belong to another process;
+        // `kill()` has the same guard.
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        // SAFETY: a plain syscall on our own un-reaped child's pid.
+        if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        child.kill()
+    }
+}
+
+/// Wait for a child that `signal_stop` was sent to. On Linux, give it up to
+/// `grace` to exit on its own, then SIGKILL it. Blocking: keep it off the
+/// UI thread.
+pub fn reap_child(child: &mut Child, grace: Duration) -> io::Result<ExitStatus> {
+    #[cfg(target_os = "linux")]
+    {
+        const POLL: Duration = Duration::from_millis(50);
+        let deadline = std::time::Instant::now() + grace;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(POLL);
+        }
+        let _ = child.kill();
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = grace;
+    child.wait()
+}
+
+/// `signal_stop` + `reap_child`: stop sing-box and wait at most `grace`
+/// before killing it. Blocking.
+pub fn terminate_child(child: &mut Child, grace: Duration) -> io::Result<ExitStatus> {
+    let _ = signal_stop(child);
+    reap_child(child, grace)
+}
+
+/// Toast text for a sing-box that exited on its own. `signal` is the Unix
+/// signal that killed it, `code` its exit code if it exited normally.
+pub fn exit_message(code: Option<i32>, signal: Option<i32>) -> String {
+    match (signal, code) {
+        (Some(signal), _) => format!("sing-box was killed by signal {signal}."),
+        (None, Some(code)) => format!("sing-box exited with code {code}."),
+        (None, None) => "sing-box exited.".to_string(),
+    }
+}
+
+pub fn describe_exit(status: &ExitStatus) -> String {
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(status);
+    #[cfg(not(unix))]
+    let signal = None;
+    exit_message(status.code(), signal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_message_prefers_signal_then_code() {
+        assert_eq!(
+            exit_message(None, Some(9)),
+            "sing-box was killed by signal 9."
+        );
+        assert_eq!(exit_message(Some(1), None), "sing-box exited with code 1.");
+        assert_eq!(exit_message(Some(0), None), "sing-box exited with code 0.");
+        assert_eq!(exit_message(None, None), "sing-box exited.");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn describe_exit_reads_unix_wait_status() {
+        use std::os::unix::process::ExitStatusExt;
+        // Raw wait(2) status: low 7 bits = signal, else code in bits 8..16.
+        assert_eq!(
+            describe_exit(&ExitStatus::from_raw(9)),
+            "sing-box was killed by signal 9."
+        );
+        assert_eq!(
+            describe_exit(&ExitStatus::from_raw(1 << 8)),
+            "sing-box exited with code 1."
+        );
+    }
+
+    /// Only a proxy still pointing where sing-box put it gets reset; one the
+    /// user changed since (another host, or mode off/auto) is left alone.
+    #[test]
+    fn gnome_proxy_is_ours_only_when_manual_on_loopback() {
+        assert!(is_our_gnome_proxy("'manual'\n", "'127.0.0.1'\n"));
+        assert!(is_our_gnome_proxy("manual", "127.0.0.1"));
+        assert!(!is_our_gnome_proxy("'none'\n", "'127.0.0.1'\n"));
+        assert!(!is_our_gnome_proxy("'auto'\n", "'127.0.0.1'\n"));
+        assert!(!is_our_gnome_proxy("'manual'\n", "'proxy.corp.example'\n"));
+        assert!(!is_our_gnome_proxy("'manual'\n", "''\n"));
+        assert!(!is_our_gnome_proxy("'manual'\n", "'127.0.0.10'\n"));
+    }
+
+    #[test]
+    fn kde_proxy_is_ours_only_when_manual_on_loopback() {
+        assert!(is_our_kde_proxy("1\n", "http://127.0.0.1:7788\n"));
+        assert!(!is_our_kde_proxy("0\n", "http://127.0.0.1:7788\n"));
+        assert!(!is_our_kde_proxy("2\n", "http://127.0.0.1:7788\n"));
+        assert!(!is_our_kde_proxy("1\n", "http://proxy.corp.example:3128\n"));
+        assert!(!is_our_kde_proxy("1\n", "\n"));
+        assert!(!is_our_kde_proxy("\n", "\n"));
+    }
+
+    /// A child that ignores nothing: SIGTERM ends it well before the grace
+    /// period, and the status says so.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminate_child_stops_with_sigterm() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let started = std::time::Instant::now();
+        let status = terminate_child(&mut child, Duration::from_secs(3)).unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A child that ignores SIGTERM is SIGKILLed once the grace runs out.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminate_child_escalates_to_sigkill() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child = Command::new("sh")
+            .args(["-c", "trap '' TERM; exec sleep 30"])
+            .spawn()
+            .unwrap();
+        // Let sh install the trap before we signal it.
+        thread::sleep(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let status = terminate_child(&mut child, Duration::from_millis(300)).unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     /// The native SetupAPI path uninstalls only adapters whose FriendlyName
     /// begins with "sing-tun" (case-insensitive). Getting this wrong would

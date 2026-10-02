@@ -1,5 +1,6 @@
 use crate::core::process::{
-    cleanup_after_process_stop, prepare_process_start, start_sing_box,
+    cleanup_after_process_stop, describe_exit, prepare_process_start, reap_child, signal_stop,
+    start_sing_box, terminate_child,
 };
 use crate::core::settings::{StatusEvent, StatusLevel, SING_EXECUTABLE};
 use crate::state::log_buffer::LogBuffer;
@@ -11,6 +12,9 @@ use std::time::Duration;
 
 const LOG_DRAIN_INTERVAL: Duration = Duration::from_millis(50);
 const CHILD_WAIT_INTERVAL: Duration = Duration::from_millis(200);
+/// How long a stop waits for sing-box to exit on SIGTERM before killing it
+/// (Linux; Windows kills right away).
+const STOP_GRACE: Duration = Duration::from_secs(3);
 
 /// Snapshot of paths + mode flags captured when start is requested.
 #[derive(Clone)]
@@ -142,25 +146,29 @@ impl ProcessSession {
                 let wait = cx.spawn(async move |this, cx| {
                     loop {
                         cx.background_executor().timer(CHILD_WAIT_INTERVAL).await;
+                        // Some(message) once the child has exited on its own.
                         let exited = this.update(cx, |session, _cx| {
                             if let ProcessState::Running { child, .. } = &mut session.state {
-                                matches!(child.try_wait(), Ok(Some(_)))
+                                match child.try_wait() {
+                                    Ok(Some(status)) => Some(describe_exit(&status)),
+                                    _ => None,
+                                }
                             } else {
-                                true
+                                Some("sing-box exited.".to_string())
                             }
                         });
                         match exited {
-                            Ok(true) => {
+                            Ok(Some(message)) => {
                                 let _ = this.update(cx, |session, cx| {
                                     cx.emit(StatusEvent {
                                         level: StatusLevel::Warning,
-                                        message: format!("{} exited.", SING_EXECUTABLE),
+                                        message,
                                     });
                                     session.stop(cx);
                                 });
                                 return;
                             }
-                            Ok(false) => continue,
+                            Ok(None) => continue,
                             Err(_) => return,
                         }
                     }
@@ -190,10 +198,12 @@ impl ProcessSession {
         cx.notify();
     }
 
-    /// Stop the running child. `kill()` only sends the termination signal, so
-    /// it stays on the UI thread; the potentially slow reap (`wait()`) and the
-    /// system-proxy/TUN cleanup run on the background executor. The task is
-    /// kept in `Stopped { cleanup }` so a subsequent `start()` can await it.
+    /// Stop the running child. `signal_stop` only sends the signal (SIGTERM
+    /// on Linux, kill on Windows), so it stays on the UI thread; the
+    /// potentially slow reap (up to `STOP_GRACE` before a SIGKILL on Linux)
+    /// and the system-proxy/TUN cleanup run on the background executor. The
+    /// task is kept in `Stopped { cleanup }` so a subsequent `start()` can
+    /// await it.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         match std::mem::replace(&mut self.state, ProcessState::Stopped { cleanup: None }) {
             ProcessState::Running {
@@ -203,11 +213,11 @@ impl ProcessSession {
                 drain,
                 ..
             } => {
-                let _ = child.kill();
+                let _ = signal_stop(&mut child);
                 drain.detach();
                 let cleanup = cx.background_executor().spawn(async move {
                     let mut child = child;
-                    let _ = child.wait();
+                    let _ = reap_child(&mut child, STOP_GRACE);
                     cleanup_after_process_stop(running_set_system_proxy, !running_mode);
                 });
                 self.state = ProcessState::Stopped {
@@ -231,7 +241,8 @@ impl Drop for ProcessSession {
         // Defensive: if dropped without `stop()` (e.g. on app quit before
         // `cx.on_app_quit` runs), still kill the child so the pipe-reader
         // threads exit cleanly. Cleanup runs synchronously since we have no
-        // executor handle here.
+        // executor handle here, so quitting can block for up to `STOP_GRACE`
+        // while sing-box handles SIGTERM.
         match std::mem::replace(&mut self.state, ProcessState::Stopped { cleanup: None }) {
             ProcessState::Running {
                 child,
@@ -240,8 +251,7 @@ impl Drop for ProcessSession {
                 ..
             } => {
                 let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = terminate_child(&mut child, STOP_GRACE);
                 cleanup_after_process_stop(running_set_system_proxy, !running_mode);
             }
             // A recent stop()'s background cleanup may still be in flight;
