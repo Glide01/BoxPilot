@@ -71,7 +71,12 @@ pub fn sidebar(
         _ => true,
     });
 
-    Sidebar::new("nav")
+    // Keyed by the active page so a page switch starts the items with fresh
+    // element state. gpui only tracks hover on an element while it has a
+    // hover style, and gpui-component drops that style on the active item:
+    // the item clicked while hovered would otherwise keep a stale hover flag
+    // and show hover text colours after it stops being active.
+    Sidebar::new(("nav", active as usize))
         .collapsible(false)
         .w(px(190.))
         .header(
