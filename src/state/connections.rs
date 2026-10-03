@@ -6,20 +6,21 @@
 
 use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{ConnectionEvents, ConnectionTable, SingBoxApi};
+use crate::state::drain::{next_batch_or, Wake};
+use futures_channel::mpsc;
 use gpui::{Context, EventEmitter, Task};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// How often the UI-thread drain task applies queued batches. sing-box sends
-/// rate updates once per `CONNECTIONS_INTERVAL` (1s) and opens/closes as
-/// they happen; half a second keeps opens, closes and Close-button feedback
-/// prompt without a render per batch.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(500);
+/// Once a batch arrives, how long the drain task lets the rest of a burst
+/// queue up before applying it. sing-box sends rate updates once per
+/// `CONNECTIONS_INTERVAL` (1s) and opens/closes as they happen; this keeps
+/// opens, closes and Close-button feedback prompt without a render per batch.
+const COALESCE: Duration = Duration::from_millis(250);
 /// While connections are open but the stream is quiet, still re-render this
-/// often so their age column keeps counting.
+/// often so their age column keeps counting. No clock runs with none open.
 const AGE_TICK: Duration = Duration::from_secs(1);
 /// Delay before the reader thread re-subscribes after the stream fails while
 /// still running — covers the window before the sing-box API is listening.
@@ -45,7 +46,7 @@ pub struct Connections {
     /// Liveness flag for the current streaming session. Cleared by `stop()`
     /// and `Drop` so the detached reader thread self-terminates.
     running: Arc<AtomicBool>,
-    /// UI-thread task draining batches into `table` — dropped (= cancelled)
+    /// UI-thread task applying batches to `table` as they arrive — dropped (= cancelled)
     /// by `stop()`. `close`/`close_all` are fire-and-forget `.detach()`
     /// requests, bounded by the unary call timeout.
     _drain: Option<Task<()>>,
@@ -87,7 +88,7 @@ impl Connections {
         self.revision += 1;
         self.live = true;
 
-        let (tx, rx) = mpsc::channel::<ConnectionEvents>();
+        let (tx, mut rx) = mpsc::unbounded::<ConnectionEvents>();
         let api = self.api;
         thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
@@ -96,7 +97,7 @@ impl Connections {
                     if !running.load(Ordering::SeqCst) {
                         return false;
                     }
-                    receiver_gone = tx.send(batch).is_err();
+                    receiver_gone = tx.unbounded_send(batch).is_err();
                     !receiver_gone
                 });
                 if receiver_gone || !running.load(Ordering::SeqCst) {
@@ -109,26 +110,23 @@ impl Connections {
                     thread::sleep(RECONNECT_DELAY);
                 }
             }
-            // `tx` drops here → the drain task sees `Disconnected` and exits.
+            // `tx` drops here → the drain task sees the close and exits.
         });
 
         let drain = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
             let mut last_notify = Instant::now();
+            // Open connections: the age column needs a clock.
+            let mut ticking = false;
             loop {
-                cx.background_executor().timer(DRAIN_INTERVAL).await;
-
-                let mut batches = Vec::new();
-                let mut disconnected = false;
-                loop {
-                    match rx.try_recv() {
-                        Ok(batch) => batches.push(batch),
-                        Err(mpsc::TryRecvError::Empty) => break,
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            disconnected = true;
-                            break;
-                        }
-                    }
-                }
+                let clock =
+                    ticking.then(|| executor.timer(AGE_TICK.saturating_sub(last_notify.elapsed())));
+                let batches = match next_batch_or(&mut rx, clock, || executor.timer(COALESCE)).await
+                {
+                    Wake::Batch(batches) => batches,
+                    Wake::Timer => Vec::new(),
+                    Wake::Closed => return,
+                };
 
                 let alive = this.update(cx, |state, cx| {
                     let changed = !batches.is_empty();
@@ -146,9 +144,11 @@ impl Connections {
                         last_notify = Instant::now();
                         cx.notify();
                     }
+                    state.table.open_count() > 0
                 });
-                if alive.is_err() || disconnected {
-                    return;
+                match alive {
+                    Ok(open) => ticking = open,
+                    Err(_) => return,
                 }
             }
         });

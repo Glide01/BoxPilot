@@ -348,6 +348,15 @@ impl LogMerge {
         changed
     }
 
+    /// Whether a pipe line is held back, waiting for its API twin or for
+    /// the grace to run out — i.e. whether `tick` can still change the view
+    /// without new input. The drain only runs a clock while this is true.
+    pub fn has_pending(&self) -> bool {
+        self.pending
+            .iter()
+            .any(|p| matches!(p.state, PendingState::Held(_)))
+    }
+
     /// Advance the clock: show held pipe lines whose grace ran out, forget
     /// expired matches. Returns whether the view changed.
     pub fn tick(&mut self, now: Instant) -> bool {
@@ -775,6 +784,39 @@ mod tests {
         assert!(merge.tick(t0 + PIPE_GRACE));
         assert_eq!(texts(&merge), vec!["WARN[0000] deprecated: legacy field"]);
         assert_eq!(merge.entries()[0].source, LogSource::Pipe);
+    }
+
+    #[test]
+    fn has_pending_only_while_a_pipe_line_is_held() {
+        let t0 = Instant::now();
+        let mut merge = LogMerge::new(100);
+        assert!(!merge.has_pending());
+
+        // Stopped / pre-API: pipe lines show at once, nothing is held.
+        merge.push_pipe(&[info("before")], t0);
+        assert!(!merge.has_pending());
+        merge.begin_run();
+        merge.push_pipe(&[info("pre-api")], t0);
+        assert!(!merge.has_pending(), "shown pre-API lines are not held");
+
+        // API live: a pipe line waits for its twin…
+        merge.push_api(reset(vec![]), t0);
+        merge.push_pipe(&[info("a")], t0);
+        assert!(merge.has_pending());
+        merge.push_api(append(vec![api_line(LogLevel::Info, "a")]), t0);
+        assert!(!merge.has_pending(), "its twin took it");
+
+        // …or for the grace to run out.
+        merge.push_pipe(&[info("stderr only")], t0);
+        assert!(merge.has_pending());
+        assert!(merge.tick(t0 + PIPE_GRACE));
+        assert!(!merge.has_pending());
+
+        // The end of the API stream lets held lines through.
+        merge.push_pipe(&[info("late")], t0 + PIPE_GRACE);
+        assert!(merge.has_pending());
+        assert!(merge.end_api());
+        assert!(!merge.has_pending());
     }
 
     /// An API twin arriving after the grace no longer matches: the line has

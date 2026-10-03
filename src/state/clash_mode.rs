@@ -12,16 +12,19 @@
 
 use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{grpc_code, mode_index, ClashModeStatus, SingBoxApi};
+use crate::state::drain::next_batch;
+use futures_channel::mpsc;
 use gpui::{Context, EventEmitter, Task};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// How often the UI-thread task applies what the reader thread queued. Mode
-/// pushes are rare (one per switch), so this only bounds the echo latency.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Once a push arrives, how long the UI-thread task waits for more before
+/// applying. Mode pushes are rare (one per switch); the status and the
+/// subscription's first push arrive together at start, and this lands them
+/// as one render.
+const COALESCE: Duration = Duration::from_millis(50);
 /// Delay before the reader thread retries after a failed call while still
 /// running — covers the window before the sing-box API is listening.
 /// Bounded by the `running` flag.
@@ -45,7 +48,8 @@ pub struct ClashMode {
     /// Liveness flag for the current session's reader thread. Cleared by
     /// `clear()` and `Drop` so the detached thread self-terminates.
     running: Arc<AtomicBool>,
-    /// UI-thread drain task; dropped (= cancelled) by `clear()`.
+    /// UI-thread task applying pushes as they arrive; dropped (= cancelled)
+    /// by `clear()`.
     _task: Option<Task<()>>,
 }
 
@@ -93,7 +97,7 @@ impl ClashMode {
         self.modes.clear();
         self.current.clear();
 
-        let (tx, rx) = mpsc::channel::<ModeEvent>();
+        let (tx, mut rx) = mpsc::unbounded::<ModeEvent>();
         let api = self.api;
         thread::spawn(move || {
             let mut loaded = false;
@@ -101,7 +105,7 @@ impl ClashMode {
                 if !loaded {
                     match api.get_clash_mode_status() {
                         Ok(status) => {
-                            if tx.send(ModeEvent::Status(status)).is_err() {
+                            if tx.unbounded_send(ModeEvent::Status(status)).is_err() {
                                 break;
                             }
                             loaded = true;
@@ -117,7 +121,8 @@ impl ClashMode {
                     }
                 }
                 let result = api.stream_clash_mode(|mode| {
-                    running.load(Ordering::SeqCst) && tx.send(ModeEvent::Current(mode)).is_ok()
+                    running.load(Ordering::SeqCst)
+                        && tx.unbounded_send(ModeEvent::Current(mode)).is_ok()
                 });
                 if !running.load(Ordering::SeqCst) {
                     break;
@@ -131,23 +136,10 @@ impl ClashMode {
             }
         });
 
-        let task = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(DRAIN_INTERVAL).await;
-
-            let mut events = Vec::new();
-            let mut disconnected = false;
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => events.push(event),
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-
-            if !events.is_empty() {
+        // Ends when the reader thread does (no clash mode manager).
+        let task = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            while let Some(events) = next_batch(&mut rx, || executor.timer(COALESCE)).await {
                 let alive = this.update(cx, |state, cx| {
                     for event in events {
                         state.apply(event);
@@ -157,9 +149,6 @@ impl ClashMode {
                 if alive.is_err() {
                     return;
                 }
-            }
-            if disconnected {
-                return;
             }
         });
         self._task = Some(task);

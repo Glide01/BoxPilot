@@ -7,17 +7,23 @@
 use crate::core::log_merge::{visible, LogEntry, LogMerge};
 use crate::core::settings::MAX_LOG_LINES;
 use crate::core::singbox_api::{LogBatch, LogLevel, SingBoxApi};
+use crate::state::drain::{next_batch_or, Wake};
+use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use gpui::{Context, Task};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// How often the UI-thread task applies queued API batches and advances the
-/// merge clock. One render per tick at most, however busy the stream.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(100);
+/// Once the stream delivers, how long the UI-thread task lets the rest of
+/// the burst queue up before applying it. At most one render per this,
+/// however busy the stream.
+const COALESCE: Duration = Duration::from_millis(200);
+/// While pipe lines are held back (`LogMerge::has_pending`), how often the
+/// merge clock advances so they show once `PIPE_GRACE` runs out. No clock
+/// runs otherwise.
+const PENDING_TICK: Duration = Duration::from_millis(250);
 /// Delay before the reader thread re-subscribes after the stream ends while
 /// still running — covers the window before the sing-box API is listening,
 /// and the routine idle read timeout. Bounded by the `running` flag.
@@ -47,10 +53,15 @@ pub struct LogBuffer {
     /// Liveness flag for the current API stream. Cleared by `stop_api()` and
     /// `Drop` so the detached reader thread self-terminates.
     running: Arc<AtomicBool>,
-    /// Queued API events; drained by `_drain` every tick and once more by
-    /// `stop_api()`, so the last lines before an exit aren't lost.
-    api_rx: Option<mpsc::Receiver<ApiEvent>>,
-    /// UI-thread task ticking the drain. Dropped (= cancelled) by `stop_api()`.
+    /// Queued API events. Kept here rather than in the drain task so that
+    /// `stop_api()` can apply what is left synchronously — the last lines
+    /// before an exit aren't lost.
+    api_rx: Option<UnboundedReceiver<ApiEvent>>,
+    /// Wakes the drain task: the reader thread after each event, and
+    /// `push_pipe` when it starts holding lines back (the clock must run).
+    wake: Option<UnboundedSender<()>>,
+    /// UI-thread task applying `api_rx` when woken. Dropped (= cancelled)
+    /// by `stop_api()`.
     _drain: Option<Task<()>>,
 }
 
@@ -65,6 +76,7 @@ impl LogBuffer {
             api,
             running: Arc::new(AtomicBool::new(false)),
             api_rx: None,
+            wake: None,
             _drain: None,
         }
     }
@@ -110,8 +122,15 @@ impl LogBuffer {
 
     /// Lines from sing-box's stdout/stderr, raw, oldest first.
     pub fn push_pipe(&mut self, lines: Vec<String>, cx: &mut Context<Self>) {
+        let was_pending = self.merge.has_pending();
         if self.merge.push_pipe(&lines, Instant::now()) {
             cx.notify();
+        }
+        // Lines now held back: the drain task has to start its clock.
+        if !was_pending && self.merge.has_pending() {
+            if let Some(wake) = &self.wake {
+                let _ = wake.unbounded_send(());
+            }
         }
     }
 
@@ -134,16 +153,23 @@ impl LogBuffer {
         self.running = running.clone();
         self.merge.begin_run();
 
-        let (tx, rx) = mpsc::channel::<ApiEvent>();
+        let (tx, rx) = mpsc::unbounded::<ApiEvent>();
+        let (wake_tx, mut wake_rx) = mpsc::unbounded::<()>();
         self.api_rx = Some(rx);
+        self.wake = Some(wake_tx.clone());
         let api = self.api;
         thread::spawn(move || {
+            // Queue the event, then wake the drain task. Fails once
+            // `stop_api()` has dropped the receiver.
+            let send = |event: ApiEvent| {
+                tx.unbounded_send(event).is_ok() && wake_tx.unbounded_send(()).is_ok()
+            };
             let mut level_known = false;
             while running.load(Ordering::SeqCst) {
                 if !level_known {
                     if let Ok(level) = api.get_default_log_level() {
                         level_known = true;
-                        if tx.send(ApiEvent::DefaultLevel(level)).is_err() {
+                        if !send(ApiEvent::DefaultLevel(level)) {
                             break;
                         }
                     }
@@ -152,7 +178,7 @@ impl LogBuffer {
                 // up yet, idle (re-subscribe; the snapshot replaces what we
                 // have), or going away (the edge observer stops us).
                 let _ = api.stream_logs(|batch| {
-                    running.load(Ordering::SeqCst) && tx.send(ApiEvent::Batch(batch)).is_ok()
+                    running.load(Ordering::SeqCst) && send(ApiEvent::Batch(batch))
                 });
                 if !running.load(Ordering::SeqCst) {
                     break;
@@ -161,10 +187,24 @@ impl LogBuffer {
             }
         });
 
-        let drain = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(DRAIN_INTERVAL).await;
-            if this.update(cx, |logs, cx| logs.drain_api(cx)).is_err() {
-                return;
+        // Sleeps until woken; runs a clock only while lines are held back.
+        let drain = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            let mut held = false;
+            loop {
+                let clock = held.then(|| executor.timer(PENDING_TICK));
+                if let Wake::Closed =
+                    next_batch_or(&mut wake_rx, clock, || executor.timer(COALESCE)).await
+                {
+                    return;
+                }
+                match this.update(cx, |logs, cx| {
+                    logs.drain_api(cx);
+                    logs.merge.has_pending()
+                }) {
+                    Ok(pending) => held = pending,
+                    Err(_) => return,
+                }
             }
         });
         self._drain = Some(drain);
@@ -178,16 +218,21 @@ impl LogBuffer {
         self.running.store(false, Ordering::SeqCst);
         self._drain = None;
         self.api_rx = None;
+        self.wake = None;
         if self.merge.end_api() {
             cx.notify();
         }
     }
 
     fn drain_api(&mut self, cx: &mut Context<Self>) {
-        let Some(rx) = &self.api_rx else {
+        let Some(rx) = &mut self.api_rx else {
             return;
         };
-        let events: Vec<ApiEvent> = rx.try_iter().collect();
+        let mut events = Vec::new();
+        // Stops when nothing is queued (or the reader thread is gone).
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
         let now = Instant::now();
         let mut changed = false;
         for event in events {
