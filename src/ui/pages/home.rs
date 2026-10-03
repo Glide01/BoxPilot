@@ -1,19 +1,24 @@
 //! 主页:焦点式大圆连接按钮(运行中下附运行时长 + sing-box 版本)+ 运行
-//! 状态条(内存 / 连接数 / 累计上传下载,仅运行中)+ Clash 模式切换(仅运行中
-//! 且 ≥2 个模式)+ 设置行(代理模式 / 系统代理)+ 订阅条。
+//! 状态条(内存 / 连接数 / 累计上传下载 + 近两分钟实时流量图,仅运行中)+
+//! Clash 模式切换(仅运行中且 ≥2 个模式)+ 设置行(代理模式 / 系统代理)+ 订阅条。
 
 use crate::actions::{ToggleProcess, KEY_CONTEXT};
 use crate::core::bytefmt::format_bytes;
 use crate::core::presentation::{runtime_subtitle, updated_label, ConnectionStatus};
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
+use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{minute_ticker, setting_row, usage_meter};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    button::{Button, ButtonVariants}, scroll::ScrollableElement, spinner::Spinner,
-    switch::Switch, tab::TabBar,
-    theme::Theme, tooltip::Tooltip, ActiveTheme, Disableable,
-    Icon, Sizable, StyledExt,
+    button::{Button, ButtonVariants},
+    scroll::ScrollableElement,
+    spinner::Spinner,
+    switch::Switch,
+    tab::TabBar,
+    theme::Theme,
+    tooltip::Tooltip,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt,
 };
 use std::time::SystemTime;
 
@@ -31,6 +36,9 @@ fn lighter(color: Hsla, amount: f32) -> Hsla {
 
 pub struct HomePage {
     app_state: Entity<AppState>,
+    /// The live traffic chart in the stats card, its own (cached) view so
+    /// its per-mouse-move hover repaints only the chart.
+    traffic_chart: Entity<TrafficChart>,
     /// Re-renders once a minute: the subscription card's "updated N min
     /// ago" and expiry countdown move with the clock, and while sing-box is
     /// stopped no status sample ticks the page.
@@ -48,8 +56,10 @@ impl HomePage {
         // uptime label.
         cx.observe(&traffic, |_, _, cx| cx.notify()).detach();
         cx.observe(&clash_mode, |_, _, cx| cx.notify()).detach();
+        let traffic_chart = cx.new(|cx| TrafficChart::new(traffic, cx));
         Self {
             app_state,
+            traffic_chart,
             _ticker: minute_ticker(cx),
         }
     }
@@ -176,6 +186,11 @@ impl Render for HomePage {
             None
         };
         let clash_mode = state.clash_mode.clone();
+        let traffic_chart = AnyView::from(self.traffic_chart.clone()).cached(
+            StyleRefinement::default()
+                .w_full()
+                .h(px(traffic_chart::HEIGHT)),
+        );
 
         let active = state.settings.active_profile();
         let profile_name = active.map(|p| p.name.clone()).unwrap_or_default();
@@ -308,32 +323,35 @@ impl Render for HomePage {
                     )
                     .child(div().flex_1().max_h_24()),
             )
-            // —— 运行状态条(仅运行中):内存 / 连接数 / 累计上传 / 累计下载 ——
+            // —— 运行状态条(仅运行中):内存 / 连接数 / 累计上传 / 累计下载,
+            // 下接近两分钟上下行速率图(同一张卡,省一层卡片边距) ——
             .when(connected, |this| {
                 this.child(
-                    card_frame(theme).child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_4()
-                            .w_full()
-                            .child(stat_cell(theme, "Memory", format_bytes(runtime.memory)))
-                            .child(stat_cell(
-                                theme,
-                                "Connections",
-                                runtime.connections_in.to_string(),
-                            ))
-                            .child(stat_cell(
-                                theme,
-                                "Uploaded",
-                                format_bytes(runtime.uplink_total),
-                            ))
-                            .child(stat_cell(
-                                theme,
-                                "Downloaded",
-                                format_bytes(runtime.downlink_total),
-                            )),
-                    ),
+                    card_frame(theme)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_4()
+                                .w_full()
+                                .child(stat_cell(theme, "Memory", format_bytes(runtime.memory)))
+                                .child(stat_cell(
+                                    theme,
+                                    "Connections",
+                                    runtime.connections_in.to_string(),
+                                ))
+                                .child(stat_cell(
+                                    theme,
+                                    "Uploaded",
+                                    format_bytes(runtime.uplink_total),
+                                ))
+                                .child(stat_cell(
+                                    theme,
+                                    "Downloaded",
+                                    format_bytes(runtime.downlink_total),
+                                )),
+                        )
+                        .child(traffic_chart),
                 )
             })
             // —— Clash 模式(仅运行中且 ≥2 个模式;停止时 ClashMode 已清空) ——
@@ -364,20 +382,17 @@ impl Render for HomePage {
                             ),
                         ),
                     )
-                    .child(
-                        card_frame(theme).flex_1().justify_center().child(
-                            setting_row(theme, "System Proxy", None).child(
-                                Switch::new("system-proxy")
-                                    .checked(system_proxy)
-                                    .on_click(move |checked: &bool, _, cx| {
-                                        let value = *checked;
-                                        app_state_system.update(cx, |state, cx| {
-                                            state.set_system_proxy(value, cx)
-                                        });
-                                    }),
+                    .child(card_frame(theme).flex_1().justify_center().child(
+                        setting_row(theme, "System Proxy", None).child(
+                            Switch::new("system-proxy").checked(system_proxy).on_click(
+                                move |checked: &bool, _, cx| {
+                                    let value = *checked;
+                                    app_state_system
+                                        .update(cx, |state, cx| state.set_system_proxy(value, cx));
+                                },
                             ),
                         ),
-                    ),
+                    )),
             )
             // —— 订阅条(逻辑与改版前一致) ——
             .child(
