@@ -5,7 +5,7 @@ use super::SettingsPage;
 use crate::core::settings::CloseAction;
 use crate::state::AppState;
 use crate::ui::{tray, widgets::setting_row};
-use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
+use gpui::{div, AnyElement, Context, Entity, IntoElement, ParentElement, Styled, Window};
 use gpui_component::{
     tab::{Tab, TabBar},
     ActiveTheme,
@@ -27,17 +27,32 @@ pub(super) fn rows(
 ) -> Vec<AnyElement> {
     // Availability changes refresh every window (`tray::set_available`), so
     // reading it here stays current even on a cached page.
-    let tray_available = tray::is_available(cx);
+    if !tray::is_available(cx) {
+        // Nothing to choose: closing always quits. Show that as text rather
+        // than a disabled segmented control (whose selected tab also lost its
+        // highlight on re-render). The saved choice is kept for a desktop
+        // that has a tray.
+        let theme = cx.theme();
+        return vec![setting_row(
+            theme,
+            "Close button",
+            Some("No system tray on this desktop to keep BoxPilot running in."),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("Quits BoxPilot"),
+        )
+        .into_any_element()];
+    }
+
     let current = app_state.read(cx).settings.close_action;
     let selected = OPTIONS
         .iter()
         .position(|(action, _)| *action == current)
         .unwrap_or(0);
-    let description = if tray_available {
-        "While BoxPilot runs in the tray, sing-box stays connected."
-    } else {
-        "No system tray on this desktop — closing quits BoxPilot"
-    };
 
     let app_state = app_state.clone();
     let control = TabBar::new("close-action")
@@ -49,13 +64,13 @@ pub(super) fn rows(
                 app_state.update(cx, |state, cx| state.set_close_action(action, cx));
             }
         })
-        .children(
-            OPTIONS
-                .iter()
-                .map(|(_, label)| Tab::new().label(*label).disabled(!tray_available)),
-        );
+        .children(OPTIONS.iter().map(|(_, label)| Tab::new().label(*label)));
 
-    vec![setting_row(cx.theme(), "Close button", Some(description))
-        .child(control)
-        .into_any_element()]
+    vec![setting_row(
+        cx.theme(),
+        "Close button",
+        Some("While BoxPilot runs in the tray, sing-box stays connected."),
+    )
+    .child(control)
+    .into_any_element()]
 }
