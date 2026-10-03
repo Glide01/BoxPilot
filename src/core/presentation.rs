@@ -1,10 +1,12 @@
 //! Pure presentation derivations shared by the views: status → label mapping,
-//! "updated N ago" labels, port-field sanitizing, profile-row subtitles, log
-//! counts. Everything here is a plain function of state — the render fns just
-//! place the results in layout. No gpui dependency.
+//! "updated N ago" labels, port-field sanitizing, profile-row subtitles,
+//! redacted subscription URLs, log counts. Everything here is a plain
+//! function of state — the render fns just place the results in layout. No
+//! gpui dependency.
 
 use crate::core::settings::ProfileSource;
 use crate::core::timefmt::{format_relative_time, format_uptime, from_unix_secs, uptime_since};
+use std::fmt::Write;
 use std::time::SystemTime;
 
 /// The three-state connection status. The single source for its wording —
@@ -91,9 +93,13 @@ pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
             if source_empty {
                 "No subscription URL".to_string()
             } else if *auto_update_interval_minutes > 0 {
-                format!("{} · auto-update {}m", url, auto_update_interval_minutes)
+                format!(
+                    "{} · auto-update {}m",
+                    redact_url(url),
+                    auto_update_interval_minutes
+                )
             } else {
-                format!("{} · auto-update off", url)
+                format!("{} · auto-update off", redact_url(url))
             }
         }
         ProfileSource::Local { path } => {
@@ -108,6 +114,84 @@ pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
         subtitle,
         source_empty,
     }
+}
+
+/// What `redact_url` shows for something that isn't a URL with a host.
+pub const INVALID_URL_LABEL: &str = "Invalid URL";
+
+/// A subscription URL as BoxPilot shows or logs it: scheme, host, port and
+/// path, with what may carry a credential masked as `…`: the query, the
+/// fragment, any `user:pass@`, and path segments that look like an access
+/// token (`looks_like_token`). So
+/// `https://sub.example.com/api/v1/client/subscribe?token=abcd` shows as
+/// `https://sub.example.com/api/v1/client/subscribe?…`, and
+/// `https://sub.example.com/s/Xk2fP9qLm7RtW3vZ` as `https://sub.example.com/s/…`.
+/// Anything that doesn't parse as a URL with a host is `INVALID_URL_LABEL`,
+/// never echoed raw. Display only: the edit dialog and the fetch itself use
+/// the real URL.
+pub fn redact_url(raw: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return INVALID_URL_LABEL.to_string();
+    };
+    let Some(host) = url.host_str().filter(|h| !h.is_empty()) else {
+        return INVALID_URL_LABEL.to_string();
+    };
+    let mut out = format!("{}://", url.scheme());
+    if !url.username().is_empty() || url.password().is_some() {
+        out.push_str("…@");
+    }
+    out.push_str(host);
+    if let Some(port) = url.port() {
+        let _ = write!(out, ":{}", port);
+    }
+    if url.path() != "/" {
+        for segment in url.path_segments().into_iter().flatten() {
+            out.push('/');
+            out.push_str(&redact_path_segment(segment));
+        }
+    }
+    if url.query().is_some() {
+        out.push_str("?…");
+    }
+    if url.fragment().is_some() {
+        out.push_str("#…");
+    }
+    out
+}
+
+/// `…` for a token-like segment, keeping a short extension (`….yaml`).
+fn redact_path_segment(segment: &str) -> String {
+    let (stem, ext) = match segment.rsplit_once('.') {
+        Some((stem, ext))
+            if (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            (stem, Some(ext))
+        }
+        _ => (segment, None),
+    };
+    if !looks_like_token(stem) {
+        return segment.to_string();
+    }
+    match ext {
+        Some(ext) => format!("….{}", ext),
+        None => "…".to_string(),
+    }
+}
+
+/// Providers that put the token in the path (`/sub/<token>`) use a long
+/// random string: 16+ characters of `[A-Za-z0-9_-]` (base64 `=` padding
+/// allowed) with a digit or a capital letter somewhere. All-lowercase words
+/// like `client-subscribe-links` stay readable; a hex, base62 or UUID token
+/// almost always has a digit or a capital.
+fn looks_like_token(segment: &str) -> bool {
+    let body = segment.trim_end_matches('=');
+    body.len() >= 16
+        && body
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && body
+            .chars()
+            .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
 }
 
 /// Logs-header count: the total, or "visible of total" while a filter hides
@@ -240,6 +324,135 @@ mod tests {
         let empty_local = profile_row_info(&ProfileSource::Local { path: "".into() });
         assert_eq!(empty_local.subtitle, "No file selected");
         assert!(empty_local.source_empty);
+    }
+
+    #[test]
+    fn profile_row_info_redacts_the_url() {
+        let row = profile_row_info(&ProfileSource::Remote {
+            url: "https://sub.example.com/api/v1/client/subscribe?token=secret".into(),
+            auto_update_interval_minutes: 30,
+        });
+        assert_eq!(
+            row.subtitle,
+            "https://sub.example.com/api/v1/client/subscribe?… · auto-update 30m"
+        );
+    }
+
+    #[test]
+    fn redact_url_keeps_scheme_host_port_and_path() {
+        assert_eq!(redact_url("https://a/s"), "https://a/s");
+        assert_eq!(
+            redact_url("  https://sub.example.com:8443/api/v1/client/subscribe  "),
+            "https://sub.example.com:8443/api/v1/client/subscribe"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com"),
+            "https://sub.example.com"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com/"),
+            "https://sub.example.com"
+        );
+        assert_eq!(
+            redact_url("http://sub.example.com/a/"),
+            "http://sub.example.com/a/"
+        );
+        // The default port is implied, as the URL parser has it.
+        assert_eq!(
+            redact_url("https://sub.example.com:443/s"),
+            "https://sub.example.com/s"
+        );
+    }
+
+    #[test]
+    fn redact_url_masks_query_and_fragment() {
+        assert_eq!(
+            redact_url("https://sub.example.com/api/v1/client/subscribe?token=abcd"),
+            "https://sub.example.com/api/v1/client/subscribe?…"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com/s?flag=clash&token=abcd#frag"),
+            "https://sub.example.com/s?…#…"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com?token=abcd"),
+            "https://sub.example.com?…"
+        );
+    }
+
+    #[test]
+    fn redact_url_masks_userinfo() {
+        assert_eq!(
+            redact_url("https://user:hunter2@sub.example.com/s"),
+            "https://…@sub.example.com/s"
+        );
+        assert_eq!(
+            redact_url("https://user@sub.example.com/s"),
+            "https://…@sub.example.com/s"
+        );
+        assert_eq!(
+            redact_url("https://:pw@sub.example.com/s"),
+            "https://…@sub.example.com/s"
+        );
+    }
+
+    #[test]
+    fn redact_url_masks_token_like_path_segments() {
+        assert_eq!(
+            redact_url("https://sub.example.com/sub/Xk2fP9qLm7RtW3vZ"),
+            "https://sub.example.com/sub/…"
+        );
+        assert_eq!(
+            redact_url(
+                "https://sub.example.com/link/0123456789abcdef0123456789abcdef?flag=sing-box"
+            ),
+            "https://sub.example.com/link/…?…"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com/s/3f2b8c1e-9d4a-4b7e-a1c2-5e6f7a8b9c0d"),
+            "https://sub.example.com/s/…"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com/s/aGVsbG8gd29ybGQgdG9rZW4=.json"),
+            "https://sub.example.com/s/….json"
+        );
+        // Words, and short ids, stay.
+        assert_eq!(
+            redact_url("https://sub.example.com/client-subscribe-links/v2/abc123"),
+            "https://sub.example.com/client-subscribe-links/v2/abc123"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com/Short1234567890"),
+            "https://sub.example.com/Short1234567890"
+        );
+        assert_eq!(
+            redact_url("https://sub.example.com/Short12345678901"),
+            "https://sub.example.com/…"
+        );
+    }
+
+    #[test]
+    fn redact_url_handles_ip_hosts() {
+        assert_eq!(
+            redact_url("http://[2001:db8::1]:8080/sub?token=x"),
+            "http://[2001:db8::1]:8080/sub?…"
+        );
+        assert_eq!(redact_url("http://192.0.2.7/sub"), "http://192.0.2.7/sub");
+    }
+
+    #[test]
+    fn redact_url_never_echoes_what_it_cannot_parse() {
+        for raw in [
+            "",
+            "sub.example.com/sub?token=secret",
+            "https://",
+            "https://[::1/sub?token=secret",
+            "not a url token=secret",
+            "mailto:secret@example.com",
+            "file:///home/u/secret.json",
+        ] {
+            assert_eq!(redact_url(raw), INVALID_URL_LABEL, "raw: {:?}", raw);
+        }
     }
 
     #[test]

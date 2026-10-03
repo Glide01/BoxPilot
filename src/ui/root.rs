@@ -1,6 +1,6 @@
 use crate::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use crate::core::bytefmt::format_speed;
-use crate::core::presentation::ConnectionStatus;
+use crate::core::presentation::{redact_url, ConnectionStatus};
 use crate::core::settings::StatusEvent;
 use crate::state::{ActivateRequested, AppState, ImportRequested};
 #[cfg(target_os = "linux")]
@@ -199,7 +199,9 @@ impl RootView {
     }
 
     /// Take the parked deep-link import and confirm it with the user —
-    /// links come from arbitrary web pages, never import silently.
+    /// links come from arbitrary web pages, never import silently. The URL
+    /// shows redacted: the host and path are enough to recognise it, and the
+    /// token it may carry shouldn't be on screen.
     fn prompt_import(app_state: Entity<AppState>, window: &mut Window, cx: &mut App) {
         let Some(request) = app_state.update(cx, |state, _| state.pending_import.take()) else {
             return;
@@ -222,7 +224,7 @@ impl RootView {
                                 div().font_weight(FontWeight::SEMIBOLD).child(name)
                             }),
                         )
-                        .child(div().text_sm().child(request.url.clone())),
+                        .child(div().text_sm().child(redact_url(&request.url))),
                 )
                 .confirm()
                 .on_ok(move |_, _, cx| {

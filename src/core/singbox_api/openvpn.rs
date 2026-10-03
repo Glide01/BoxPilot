@@ -21,6 +21,7 @@
 use super::openconnect::VpnState;
 use super::transport::{ApiError, IDLE_STREAM_READ_TIMEOUT};
 use super::{pb, SingBoxApi};
+use std::fmt;
 use std::time::Duration;
 
 /// A server-pushed answer is written to the control channel before the call
@@ -276,11 +277,24 @@ pub struct OpenVpnSecretPrompt {
 }
 
 /// A challenge answer. Fields a challenge kind doesn't use stay empty.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// `Debug` redacts the password and the challenge answer.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct OpenVpnAnswer {
     pub username: String,
     pub password: String,
     pub secret: String,
+}
+
+impl fmt::Debug for OpenVpnAnswer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Empty stays visible: which fields a challenge sent is no secret.
+        let redacted = |value: &str| if value.is_empty() { "" } else { "<redacted>" };
+        f.debug_struct("OpenVpnAnswer")
+            .field("username", &self.username)
+            .field("password", &redacted(&self.password))
+            .field("secret", &redacted(&self.secret))
+            .finish()
+    }
 }
 
 /// Build the answer for `challenge` from what the user typed, sending only
@@ -460,5 +474,26 @@ mod tests {
         assert!(openvpn_answer(&challenge("secret"), "", "", "").is_err());
         assert!(openvpn_answer(&challenge("message"), "a", "b", "c").is_err());
         assert!(openvpn_answer(&challenge("open-url"), "a", "b", "c").is_err());
+    }
+
+    #[test]
+    fn answer_debug_redacts_password_and_secret() {
+        let answer = OpenVpnAnswer {
+            username: "alice".into(),
+            password: "hunter2".into(),
+            secret: "123456".into(),
+        };
+        assert_eq!(
+            format!("{:?}", answer),
+            r#"OpenVpnAnswer { username: "alice", password: "<redacted>", secret: "<redacted>" }"#
+        );
+        let secret_only = OpenVpnAnswer {
+            secret: "123456".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            format!("{:?}", secret_only),
+            r#"OpenVpnAnswer { username: "", password: "", secret: "<redacted>" }"#
+        );
     }
 }

@@ -240,12 +240,15 @@ pub fn perform_update(
         .header("User-Agent", user_agent(sing_box_version))
         .send()
         .map_err(|e| {
-        if e.is_timeout() {
-            "Update timed out. Please try again.".to_string()
-        } else {
-            format!("Network error fetching subscription: {}", e)
-        }
-    })?;
+            if e.is_timeout() {
+                "Update timed out. Please try again.".to_string()
+            } else {
+                format!(
+                    "Network error fetching subscription: {}",
+                    http_error_text(e)
+                )
+            }
+        })?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -254,11 +257,28 @@ pub fn perform_update(
         ));
     }
 
-    let config_data = response
-        .text()
-        .map_err(|e| format!("Failed to read subscription response: {}", e))?;
+    let config_data = response.text().map_err(|e| {
+        format!(
+            "Failed to read subscription response: {}",
+            http_error_text(e)
+        )
+    })?;
 
     apply_config_text(&config_data, app_dir, config_path, sing_box)
+}
+
+/// A reqwest error for a message that reaches toasts and stderr. Its
+/// `Display` ends in ` for url (<full url>)`, and the subscription URL often
+/// carries an access token, so the URL goes. What's left ("error sending
+/// request") says little, so the innermost cause follows (a DNS failure, a
+/// refused connection, a TLS error), which names no URL.
+fn http_error_text(e: reqwest::Error) -> String {
+    use std::error::Error;
+    let e = e.without_url();
+    match std::iter::successors(e.source(), |&cause| cause.source()).last() {
+        Some(cause) => format!("{} ({})", e, cause),
+        None => e.to_string(),
+    }
 }
 
 /// Shared tail once the raw config text is in hand: strip → unchanged-detection
@@ -382,6 +402,23 @@ fn validation_temp_path(app_dir: &Path, config_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// reqwest's `Display` ends in ` for url (<full url>)`; the token in the
+    /// query must not reach the message.
+    #[test]
+    fn http_errors_name_no_url() {
+        let client = Client::builder().no_proxy().build().unwrap();
+        // Port 1 on loopback: refused at once, no network involved.
+        let err = client
+            .get("http://127.0.0.1:1/sub/Xk2fP9qLm7RtW3vZ?token=secret")
+            .send()
+            .unwrap_err();
+        assert!(err.to_string().contains("secret"), "precondition: {}", err);
+        let text = http_error_text(err);
+        assert!(!text.contains("secret"), "{}", text);
+        assert!(!text.contains("Xk2fP9qLm7RtW3vZ"), "{}", text);
+        assert!(text.starts_with("error sending request ("), "{}", text);
+    }
 
     const SUB_CONFIG: &str = r#"{
         "log": {"level": "info"},
