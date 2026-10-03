@@ -1,6 +1,10 @@
+use crate::core::atomic_write::{write_atomic, FileAccess};
+use crate::core::timefmt::to_unix_secs;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 #[cfg(target_os = "windows")]
 pub const SING_EXECUTABLE: &str = "sing-box.exe";
@@ -210,32 +214,72 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    pub fn load(app_dir: &Path) -> Self {
+    /// Read the settings file. Missing → defaults (first run). Any other
+    /// problem never ends in silently replacing the user's file with
+    /// defaults:
+    /// - unparsable (corrupt, or truncated by a crash in an older release):
+    ///   the file is moved aside to `<name>.bak-<unix secs>` first, so the
+    ///   next save can't destroy the only copy;
+    /// - unreadable (after a few retries, for a transient lock such as an
+    ///   antivirus scan): the file is left alone and `persist` is false, so
+    ///   the caller must not save over it this session.
+    ///
+    /// Either way `problem` says what happened, for the startup toast.
+    pub fn load(app_dir: &Path) -> LoadedSettings {
         let settings_path = app_dir.join(SETTINGS_FILE);
-        let mut settings = match fs::read_to_string(&settings_path) {
+        let mut loaded = match read_with_retry(&settings_path) {
             Ok(data) => match serde_json::from_str(&data) {
-                Ok(settings) => settings,
+                Ok(settings) => LoadedSettings::ok(settings),
                 Err(e) => {
                     eprintln!(
-                        "Failed to parse settings from {}: {}. Using default.",
+                        "Failed to parse settings from {}: {}",
                         settings_path.display(),
                         e
                     );
-                    AppSettings::default()
+                    match back_up_bad_file(&settings_path) {
+                        Ok(backup) => LoadedSettings {
+                            settings: AppSettings::default(),
+                            persist: true,
+                            problem: Some(format!(
+                                "Settings file was unreadable and has been backed up to {}. Started with default settings.",
+                                backup.display()
+                            )),
+                        },
+                        Err(backup_err) => LoadedSettings {
+                            settings: AppSettings::default(),
+                            persist: false,
+                            problem: Some(format!(
+                                "Settings file {} is unreadable ({}) and could not be backed up ({}). Started with default settings; changes won't be saved this session.",
+                                settings_path.display(),
+                                e,
+                                backup_err
+                            )),
+                        },
+                    }
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => AppSettings::default(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                LoadedSettings::ok(AppSettings::default())
+            }
             Err(e) => {
                 eprintln!(
-                    "Failed to read settings file {}: {}. Using default.",
+                    "Failed to read settings file {}: {}",
                     settings_path.display(),
                     e
                 );
-                AppSettings::default()
+                LoadedSettings {
+                    settings: AppSettings::default(),
+                    persist: false,
+                    problem: Some(format!(
+                        "Couldn't read settings file {} ({}). Started with default settings; changes won't be saved until BoxPilot is restarted.",
+                        settings_path.display(),
+                        e
+                    )),
+                }
             }
         };
-        settings.normalize_profiles();
-        settings
+        loaded.settings.normalize_profiles();
+        loaded
     }
 
     /// Enforce the profile invariants every other consumer relies on:
@@ -279,7 +323,7 @@ impl AppSettings {
         let settings_path = app_dir.join(SETTINGS_FILE);
         match serde_json::to_string_pretty(self) {
             Ok(data) => {
-                if let Err(e) = fs::write(&settings_path, data) {
+                if let Err(e) = write_atomic(&settings_path, data.as_bytes(), FileAccess::Inherit) {
                     eprintln!(
                         "Failed to write settings to {}: {}",
                         settings_path.display(),
@@ -292,6 +336,65 @@ impl AppSettings {
             }
         }
     }
+}
+
+/// What `AppSettings::load` found.
+pub struct LoadedSettings {
+    pub settings: AppSettings,
+    /// False when the settings file exists but could be neither read nor
+    /// moved aside: saving now would overwrite it with defaults, so the
+    /// caller must not save this session.
+    pub persist: bool,
+    /// What went wrong, worded for the user; `None` on a normal load.
+    pub problem: Option<String>,
+}
+
+impl LoadedSettings {
+    fn ok(settings: AppSettings) -> Self {
+        Self {
+            settings,
+            persist: true,
+            problem: None,
+        }
+    }
+}
+
+/// How often `read_with_retry` tries before giving up, and the pause between.
+const READ_ATTEMPTS: u32 = 4;
+const READ_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// `fs::read_to_string`, retried briefly on errors other than NotFound: on
+/// Windows an antivirus scan or backup tool can hold the file with a sharing
+/// violation for a moment.
+fn read_with_retry(path: &Path) -> io::Result<String> {
+    let mut attempt = 1;
+    loop {
+        match fs::read_to_string(path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound && attempt < READ_ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(READ_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Move a settings file that failed to parse to `<name>.bak-<unix secs>`
+/// (with `-<n>` appended if that name is taken) and return the new path.
+fn back_up_bad_file(path: &Path) -> io::Result<PathBuf> {
+    let secs = to_unix_secs(SystemTime::now()).unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut backup = path.with_file_name(format!("{}.bak-{}", name, secs));
+    let mut n = 1;
+    while backup.exists() {
+        backup = path.with_file_name(format!("{}.bak-{}-{}", name, secs, n));
+        n += 1;
+    }
+    fs::rename(path, &backup)?;
+    Ok(backup)
 }
 
 pub fn powershell_proxy_command(port: u16) -> String {
@@ -452,7 +555,10 @@ mod tests {
     #[test]
     fn load_returns_default_when_file_missing() {
         let dir = temp_dir("missing");
-        let settings = AppSettings::load(&dir);
+        let loaded = AppSettings::load(&dir);
+        assert!(loaded.persist);
+        assert!(loaded.problem.is_none());
+        let settings = loaded.settings;
         assert_eq!(
             serde_json::to_string(&settings).unwrap(),
             serde_json::to_string(&AppSettings::default()).unwrap()
@@ -472,14 +578,78 @@ mod tests {
         assert!(saved.get("clash_api_port").is_none());
     }
 
+    fn backups(dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&format!("{}.bak-", SETTINGS_FILE))
+            })
+            .collect()
+    }
+
+    /// A corrupt file falls back to defaults, but only after it was moved
+    /// aside: the save that follows must not destroy the only copy.
     #[test]
-    fn load_returns_default_when_file_corrupted() {
+    fn load_backs_up_corrupted_file_before_falling_back() {
         let dir = temp_dir("corrupt");
         fs::write(dir.join(SETTINGS_FILE), "{not json").unwrap();
-        let settings = AppSettings::load(&dir);
-        assert_eq!(settings.proxy_port, 7788);
-        assert_eq!(settings.api_port, 7789);
-        assert!(settings.profiles.is_empty());
+        let loaded = AppSettings::load(&dir);
+        assert_eq!(loaded.settings.proxy_port, 7788);
+        assert_eq!(loaded.settings.api_port, 7789);
+        assert!(loaded.settings.profiles.is_empty());
+        assert!(loaded.persist);
+
+        let backups = backups(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read_to_string(&backups[0]).unwrap(), "{not json");
+        let problem = loaded.problem.expect("the user is told");
+        assert!(
+            problem.contains(&backups[0].display().to_string()),
+            "message names the backup: {}",
+            problem
+        );
+
+        loaded.settings.save(&dir);
+        assert_eq!(fs::read_to_string(&backups[0]).unwrap(), "{not json");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An empty file (a truncated write from an older release) is corrupt
+    /// too; a second corrupt load in the same second gets its own backup.
+    #[test]
+    fn repeated_corrupt_loads_keep_every_backup() {
+        let dir = temp_dir("corrupt_twice");
+        fs::write(dir.join(SETTINGS_FILE), "").unwrap();
+        AppSettings::load(&dir);
+        fs::write(dir.join(SETTINGS_FILE), "{").unwrap();
+        AppSettings::load(&dir);
+        let mut contents: Vec<String> = backups(&dir)
+            .iter()
+            .map(|p| fs::read_to_string(p).unwrap())
+            .collect();
+        contents.sort();
+        assert_eq!(contents, vec!["".to_string(), "{".to_string()]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A settings file that exists but can't be read is left alone, and the
+    /// caller is told not to save over it.
+    #[test]
+    fn unreadable_file_is_not_persisted_over() {
+        let dir = temp_dir("unreadable");
+        // A directory in the file's place: reading it fails with an error
+        // other than NotFound, on every platform.
+        fs::create_dir(dir.join(SETTINGS_FILE)).unwrap();
+        let loaded = AppSettings::load(&dir);
+        assert!(!loaded.persist);
+        assert!(loaded.problem.is_some());
+        assert!(loaded.settings.profiles.is_empty());
+        assert!(dir.join(SETTINGS_FILE).is_dir());
+        assert!(backups(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -514,7 +684,7 @@ mod tests {
             active_profile_id: "p2".to_string(),
         };
         original.save(&dir);
-        let loaded = AppSettings::load(&dir);
+        let loaded = AppSettings::load(&dir).settings;
         assert_eq!(loaded.proxy_mode, original.proxy_mode);
         assert_eq!(loaded.set_system_proxy, original.set_system_proxy);
         assert_eq!(loaded.proxy_port, 18888);
@@ -612,7 +782,7 @@ mod tests {
             "active_profile_id":"p1"
         }"#;
         fs::write(dir.join(SETTINGS_FILE), legacy).unwrap();
-        let settings = AppSettings::load(&dir);
+        let settings = AppSettings::load(&dir).settings;
         assert_eq!(settings.profiles.len(), 1);
         assert_eq!(
             settings.profiles[0].source,

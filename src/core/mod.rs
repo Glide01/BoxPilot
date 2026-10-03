@@ -1,3 +1,4 @@
+pub mod atomic_write;
 pub mod bytefmt;
 pub mod connections_view;
 pub mod deeplink;

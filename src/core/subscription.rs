@@ -1,10 +1,11 @@
+use crate::core::atomic_write::{unique_suffix, write_atomic, FileAccess};
 use crate::core::singbox_api::SingBoxApi;
 use crate::core::settings::{AppSettings, API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs;
-use std::io::{self, Write};
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Subscription User-Agent. Servers sniff the literal `sing-box` token to
@@ -183,22 +184,9 @@ pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String,
 /// Write a prepared runtime config. It carries the API secret, so on Unix
 /// the file is owner-only (sing-box, the privileged TUN copy included, runs
 /// as the same user); on Windows it inherits the per-user data folder's ACL.
-/// An existing file is narrowed before the new secret goes in.
+/// Replaced atomically, and the new secret only ever lands in a 0600 file.
 pub fn save_runtime_config(path: &Path, prepared: &str) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(prepared.as_bytes())
+    write_atomic(path, prepared.as_bytes(), FileAccess::OwnerOnly)
 }
 
 /// Fetch the subscription, strip its inbounds, and write to `config_path`
@@ -284,7 +272,7 @@ fn apply_config_text(
     // back to the JSON-only checks above.
     if let Some(sing_box) = sing_box {
         if sing_box.exists() {
-            validate_downloaded_config(sing_box, app_dir, &stripped)?;
+            validate_downloaded_config(sing_box, app_dir, config_path, &stripped)?;
         }
     }
 
@@ -292,13 +280,10 @@ fn apply_config_text(
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
-    fs::write(config_path, &stripped).map_err(|e| {
-        format!(
-            "Failed to write config ({}): {}",
-            config_path.display(),
-            e
-        )
-    })?;
+    // Atomic replace: a crash mid-write must not corrupt the profile's
+    // (possibly active) config.
+    write_atomic(config_path, stripped.as_bytes(), FileAccess::Inherit)
+        .map_err(|e| format!("Failed to write config ({}): {}", config_path.display(), e))?;
 
     Ok(UpdateOutcome::Changed)
 }
@@ -331,10 +316,12 @@ pub fn import_local_config(
 /// the subscription's outbounds/route/dns are identical across proxy modes, so
 /// validating the mixed shape is sufficient. The temp file is written into
 /// `app_dir` (so `-D` resolves relative resources like at runtime) and always
-/// removed afterwards.
+/// removed afterwards; its name is unique per call (see
+/// `validation_temp_path`). `config_path` is only used to name it.
 fn validate_downloaded_config(
     sing_box: &Path,
     app_dir: &Path,
+    config_path: &Path,
     stripped: &str,
 ) -> Result<(), String> {
     // 校验用的入站/API 端口和 API secret 与运行时无关,用默认值即可;proxy_mode
@@ -346,12 +333,25 @@ fn validate_downloaded_config(
             ..Default::default()
         },
     )?;
-    let tmp_path = app_dir.join("config_check.tmp");
+    let tmp_path = validation_temp_path(app_dir, config_path);
     fs::write(&tmp_path, &prepared)
         .map_err(|e| format!("Failed to write validation temp file: {}", e))?;
     let result = crate::core::process::validate_config(sing_box, app_dir, &tmp_path);
     let _ = fs::remove_file(&tmp_path);
     result
+}
+
+/// `<app_dir>/config_check-<profile id>-<unique>.tmp`. Fetches can overlap (an
+/// import cancels a fetch whose blocking work still runs to completion), and
+/// with one shared name a run could check or delete the other's file: a
+/// false pass that lets a broken config replace a good one, or a spurious
+/// failure.
+fn validation_temp_path(app_dir: &Path, config_path: &Path) -> PathBuf {
+    let profile = config_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    app_dir.join(format!("config_check-{}-{}.tmp", profile, unique_suffix()))
 }
 
 #[cfg(test)]
@@ -738,6 +738,23 @@ mod tests {
         let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
         assert!(matches!(outcome, UpdateOutcome::Unchanged));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Concurrent validations (even of the same profile) never share a temp
+    /// file, and it stays in `app_dir` so `-D` relative resources resolve.
+    #[test]
+    fn validation_temp_paths_are_unique_per_call() {
+        let app_dir = Path::new("/data/BoxPilot");
+        let config = app_dir.join("configs").join("p3.json");
+        let a = validation_temp_path(app_dir, &config);
+        let b = validation_temp_path(app_dir, &config);
+        assert_ne!(a, b);
+        for path in [&a, &b] {
+            assert_eq!(path.parent(), Some(app_dir));
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with("config_check-p3-"), "got {}", name);
+            assert!(name.ends_with(".tmp"), "got {}", name);
+        }
     }
 
     #[test]

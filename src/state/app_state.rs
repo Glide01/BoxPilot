@@ -50,6 +50,14 @@ pub enum UpdateStatus {
         origin: FetchOrigin,
         _task: Task<()>,
     },
+    /// The auto-update loop is fetching this profile. The loop's own future
+    /// does the work, so there is no task to hold; it claims this state
+    /// before a fetch and releases it after, only if it still holds it (an
+    /// import may have taken over meanwhile). Counts as in flight like
+    /// `Updating`, so manual and import fetches don't run alongside it.
+    AutoUpdating {
+        profile_id: String,
+    },
 }
 
 /// How a profile fetch was initiated — failure handling differs by door.
@@ -103,6 +111,10 @@ pub struct TunGrantRequested;
 /// and an initial status message that `RootView` consumes once on startup.
 pub struct AppState {
     pub settings: AppSettings,
+    /// False when the settings file exists but couldn't be read at startup
+    /// (see `AppSettings::load`): saves are skipped for the session so the
+    /// defaults in memory never replace the user's real file.
+    persist_settings: bool,
     pub app_dir: PathBuf,
     pub install_dir: PathBuf,
     /// The bundled sing-box binary's self-reported version, probed once at
@@ -192,7 +204,13 @@ impl AppState {
         }
         let _ = fs::remove_file(app_dir.join("config_active.json"));
 
-        let mut settings = AppSettings::load(&app_dir);
+        // A settings file that couldn't be loaded is reported in the startup
+        // toast. `persist` false means it is still in place and unread:
+        // nothing may be saved over it this session (`save_settings`).
+        let loaded = AppSettings::load(&app_dir);
+        let mut settings = loaded.settings;
+        let persist_settings = loaded.persist;
+        errors.extend(loaded.problem);
 
         // Multi-profile migration: the pre-profiles single `config.json`
         // becomes the active profile's `configs/<id>.json`. Same rename
@@ -223,7 +241,7 @@ impl AppState {
                 }
             }
         }
-        if backfilled {
+        if backfilled && persist_settings {
             settings.save(&app_dir);
         }
 
@@ -379,6 +397,27 @@ impl AppState {
                         if !due {
                             continue;
                         }
+
+                        // Claim the shared in-flight state, so a manual
+                        // refresh or an import can't fetch alongside us (the
+                        // snapshot above is a whole fetch or more old by
+                        // now). Busy → leave this and the remaining profiles
+                        // for the next tick; their clocks stay due.
+                        let claimed = this.update(cx, |state: &mut AppState, cx| {
+                            if state.is_updating() || state.process.read(cx).is_starting() {
+                                return false;
+                            }
+                            state.update_status = UpdateStatus::AutoUpdating {
+                                profile_id: profile.id.clone(),
+                            };
+                            cx.notify();
+                            true
+                        });
+                        match claimed {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(_) => return,
+                        }
                         last_attempt.insert(profile.id.clone(), Instant::now());
 
                         let url = url.trim().to_string();
@@ -401,29 +440,32 @@ impl AppState {
 
                         let profile_id = profile.id;
                         let exited = this
-                            .update(cx, |state, cx| match result {
-                                Ok(UpdateOutcome::Changed) => {
-                                    state.stamp_profile_updated(&profile_id);
-                                    state.save_settings();
-                                    // Restart/toast only matter for the
-                                    // profile that's actually in use;
-                                    // background profiles refresh silently.
-                                    if state.settings.active_profile_id == profile_id {
-                                        cx.emit(StatusEvent {
-                                            level: StatusLevel::Success,
-                                            message: "Subscription auto-updated.".to_string(),
-                                        });
-                                        state.restart_if_running(cx);
+                            .update(cx, |state, cx| {
+                                state.release_auto_update(&profile_id, cx);
+                                match result {
+                                    Ok(UpdateOutcome::Changed) => {
+                                        state.stamp_profile_updated(&profile_id);
+                                        state.save_settings();
+                                        // Restart/toast only matter for the
+                                        // profile that's actually in use;
+                                        // background profiles refresh silently.
+                                        if state.settings.active_profile_id == profile_id {
+                                            cx.emit(StatusEvent {
+                                                level: StatusLevel::Success,
+                                                message: "Subscription auto-updated.".to_string(),
+                                            });
+                                            state.restart_if_running(cx);
+                                        }
                                     }
-                                }
-                                Ok(UpdateOutcome::Unchanged) => {
-                                    // Silent: nothing was written.
-                                }
-                                Err(err) => {
-                                    // No toast — auto-update can fail
-                                    // repeatedly when offline; we don't want
-                                    // to spam the user.
-                                    eprintln!("Auto-update failed: {}", err);
+                                    Ok(UpdateOutcome::Unchanged) => {
+                                        // Silent: nothing was written.
+                                    }
+                                    Err(err) => {
+                                        // No toast — auto-update can fail
+                                        // repeatedly when offline; we don't
+                                        // want to spam the user.
+                                        eprintln!("Auto-update failed: {}", err);
+                                    }
                                 }
                             })
                             .is_err();
@@ -484,6 +526,7 @@ impl AppState {
 
             Self {
                 settings,
+                persist_settings,
                 app_dir,
                 install_dir,
                 sing_box_version: None,
@@ -511,19 +554,34 @@ impl AppState {
     }
 
     pub fn is_updating(&self) -> bool {
-        matches!(self.update_status, UpdateStatus::Updating { .. })
+        !matches!(self.update_status, UpdateStatus::Idle)
     }
 
     /// 正在拉订阅的 profile id(驱动 Profiles 页行级 spinner)。
     pub fn updating_profile_id(&self) -> Option<&str> {
         match &self.update_status {
-            UpdateStatus::Updating { profile_id, .. } => Some(profile_id),
+            UpdateStatus::Updating { profile_id, .. }
+            | UpdateStatus::AutoUpdating { profile_id } => Some(profile_id),
             UpdateStatus::Idle => None,
         }
     }
 
+    /// End the auto-update loop's claim on `profile_id`'s fetch — unless an
+    /// import has replaced it meanwhile, whose state (and task) must stay.
+    fn release_auto_update(&mut self, profile_id: &str, cx: &mut Context<Self>) {
+        if matches!(
+            &self.update_status,
+            UpdateStatus::AutoUpdating { profile_id: id } if id == profile_id
+        ) {
+            self.update_status = UpdateStatus::Idle;
+            cx.notify();
+        }
+    }
+
     pub fn save_settings(&self) {
-        self.settings.save(&self.app_dir);
+        if self.persist_settings {
+            self.settings.save(&self.app_dir);
+        }
     }
 
     /// Stamp `profile_id` with the current time as its last-content-change
@@ -1184,7 +1242,9 @@ impl AppState {
     /// profile once its config is on disk.
     pub fn import_profile(&mut self, request: ImportRequest, cx: &mut Context<Self>) {
         // An explicit user action outranks whatever fetch is in flight:
-        // dropping the task cancels it. If the cancelled fetch was itself an
+        // dropping the task cancels it (an auto-update has no task here; its
+        // fetch finishes on its own and leaves this import's state alone,
+        // see `release_auto_update`). If the cancelled fetch was itself an
         // import that created its profile, roll that phantom back now — its
         // failure arm will never run, and the URL lookup below must not
         // resurrect it (re-clicking the same link mid-fetch would otherwise
