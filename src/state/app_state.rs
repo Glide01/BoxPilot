@@ -15,9 +15,10 @@ use crate::core::settings::{
     ProfileSource, StatusEvent, StatusLevel, ThemePreference, CONFIG_FILENAME, SING_EXECUTABLE,
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
+use crate::core::sub_usage::{SubscriptionUsage, UsageLevel};
 use crate::core::subscription::{
     import_local_config, perform_update, pick_api_port, prepare_config, save_runtime_config,
-    RuntimeOptions, UpdateOutcome,
+    Fetched, RuntimeOptions,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
 use crate::state::clash_mode::ClashMode;
@@ -201,6 +202,10 @@ pub struct AppState {
     /// as each one finishes (`run_queued_fetches`) — e.g. the Add dialog's
     /// first fetch during an auto-update.
     queued_fetches: VecDeque<String>,
+    /// The subscription-usage level each profile was last warned about this
+    /// session (`warn_usage`): one toast per profile and level, again only
+    /// after it changes. Seeded by the startup status.
+    usage_warned: HashMap<String, UsageLevel>,
 }
 
 impl EventEmitter<StatusEvent> for AppState {}
@@ -276,6 +281,7 @@ impl AppState {
             settings.save(&app_dir);
         }
 
+        let mut usage_warned = HashMap::new();
         let pending_status = if !errors.is_empty() {
             Some((StatusLevel::Error, errors.join("; ")))
         } else if settings.active_profile_id.is_empty() {
@@ -283,7 +289,15 @@ impl AppState {
             // user; no scary "config not found" toast.
             None
         } else if active_config.exists() {
-            Some((StatusLevel::Success, "Ready.".to_string()))
+            // A subscription running out outranks "Ready.": the startup
+            // toast is the one place it's seen without opening a page.
+            match settings.active_profile().and_then(|p| usage_alert(p, now_secs())) {
+                Some((level, status_level, message)) => {
+                    usage_warned.insert(settings.active_profile_id.clone(), level);
+                    Some((status_level, message))
+                }
+                None => Some((StatusLevel::Success, "Ready.".to_string())),
+            }
         } else {
             Some((
                 StatusLevel::Warning,
@@ -506,8 +520,10 @@ impl AppState {
                                     state.run_queued_fetches(cx);
                                     return;
                                 }
-                                let landed = result.and_then(UpdateOutcome::commit);
+                                let (landed, usage) = split_fetched(result);
                                 state.release_auto_update(fetch, cx);
+                                let usage_changed = landed.is_ok()
+                                    && state.record_usage(&profile_id, usage);
                                 match landed {
                                     Ok(true) => {
                                         state.stamp_profile_updated(&profile_id);
@@ -524,7 +540,13 @@ impl AppState {
                                         }
                                     }
                                     Ok(false) => {
-                                        // Silent: nothing was written.
+                                        // Silent: no config was written.
+                                        // The usage reading may still have
+                                        // moved.
+                                        if usage_changed {
+                                            state.save_settings();
+                                            cx.notify();
+                                        }
                                     }
                                     Err(err) => {
                                         // No toast — auto-update can fail
@@ -532,6 +554,9 @@ impl AppState {
                                         // want to spam the user.
                                         eprintln!("Auto-update failed: {}", err);
                                     }
+                                }
+                                if usage_changed {
+                                    state.warn_usage(&profile_id, cx);
                                 }
                                 state.run_queued_fetches(cx);
                             })
@@ -621,6 +646,7 @@ impl AppState {
                 fetch_seq: 0,
                 latest_fetch: HashMap::new(),
                 queued_fetches: VecDeque::new(),
+                usage_warned,
             }
         })
     }
@@ -692,6 +718,47 @@ impl AppState {
     fn stamp_profile_updated(&mut self, profile_id: &str) {
         if let Some(profile) = self.settings.profiles.iter_mut().find(|p| p.id == profile_id) {
             profile.last_updated_secs = to_unix_secs(SystemTime::now());
+        }
+    }
+
+    /// Store a fetch's `subscription-userinfo` reading on `profile_id`
+    /// (Remote profiles only; a server that stopped reporting clears the old
+    /// reading). `true` when the stored value changed — the caller persists
+    /// via `save_settings`.
+    fn record_usage(&mut self, profile_id: &str, usage: Option<SubscriptionUsage>) -> bool {
+        let Some(profile) = self.settings.profiles.iter_mut().find(|p| p.id == profile_id) else {
+            return false;
+        };
+        if !matches!(profile.source, ProfileSource::Remote { .. }) || profile.usage == usage {
+            return false;
+        }
+        profile.usage = usage;
+        true
+    }
+
+    /// Toast once when the active profile's subscription crosses into
+    /// Warning or Critical (traffic nearly / fully used, expiring / expired);
+    /// again only after its level changes. Back to Normal (renewed) re-arms.
+    fn warn_usage(&mut self, profile_id: &str, cx: &mut Context<Self>) {
+        if self.settings.active_profile_id != profile_id {
+            return;
+        }
+        let Some(profile) = self.settings.profiles.iter().find(|p| p.id == profile_id) else {
+            return;
+        };
+        match usage_alert(profile, now_secs()) {
+            None => {
+                self.usage_warned.remove(profile_id);
+            }
+            Some((level, status_level, message)) => {
+                if self.usage_warned.get(profile_id) != Some(&level) {
+                    self.usage_warned.insert(profile_id.to_string(), level);
+                    cx.emit(StatusEvent {
+                        level: status_level,
+                        message,
+                    });
+                }
+            }
         }
     }
 
@@ -1273,7 +1340,11 @@ impl AppState {
                             &app_dir,
                             &config_path,
                             Some(sing_box.as_path()),
-                        ),
+                        )
+                        .map(|outcome| Fetched {
+                            outcome,
+                            usage: None,
+                        }),
                     }
                 })
                 .await;
@@ -1288,7 +1359,9 @@ impl AppState {
                     state.run_queued_fetches(cx);
                     return;
                 }
-                let (level, message) = match result.and_then(UpdateOutcome::commit) {
+                let (landed, usage) = split_fetched(result);
+                let usage_changed = landed.is_ok() && state.record_usage(&profile_id, usage);
+                let (level, message) = match landed {
                     Ok(true) => {
                         // Content changed → stamp the "last updated" time, then
                         // persist the URL just used (and any other settings).
@@ -1325,6 +1398,9 @@ impl AppState {
                     state.set_active_profile(profile_id.clone(), cx);
                 }
                 cx.emit(StatusEvent { level, message });
+                if usage_changed {
+                    state.warn_usage(&profile_id, cx);
+                }
                 cx.notify();
                 state.run_queued_fetches(cx);
             });
@@ -1585,6 +1661,36 @@ impl AppState {
         self.update_profile(id, FetchOrigin::UriImport { created_profile }, cx);
         cx.notify();
     }
+}
+
+/// Unix seconds now (0 should the clock read before 1970).
+fn now_secs() -> u64 {
+    to_unix_secs(SystemTime::now()).unwrap_or(0)
+}
+
+/// A fetch result split into the committed config outcome (see
+/// `UpdateOutcome::commit`) and the usage reading that came with it.
+fn split_fetched(
+    result: Result<Fetched, String>,
+) -> (Result<bool, String>, Option<SubscriptionUsage>) {
+    match result {
+        Ok(Fetched { outcome, usage }) => (outcome.commit(), usage),
+        Err(err) => (Err(err), None),
+    }
+}
+
+/// The toast for `profile`'s subscription usage, if it needs attention:
+/// its level, the toast level (Warning → warning, Critical → error) and the
+/// message, which names the profile, never its URL.
+fn usage_alert(profile: &Profile, now: u64) -> Option<(UsageLevel, StatusLevel, String)> {
+    let usage = profile.usage?;
+    let message = usage.alert_message(&profile.name, now)?;
+    let level = usage.level(now);
+    let status_level = match level {
+        UsageLevel::Critical => StatusLevel::Error,
+        _ => StatusLevel::Warning,
+    };
+    Some((level, status_level, message))
 }
 
 impl Drop for AppState {
