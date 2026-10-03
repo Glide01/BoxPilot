@@ -7,7 +7,8 @@ use crate::core::orchestration::{
 use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
 use crate::core::process::query_sing_box_version;
 use crate::core::paths::{
-    get_app_data_dir, get_install_dir, profile_config_path, runtime_config_path,
+    create_private_dir, get_app_data_dir, get_install_dir, profile_config_path,
+    runtime_config_path,
 };
 use crate::core::settings::{
     default_auto_update_interval, AppSettings, Profile, ProfileSource, StatusEvent, StatusLevel,
@@ -245,7 +246,7 @@ impl AppState {
         let active_config = profile_config_path(&app_dir, &settings.active_profile_id);
         if !active_config.exists() && new_config.exists() {
             if let Some(parent) = active_config.parent() {
-                let _ = fs::create_dir_all(parent);
+                let _ = create_private_dir(parent);
             }
             let _ = fs::rename(&new_config, &active_config);
         }

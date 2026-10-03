@@ -297,8 +297,9 @@ pub fn default_save_dir() -> PathBuf {
 
 /// Write a certificate pair into `dir` as `<domain>.crt` + `<domain>.key`,
 /// replacing older copies (re-fetching after renewal is the common case).
-/// A newly created key file is owner-only where the platform has Unix
-/// permissions; on Windows it inherits the folder's ACL. Returns both paths.
+/// The key file is owner-only where the platform has Unix permissions, a
+/// replaced one too; on Windows it inherits the folder's ACL. Returns both
+/// paths.
 pub fn save_certificate_pair(
     dir: &Path,
     domain: &str,
@@ -316,6 +317,13 @@ pub fn save_certificate_pair(
         options.mode(0o600);
     }
     let mut key = options.open(&key_path)?;
+    // `mode` only applies when the file is created: an existing key file
+    // keeps its mode, maybe 0644. Tighten it before the new key goes in.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        key.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     key.write_all(&certificate.private_key_pem)?;
     key.sync_all()?;
     Ok((cert_path, key_path))
@@ -598,8 +606,15 @@ mod tests {
             certificate_pem: b"CERT".to_vec(),
             private_key_pem: b"KEY".to_vec(),
         };
-        // Twice: a second save replaces the first.
+        // Twice: a second save replaces the first, and tightens a key file
+        // left readable by others.
         save_certificate_pair(&dir, "a.ts.net", &certificate).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let key = dir.join("a.ts.net.key");
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let (cert, key) = save_certificate_pair(&dir, "a.ts.net", &certificate).unwrap();
         assert_eq!(cert, dir.join("a.ts.net.crt"));
         assert_eq!(key, dir.join("a.ts.net.key"));

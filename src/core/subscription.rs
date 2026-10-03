@@ -1,6 +1,7 @@
 use crate::core::atomic_write::{
     stage_atomic, unique_suffix, write_atomic, FileAccess, StagedFile,
 };
+use crate::core::paths::create_private_dir;
 use crate::core::singbox_api::SingBoxApi;
 use crate::core::settings::{AppSettings, API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use reqwest::blocking::Client;
@@ -298,13 +299,14 @@ fn apply_config_text(
     }
 
     if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)
+        create_private_dir(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
     // Staged beside the target and renamed over it by `UpdateOutcome::commit`:
     // a crash mid-write must not corrupt the profile's (possibly active)
     // config, and a result nobody wants any more must not land at all.
-    let staged = stage_atomic(config_path, stripped.as_bytes(), FileAccess::Inherit)
+    // Owner-only on Unix: it holds server passwords and UUIDs.
+    let staged = stage_atomic(config_path, stripped.as_bytes(), FileAccess::OwnerOnly)
         .map_err(|e| format!("Failed to write config ({}): {}", config_path.display(), e))?;
 
     Ok(UpdateOutcome::Changed(staged))
@@ -356,7 +358,7 @@ fn validate_downloaded_config(
         },
     )?;
     let tmp_path = validation_temp_path(app_dir, config_path);
-    fs::write(&tmp_path, &prepared)
+    write_atomic(&tmp_path, prepared.as_bytes(), FileAccess::OwnerOnly)
         .map_err(|e| format!("Failed to write validation temp file: {}", e))?;
     let result = crate::core::process::validate_config(sing_box, app_dir, &tmp_path);
     let _ = fs::remove_file(&tmp_path);

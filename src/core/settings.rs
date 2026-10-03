@@ -329,11 +329,13 @@ impl AppSettings {
         format!("p{}", next)
     }
 
+    /// Owner-only on Unix: subscription URLs often carry an access token.
     pub fn save(&self, app_dir: &Path) {
         let settings_path = app_dir.join(SETTINGS_FILE);
         match serde_json::to_string_pretty(self) {
             Ok(data) => {
-                if let Err(e) = write_atomic(&settings_path, data.as_bytes(), FileAccess::Inherit) {
+                if let Err(e) = write_atomic(&settings_path, data.as_bytes(), FileAccess::OwnerOnly)
+                {
                     eprintln!(
                         "Failed to write settings to {}: {}",
                         settings_path.display(),
