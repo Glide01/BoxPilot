@@ -15,6 +15,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::{Input, InputState},
+    scroll::ScrollableElement,
     spinner::Spinner,
     tab::TabBar,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -510,11 +511,11 @@ impl Render for ProfilesPage {
                     )
                     .into_any_element()
             } else {
+                let list = div().v_flex().gap_2().w_full().children(rows);
                 div()
-                    .v_flex()
-                    .gap_2()
-                    .w_full()
-                    .children(rows)
+                    .flex_1()
+                    .min_h_0()
+                    .child(list.overflow_y_scrollbar())
                     .into_any_element()
             })
     }
