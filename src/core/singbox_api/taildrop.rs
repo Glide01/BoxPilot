@@ -307,13 +307,15 @@ impl fmt::Display for TaildropDownloadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TaildropDownloadError::Api(error) => error.fmt(f),
-            TaildropDownloadError::Io(reason) => write!(f, "Failed to write the file: {}", reason),
-            TaildropDownloadError::SizeMismatch { expected, received } => write!(
-                f,
-                "Download incomplete: received {} of {} bytes",
-                received, expected
+            TaildropDownloadError::Io(reason) => {
+                f.write_str(&(crate::i18n::s().tailscale.write_failed)(reason))
+            }
+            TaildropDownloadError::SizeMismatch { expected, received } => f.write_str(
+                &(crate::i18n::s().tailscale.download_incomplete)(*received, *expected),
             ),
-            TaildropDownloadError::Cancelled => write!(f, "Download cancelled"),
+            TaildropDownloadError::Cancelled => {
+                f.write_str(crate::i18n::s().tailscale.download_cancelled)
+            }
         }
     }
 }

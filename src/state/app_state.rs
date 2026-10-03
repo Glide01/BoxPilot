@@ -25,6 +25,7 @@ use crate::core::update_check::{
     check_proxy, fetch_latest, is_newer, same_version, should_notify, ReleaseInfo, CHECK_INTERVAL,
     CURRENT_VERSION, FIRST_CHECK_DELAY,
 };
+use crate::i18n::s;
 use crate::state::clash_mode::ClashMode;
 use crate::state::connections::Connections;
 use crate::state::log_buffer::LogBuffer;
@@ -256,6 +257,10 @@ impl EventEmitter<TunGrantRequested> for AppState {}
 impl AppState {
     pub fn new(launches: UnboundedReceiver<LaunchAttempt>, cx: &mut App) -> Entity<Self> {
         let (view_ready_tx, view_ready_rx) = oneshot::channel::<()>();
+        // Startup messages below are worded in the UI language: the OS's
+        // until the settings say otherwise (an unreadable settings file
+        // falls back to "System" anyway).
+        crate::i18n::set_language(crate::i18n::resolve(LanguagePreference::System));
         let mut errors = Vec::new();
         let app_dir = get_app_data_dir().unwrap_or_else(|e| {
             errors.push(e);
@@ -281,6 +286,7 @@ impl AppState {
         // nothing may be saved over it this session (`save_settings`).
         let loaded = AppSettings::load(&app_dir);
         let mut settings = loaded.settings;
+        crate::i18n::set_language(crate::i18n::resolve(settings.language));
         let persist_settings = loaded.persist;
         errors.extend(loaded.problem);
 
@@ -332,12 +338,12 @@ impl AppState {
                     usage_warned.insert(settings.active_profile_id.clone(), level);
                     Some((status_level, message))
                 }
-                None => Some((StatusLevel::Success, "Ready.".to_string())),
+                None => Some((StatusLevel::Success, s().messages.ready.to_string())),
             }
         } else {
             Some((
                 StatusLevel::Warning,
-                "Config not found. Please update subscription.".to_string(),
+                s().messages.config_missing_startup.to_string(),
             ))
         };
 
@@ -570,7 +576,7 @@ impl AppState {
                                         if state.settings.active_profile_id == profile_id {
                                             cx.emit(StatusEvent {
                                                 level: StatusLevel::Success,
-                                                message: "Subscription auto-updated.".to_string(),
+                                                message: s().messages.auto_updated.to_string(),
                                             });
                                             state.restart_if_running(cx);
                                         }
@@ -840,13 +846,13 @@ impl AppState {
     fn write_runtime_config(&self) -> Result<(PathBuf, SingBoxApi), String> {
         let config_path = self.active_config_path();
         let data = fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+            .map_err(|e| (s().errors.read_failed)(&config_path.display().to_string(), &e.to_string()))?;
         let api = SingBoxApi::new(pick_api_port(&data, self.settings.proxy_port)?);
         let opts = RuntimeOptions::new(&self.settings, api);
         let prepared = prepare_config(&data, opts)?;
         let runtime_path = runtime_config_path(&self.app_dir);
         save_runtime_config(&runtime_path, &prepared)
-            .map_err(|e| format!("Failed to write {}: {}", runtime_path.display(), e))?;
+            .map_err(|e| (s().errors.write_failed)(&runtime_path.display().to_string(), &e.to_string()))?;
         Ok((runtime_path, opts.api))
     }
 
@@ -882,7 +888,7 @@ impl AppState {
         if !self.settings.has_profiles() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Warning,
-                message: "Add a subscription first.".to_string(),
+                message: s().messages.add_subscription_first.to_string(),
             });
             return;
         }
@@ -891,7 +897,10 @@ impl AppState {
         if !sing_path.exists() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Error,
-                message: format!("{} not found at {}", SING_EXECUTABLE, sing_path.display()),
+                message: (s().messages.sing_box_not_found)(
+                    SING_EXECUTABLE,
+                    &sing_path.display().to_string(),
+                ),
             });
             return;
         }
@@ -903,10 +912,7 @@ impl AppState {
             if !supports_api_service(version) {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Error,
-                    message: format!(
-                        "sing-box {} is too old: BoxPilot needs {} or newer.",
-                        version, MIN_SING_BOX_VERSION
-                    ),
+                    message: (s().messages.sing_box_too_old)(version, MIN_SING_BOX_VERSION),
                 });
                 return;
             }
@@ -915,7 +921,7 @@ impl AppState {
         if !self.active_config_path().exists() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Error,
-                message: "Config not found. Update subscription first.".to_string(),
+                message: s().messages.config_missing.to_string(),
             });
             return;
         }
@@ -1054,7 +1060,7 @@ impl AppState {
         if self.api_port_retry.take_redo() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Info,
-                message: "The sing-box API port was taken; retrying on another port.".to_string(),
+                message: s().messages.api_port_retry.to_string(),
             });
             self.start_process(cx);
         }
@@ -1088,7 +1094,7 @@ impl AppState {
                 let _ = this.update(cx, |_, cx| {
                     cx.emit(StatusEvent {
                         level: StatusLevel::Error,
-                        message: format!("Failed to clear sing-box logs: {}", e),
+                        message: (s().messages.clear_logs_failed)(&e.to_string()),
                     });
                 });
             }
@@ -1315,10 +1321,7 @@ impl AppState {
                     self.update_notified = Some(info.version.clone());
                     cx.emit(StatusEvent {
                         level: StatusLevel::Info,
-                        message: format!(
-                            "BoxPilot {} is available — see Settings › About.",
-                            info.version
-                        ),
+                        message: (s().updates.available_toast)(&info.version),
                     });
                 }
                 UpdateCheck::Available(info)
@@ -1350,7 +1353,7 @@ impl AppState {
         if !self.process.read(cx).is_stopped() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Warning,
-                message: "Disconnect first to clear the cache.".to_string(),
+                message: s().messages.disconnect_to_clear_cache.to_string(),
             });
             return;
         }
@@ -1360,7 +1363,7 @@ impl AppState {
             Err(e) => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Error,
-                    message: format!("Failed to read app directory: {}", e),
+                    message: (s().messages.read_app_dir_failed)(&e.to_string()),
                 });
                 return;
             }
@@ -1381,15 +1384,15 @@ impl AppState {
         let (level, message) = if !errors.is_empty() {
             (
                 StatusLevel::Error,
-                format!("Failed to delete cache: {}", errors.join("; ")),
+                (s().messages.delete_cache_failed)(&errors.join("; ")),
             )
         } else if deleted > 0 {
             (
                 StatusLevel::Success,
-                format!("Cleared {} cache file(s). Node selection, clash mode and group expand state reset.", deleted),
+                (s().messages.cache_cleared)(deleted as u64),
             )
         } else {
-            (StatusLevel::Info, "No cache files to clear.".to_string())
+            (StatusLevel::Info, s().messages.no_cache.to_string())
         };
         cx.emit(StatusEvent { level, message });
         cx.notify();
@@ -1400,7 +1403,7 @@ impl AppState {
         if !self.settings.has_profiles() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Warning,
-                message: "Add a subscription first.".to_string(),
+                message: s().messages.add_subscription_first.to_string(),
             });
             return;
         }
@@ -1435,14 +1438,14 @@ impl AppState {
             ProfileSource::Remote { url, .. } if url.trim().is_empty() => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Warning,
-                    message: "Subscription URL is empty.".to_string(),
+                    message: s().messages.url_empty.to_string(),
                 });
                 return;
             }
             ProfileSource::Local { path } if path.trim().is_empty() => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Warning,
-                    message: "No file selected.".to_string(),
+                    message: s().messages.no_file_selected.to_string(),
                 });
                 return;
             }
@@ -1461,10 +1464,7 @@ impl AppState {
                 self.queued_fetches.push_back(profile_id);
                 cx.emit(StatusEvent {
                     level: StatusLevel::Info,
-                    message: format!(
-                        "\"{}\" will update when the current update finishes.",
-                        profile_name
-                    ),
+                    message: (s().messages.queued_update)(&profile_name),
                 });
             }
             return;
@@ -1526,14 +1526,14 @@ impl AppState {
                         state.save_settings();
                         (
                             StatusLevel::Success,
-                            format!("\"{}\" updated.", profile_name),
+                            (s().messages.profile_updated)(&profile_name),
                         )
                     }
                     Ok(false) => {
                         state.save_settings();
                         (
                             StatusLevel::Info,
-                            format!("\"{}\" is up to date.", profile_name),
+                            (s().messages.profile_up_to_date)(&profile_name),
                         )
                     }
                     Err(msg) => {
@@ -1542,7 +1542,7 @@ impl AppState {
                         }
                         (
                             StatusLevel::Error,
-                            format!("\"{}\": {}", profile_name, msg),
+                            (s().messages.profile_failed)(&profile_name, &msg),
                         )
                     }
                 };
@@ -1602,7 +1602,7 @@ impl AppState {
         let name = {
             let trimmed = name.trim();
             if trimmed.is_empty() {
-                format!("Profile {}", number)
+                (s().profiles.default_name)(&number)
             } else {
                 trimmed.to_string()
             }
@@ -1732,7 +1732,7 @@ impl AppState {
             Err(reason) => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Warning,
-                    message: format!("Ignored import link: {}", reason),
+                    message: (s().messages.ignored_import)(&reason),
                 });
             }
         }

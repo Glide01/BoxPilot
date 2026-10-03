@@ -177,7 +177,7 @@ impl Connections {
         self.request(
             move || {
                 api.close_connection(&id)
-                    .map_err(|e| format!("Failed to close connection: {}", e))
+                    .map_err(|e| (crate::i18n::s().messages.close_connection_failed)(&e.to_string()))
             },
             cx,
         );
@@ -193,7 +193,7 @@ impl Connections {
         self.request(
             move || {
                 api.close_all_connections()
-                    .map_err(|e| format!("Failed to close connections: {}", e))
+                    .map_err(|e| (crate::i18n::s().messages.close_connections_failed)(&e.to_string()))
             },
             cx,
         );

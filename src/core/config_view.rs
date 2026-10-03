@@ -10,6 +10,7 @@ use crate::core::paths::runtime_config_path;
 use crate::core::settings::AppSettings;
 use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi};
 use crate::core::subscription::{prepare_config, RuntimeOptions};
+use crate::i18n::s;
 use serde_json::Value;
 use std::fs;
 use std::io;
@@ -60,7 +61,7 @@ fn is_credential_key(key: &str) -> bool {
 /// between them and stay where it was.
 pub fn redact_config(config: &str, hide_credentials: bool) -> Result<String, String> {
     let mut json: Value =
-        serde_json::from_str(config).map_err(|e| format!("Not valid JSON: {}", e))?;
+        serde_json::from_str(config).map_err(|e| (s().config_viewer.not_json)(&e.to_string()))?;
     redact_value(&mut json, hide_credentials);
     pretty(&json)
 }
@@ -156,7 +157,7 @@ fn mask_url(text: &str) -> Option<String> {
 }
 
 fn pretty(json: &Value) -> Result<String, String> {
-    serde_json::to_string_pretty(json).map_err(|e| format!("Failed to format config: {}", e))
+    serde_json::to_string_pretty(json).map_err(|e| (s().config_viewer.format_failed)(&e.to_string()))
 }
 
 /// What the next start would write for `profile_json` (a profile's
@@ -169,7 +170,7 @@ pub fn preview_config(profile_json: &str, settings: &AppSettings) -> Result<Stri
         RuntimeOptions::new(settings, SingBoxApi::new(0)),
     )?;
     let mut json: Value =
-        serde_json::from_str(&prepared).map_err(|e| format!("Not valid JSON: {}", e))?;
+        serde_json::from_str(&prepared).map_err(|e| (s().config_viewer.not_json)(&e.to_string()))?;
     if let Some(services) = json.get_mut("services").and_then(Value::as_array_mut) {
         for service in services.iter_mut().filter(|s| is_boxpilot_api_service(s)) {
             service["listen_port"] = Value::from(PICKED_AT_START);
@@ -261,19 +262,19 @@ pub fn load(request: &ConfigRequest) -> Result<ConfigView, ConfigViewError> {
         Err(e) => return Err(read_failed(&path, e)),
     };
     let preview = preview_config(&profile_json, &request.settings).map_err(|e| {
-        ConfigViewError::Failed(format!("The profile's config can't be read: {}", e))
+        ConfigViewError::Failed((s().config_viewer.profile_unreadable)(&e.to_string()))
     })?;
     view(ConfigSource::Preview, path, &preview)
 }
 
 fn read_failed(path: &Path, e: io::Error) -> ConfigViewError {
-    ConfigViewError::Failed(format!("Failed to read {}: {}", path.display(), e))
+    ConfigViewError::Failed((s().errors.read_failed)(&path.display().to_string(), &e.to_string()))
 }
 
 fn view(source: ConfigSource, file: PathBuf, text: &str) -> Result<ConfigView, ConfigViewError> {
     let failed = |e: String| ConfigViewError::Failed(format!("{}: {}", file.display(), e));
     let mut revealed: Value =
-        serde_json::from_str(text).map_err(|e| failed(format!("not valid JSON: {}", e)))?;
+        serde_json::from_str(text).map_err(|e| failed((s().config_viewer.not_json)(&e.to_string())))?;
     let mut hidden = revealed.clone();
     redact_value(&mut revealed, false);
     redact_value(&mut hidden, true);

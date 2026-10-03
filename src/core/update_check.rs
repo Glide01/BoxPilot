@@ -5,6 +5,7 @@
 //! (`AppState::check_for_updates`). Only the BoxPilot version is checked
 //! here; the bundled sing-box version ships with each BoxPilot release.
 
+use crate::i18n::s;
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -67,13 +68,13 @@ struct ApiRelease {
 /// refused — none of them is something to offer as an update.
 pub fn parse_latest_release(json: &str) -> Result<ReleaseInfo, String> {
     let release: ApiRelease =
-        serde_json::from_str(json).map_err(|_| "unexpected response from GitHub".to_string())?;
+        serde_json::from_str(json).map_err(|_| s().updates.unexpected_response.to_string())?;
     if release.draft || release.prerelease {
-        return Err("latest release is a prerelease".to_string());
+        return Err(s().updates.prerelease.to_string());
     }
     let tag = release.tag_name.trim().to_string();
     if parse_version(&tag).is_none() {
-        return Err(format!("unrecognised release tag \"{tag}\""));
+        return Err((s().updates.bad_tag)(&tag));
     }
     let url = release
         .html_url
@@ -197,12 +198,12 @@ fn fetch_latest_from(url: &str, proxy: Option<&str>) -> Result<ReleaseInfo, Stri
         .user_agent(format!("BoxPilot/{CURRENT_VERSION}"));
     let builder = match proxy {
         Some(proxy) => builder
-            .proxy(reqwest::Proxy::all(proxy).map_err(|_| "invalid proxy address".to_string())?),
+            .proxy(reqwest::Proxy::all(proxy).map_err(|_| s().updates.invalid_proxy.to_string())?),
         None => builder.no_proxy(),
     };
     let client = builder
         .build()
-        .map_err(|_| "couldn't set up the HTTP client".to_string())?;
+        .map_err(|_| s().updates.client_setup.to_string())?;
     let response = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
@@ -219,22 +220,23 @@ fn fetch_latest_from(url: &str, proxy: Option<&str>) -> Result<ReleaseInfo, Stri
 
 /// A short reason for the status line — never the full error chain.
 fn request_error(err: &reqwest::Error) -> String {
+    let t = &s().updates;
     if err.is_timeout() {
-        "timed out".to_string()
+        t.timed_out.to_string()
     } else if err.is_connect() {
-        "couldn't connect".to_string()
+        t.cannot_connect.to_string()
     } else if err.is_body() || err.is_decode() {
-        "connection interrupted".to_string()
+        t.interrupted.to_string()
     } else {
-        "network error".to_string()
+        t.network_error.to_string()
     }
 }
 
 fn status_error(status: StatusCode) -> String {
     match status.as_u16() {
-        404 => "no release published yet".to_string(),
-        403 | 429 => "GitHub rate limit reached, try again later".to_string(),
-        code => format!("GitHub returned HTTP {code}"),
+        404 => s().updates.no_release.to_string(),
+        403 | 429 => s().updates.rate_limited.to_string(),
+        code => (s().updates.http_status)(code),
     }
 }
 

@@ -89,16 +89,17 @@ impl ApiError {
 
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let t = &crate::i18n::s().errors;
         match self {
-            ApiError::Unreachable(reason) => write!(f, "sing-box API unreachable: {}", reason),
-            ApiError::TimedOut => write!(f, "sing-box API timed out"),
-            ApiError::Disconnected(reason) => write!(f, "sing-box API stream {}", reason),
+            ApiError::Unreachable(reason) => f.write_str(&(t.api_unreachable)(reason)),
+            ApiError::TimedOut => f.write_str(t.api_timed_out),
+            ApiError::Disconnected(reason) => f.write_str(&(t.api_stream)(reason)),
             ApiError::Status { code, message } if message.is_empty() => {
-                write!(f, "sing-box API: {}", grpc_code_name(*code))
+                f.write_str(&(t.api_error)(&grpc_code_name(*code)))
             }
-            ApiError::Status { message, .. } => write!(f, "sing-box API: {}", message),
+            ApiError::Status { message, .. } => f.write_str(&(t.api_error)(message)),
             ApiError::InvalidResponse(reason) => {
-                write!(f, "Invalid sing-box API response: {}", reason)
+                f.write_str(&(t.api_invalid_response)(reason))
             }
         }
     }

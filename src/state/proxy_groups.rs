@@ -1,5 +1,6 @@
 use crate::core::groups_view::test_cover;
 use crate::core::settings::{StatusEvent, StatusLevel};
+use crate::i18n::s;
 use crate::core::singbox_api::{
     apply_expand_overrides, delay_states, merge_groups, parse_groups_from_config,
     parse_node_types_from_config, url_test_done, GroupKind, GroupsSnapshot, ProxyGroup, SingBoxApi,
@@ -302,14 +303,14 @@ impl ProxyGroups {
                 if !received && !warned && started.elapsed() >= FIRST_SNAPSHOT_DEADLINE {
                     warned = true;
                     let reason = if last_error.is_empty() {
-                        "sing-box API did not respond".to_string()
+                        s().messages.api_no_response.to_string()
                     } else {
                         last_error.clone()
                     };
                     let _ = this.update(cx, |_, cx| {
                         cx.emit(StatusEvent {
                             level: StatusLevel::Warning,
-                            message: format!("Failed to load proxy groups: {}", reason),
+                            message: (s().messages.groups_failed)(&reason),
                         });
                     });
                 }
@@ -414,7 +415,7 @@ impl ProxyGroups {
                 .background_executor()
                 .spawn(async move {
                     api.select_outbound(&request_group, &request_node)
-                        .map_err(|e| format!("Failed to switch node: {}", e))
+                        .map_err(|e| (s().messages.switch_node_failed)(&e.to_string()))
                 })
                 .await;
             if let Err(message) = result {
@@ -463,7 +464,7 @@ impl ProxyGroups {
                 let _ = this.update(cx, |_, cx| {
                     cx.emit(StatusEvent {
                         level: StatusLevel::Warning,
-                        message: format!("Failed to save group state: {}", e),
+                        message: (s().messages.save_group_state_failed)(&e.to_string()),
                     });
                 });
             }
@@ -618,7 +619,7 @@ impl ProxyGroups {
             let Some((_, first_error)) = failed.first() else {
                 return;
             };
-            let message = format!("Delay test failed: {}", first_error);
+            let message = (s().messages.delay_test_failed)(first_error);
             let _ = this.update(cx, |state, cx| {
                 for (target, _) in &failed {
                     state.pending_tests.remove(target);

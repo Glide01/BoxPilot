@@ -470,14 +470,14 @@ pub fn openconnect_form_values(
     answers: &[String],
 ) -> Result<BTreeMap<String, String>, String> {
     if fields.len() != answers.len() {
-        return Err("The sign-in form changed; reopen it.".to_string());
+        return Err(crate::i18n::s().vpn.form_changed.to_string());
     }
     let mut values = BTreeMap::new();
     for (field, answer) in fields.iter().zip(answers) {
         if field.kind == OpenConnectFieldKind::Select
             && !field.options.iter().any(|choice| &choice.value == answer)
         {
-            return Err(format!("Choose a value for {}.", field.display_label()));
+            return Err((crate::i18n::s().vpn.choose_value)(&field.display_label()));
         }
         values.insert(field.submission_key.clone(), answer.clone());
     }
@@ -493,17 +493,15 @@ pub fn openconnect_callback_result(
 ) -> Result<OpenConnectBrowserResult, String> {
     let url = pasted.trim();
     if url.is_empty() {
-        return Err("Paste the address your browser ended on.".to_string());
+        return Err(crate::i18n::s().vpn.paste_address.to_string());
     }
     if !request
         .callback_url_prefixes
         .iter()
         .any(|prefix| url.starts_with(prefix.as_str()))
     {
-        return Err(format!(
-            "That address doesn't look like the sign-in result: it should start with {}.",
-            request.callback_url_prefixes.join(" or ")
-        ));
+        let t = &crate::i18n::s().vpn;
+        return Err((t.address_mismatch)(&request.callback_url_prefixes.join(t.or)));
     }
     Ok(OpenConnectBrowserResult {
         final_url: url.to_string(),

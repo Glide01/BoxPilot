@@ -5,6 +5,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::Duration;
 
+use crate::i18n::s;
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -45,13 +47,13 @@ pub fn flush_dns_windows() -> Result<String, String> {
     match output {
         Ok(output) => {
             if output.status.success() {
-                Ok("Successfully flushed the DNS resolver cache.".to_string())
+                Ok(s().errors.flush_dns_ok.to_string())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("Failed to flush DNS cache. Error: {}", stderr))
+                Err((s().errors.flush_dns_failed)(&stderr))
             }
         }
-        Err(e) => Err(format!("Failed to execute 'ipconfig /flushdns': {}", e)),
+        Err(e) => Err((s().errors.flush_dns_run)(&e.to_string())),
     }
 }
 
@@ -69,14 +71,11 @@ pub fn disable_system_proxy() -> Result<(), String> {
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| format!("Failed to run reg command: {}", e))?;
+        .map_err(|e| (s().errors.run_command)("reg", &e.to_string()))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "Failed to disable system proxy: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))
+        Err((s().errors.disable_proxy)(&String::from_utf8_lossy(&output.stderr)))
     }
 }
 
@@ -138,10 +137,7 @@ pub fn disable_system_proxy() -> Result<(), String> {
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "Failed to disable system proxy: {}",
-            errors.join("; ")
-        ))
+        Err((s().errors.disable_proxy)(&errors.join("; ")))
     }
 }
 
@@ -178,13 +174,13 @@ fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("Failed to run {program}: {e}"))?;
+        .map_err(|e| (s().errors.run_command)(program, &e.to_string()))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+        Err((s().errors.command_failed)(
+            program,
+            String::from_utf8_lossy(&output.stderr).trim(),
         ))
     }
 }
@@ -419,7 +415,7 @@ pub fn validate_config(
 
     let output = cmd
         .output()
-        .map_err(|e| format!("Failed to run sing-box check: {}", e))?;
+        .map_err(|e| (s().errors.check_run_failed)(&e.to_string()))?;
 
     if output.status.success() {
         return Ok(());
@@ -433,7 +429,7 @@ pub fn validate_config(
     // Keep the toast readable: first line, char-capped (byte slicing could
     // split a multi-byte UTF-8 sequence and panic).
     let summary: String = detail.lines().next().unwrap_or("").chars().take(300).collect();
-    Err(format!("Config validation failed: {}", summary))
+    Err((s().errors.validation_failed)(&summary))
 }
 
 /// Parse the version out of `sing-box version` output. The first line looks
@@ -585,9 +581,9 @@ pub fn terminate_child(child: &mut Child, grace: Duration) -> io::Result<ExitSta
 /// signal that killed it, `code` its exit code if it exited normally.
 pub fn exit_message(code: Option<i32>, signal: Option<i32>) -> String {
     match (signal, code) {
-        (Some(signal), _) => format!("sing-box was killed by signal {signal}."),
-        (None, Some(code)) => format!("sing-box exited with code {code}."),
-        (None, None) => "sing-box exited.".to_string(),
+        (Some(signal), _) => (s().errors.killed_by_signal)(&signal.to_string()),
+        (None, Some(code)) => (s().errors.exited_with_code)(&code.to_string()),
+        (None, None) => s().messages.sing_box_exited.to_string(),
     }
 }
 

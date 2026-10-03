@@ -15,6 +15,7 @@
 //! fire-and-forget background calls bounded by their own timeouts.
 
 use crate::core::settings::{StatusEvent, StatusLevel};
+use crate::i18n::s;
 use crate::core::singbox_api::{
     ApiError, OpenConnectBrowserResult, OpenConnectChallenge, OpenConnectEndpointStatus,
     OpenVpnAnswer, OpenVpnChallenge, OpenVpnEndpointStatus, SingBoxApi, UsbipServerStatus,
@@ -289,7 +290,7 @@ impl VpnStatus {
         for (stream, error, permanent) in failures {
             if should_report_stream_error(permanent, self.loaded.contains(&stream), elapsed) {
                 self.stream_errors
-                    .insert(stream, format!("{} status: {}", stream.label(), error));
+                    .insert(stream, (s().vpn.stream_status)(stream.label(), &error.to_string()));
             }
         }
         let endpoints_changed = openconnect.is_some() || openvpn.is_some();
@@ -368,7 +369,7 @@ impl VpnStatus {
         cx: &mut Context<Self>,
     ) {
         let api = self.api;
-        self.run_action(key, "Sign-in failed", cx, move |key| {
+        self.run_action(key, s().vpn.sign_in_failed, cx, move |key| {
             api.submit_openconnect_form(&key.endpoint_tag, &key.challenge_id, values)
         });
     }
@@ -381,7 +382,7 @@ impl VpnStatus {
         cx: &mut Context<Self>,
     ) {
         let api = self.api;
-        self.run_action(key, "Sign-in failed", cx, move |key| {
+        self.run_action(key, s().vpn.sign_in_failed, cx, move |key| {
             api.submit_openconnect_browser(&key.endpoint_tag, &key.challenge_id, &result)
         });
     }
@@ -394,7 +395,7 @@ impl VpnStatus {
         cx: &mut Context<Self>,
     ) {
         let api = self.api;
-        self.run_action(key, "Sign-in failed", cx, move |key| {
+        self.run_action(key, s().vpn.sign_in_failed, cx, move |key| {
             api.submit_openvpn_challenge(&key.endpoint_tag, &key.challenge_id, &answer)
         });
     }
@@ -403,7 +404,7 @@ impl VpnStatus {
     /// OpenConnect retries later and asks again.
     pub fn cancel_challenge(&mut self, key: ChallengeKey, cx: &mut Context<Self>) {
         let api = self.api;
-        self.run_action(key, "Couldn't cancel sign-in", cx, move |key| {
+        self.run_action(key, s().vpn.cancel_sign_in_failed, cx, move |key| {
             match key.protocol {
                 VpnProtocol::OpenConnect => {
                     api.cancel_openconnect_auth(&key.endpoint_tag, &key.challenge_id)
@@ -440,7 +441,7 @@ impl VpnStatus {
                 if let Err(error) = result {
                     cx.emit(StatusEvent {
                         level: StatusLevel::Error,
-                        message: format!("{}: {}", failure, error),
+                        message: format!("{}{}{}", failure, s().common.colon, error),
                     });
                 }
                 cx.notify();

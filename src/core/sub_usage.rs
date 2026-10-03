@@ -5,6 +5,7 @@
 //! gpui; the clock is always passed in.
 
 use crate::core::bytefmt::format_bytes;
+use crate::i18n::s;
 use serde::{Deserialize, Serialize};
 
 /// The response header subscription servers report usage in.
@@ -134,10 +135,10 @@ impl SubscriptionUsage {
                 format_bytes(self.total)
             )
         } else {
-            format!("{} used", format_bytes(self.used()))
+            (s().usage.used)(&format_bytes(self.used()))
         };
         match self.expiry_phrase(now_secs) {
-            Some(expiry) => format!("{} · {}", traffic, expiry),
+            Some(expiry) => format!("{}{}{}", traffic, s().common.sep, expiry),
             None => traffic,
         }
     }
@@ -145,17 +146,16 @@ impl SubscriptionUsage {
     /// "expires in 3 days" / "expires today" / "expired 2 days ago".
     fn expiry_phrase(&self, now_secs: u64) -> Option<String> {
         let days = self.days_left(now_secs)?;
+        let t = &s().usage;
         Some(if self.is_expired(now_secs) {
             match -days {
-                0 => "expired today".to_string(),
-                1 => "expired 1 day ago".to_string(),
-                n => format!("expired {} days ago", n),
+                0 => t.expired_today.to_string(),
+                n => (t.expired_days_ago)(n),
             }
         } else {
             match days {
-                0 => "expires today".to_string(),
-                1 => "expires in 1 day".to_string(),
-                n => format!("expires in {} days", n),
+                0 => t.expires_today.to_string(),
+                n => (t.expires_in_days)(n),
             }
         })
     }
@@ -168,17 +168,17 @@ impl SubscriptionUsage {
         }
         let mut reasons = Vec::new();
         if self.is_exhausted() {
-            reasons.push("traffic used up".to_string());
+            reasons.push(s().usage.used_up.to_string());
         } else if self.fraction_used().is_some_and(|f| f >= WARN_FRACTION) {
             // Integer percent, rounded down: never claims more than was used.
             let percent = u128::from(self.used()) * 100 / u128::from(self.total);
-            reasons.push(format!("{}% of traffic used", percent));
+            reasons.push((s().usage.percent_used)(percent));
         }
         // Expired counts too: `days_left` is ≤ 0 then.
         if self.days_left(now_secs).is_some_and(|d| d <= WARN_DAYS) {
             reasons.push(self.expiry_phrase(now_secs)?);
         }
-        Some(reasons.join(", "))
+        Some(reasons.join(s().usage.reason_sep))
     }
 
     /// The toast for a subscription that needs attention, naming the
@@ -186,7 +186,7 @@ impl SubscriptionUsage {
     /// `"Work" subscription: 92% of traffic used.` `None` at Normal.
     pub fn alert_message(&self, profile_name: &str, now_secs: u64) -> Option<String> {
         let reason = self.alert_reason(now_secs)?;
-        Some(format!("\"{}\" subscription: {}.", profile_name, reason))
+        Some((s().usage.alert)(profile_name, &reason))
     }
 }
 

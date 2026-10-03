@@ -207,7 +207,7 @@ impl ClashMode {
                     }
                     cx.emit(StatusEvent {
                         level: StatusLevel::Error,
-                        message: format!("Failed to switch clash mode: {}", e),
+                        message: (crate::i18n::s().messages.clash_mode_failed)(&e.to_string()),
                     });
                     cx.notify();
                 });

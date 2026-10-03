@@ -7,6 +7,7 @@ use crate::core::singbox_api::{
     grpc_code, ApiError, OpenConnectBrowserMode, OpenConnectBrowserRequest,
     OpenConnectEndpointStatus, OpenConnectTunnel, OpenVpnEndpointStatus, OpenVpnTunnel, VpnState,
 };
+use crate::i18n::s;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -177,7 +178,7 @@ pub fn failed_endpoints(
             protocol,
             endpoint_tag: tag.to_string(),
             error: if error.trim().is_empty() {
-                "failed".to_string()
+                s().vpn.failed.to_string()
             } else {
                 error.trim().to_string()
             },
@@ -249,11 +250,12 @@ pub fn vpn_state_label(state: &VpnState, state_text: &str) -> String {
     if !state_text.trim().is_empty() {
         return state_text.trim().to_string();
     }
+    let t = &s().vpn;
     match state {
-        VpnState::Connecting => "Connecting".to_string(),
-        VpnState::AuthPending => "Waiting for sign-in".to_string(),
-        VpnState::Connected => "Connected".to_string(),
-        VpnState::Error => "Error".to_string(),
+        VpnState::Connecting => t.connecting.to_string(),
+        VpnState::AuthPending => t.waiting_sign_in.to_string(),
+        VpnState::Connected => t.connected.to_string(),
+        VpnState::Error => t.error.to_string(),
         VpnState::Other(other) => other.clone(),
     }
 }
@@ -287,20 +289,21 @@ fn push_common(
         push_row(rows, "MTU", mtu.to_string());
     }
     if let Some(since) = connected_since {
-        push_row(rows, "Uptime", format_uptime(now_secs - since));
+        push_row(rows, s().vpn.row_uptime, format_uptime(now_secs - since));
     }
 }
 
 /// Tunnel details for an OpenConnect endpoint, empty values left out.
 pub fn openconnect_tunnel_rows(tunnel: &OpenConnectTunnel, now_secs: i64) -> Vec<InfoRow> {
+    let t = &s().vpn;
     let mut rows = Vec::new();
-    push_row(&mut rows, "Server", tunnel.server.clone());
+    push_row(&mut rows, t.row_server, tunnel.server.clone());
     push_row(
         &mut rows,
-        "Protocol",
+        t.row_protocol,
         openconnect_flavor_label(&tunnel.flavor),
     );
-    push_row(&mut rows, "Transport", tunnel.transport.clone());
+    push_row(&mut rows, t.row_transport, tunnel.transport.clone());
     push_common(
         &mut rows,
         &tunnel.ipv4,
@@ -315,10 +318,11 @@ pub fn openconnect_tunnel_rows(tunnel: &OpenConnectTunnel, now_secs: i64) -> Vec
 
 /// Tunnel details for an OpenVPN endpoint, empty values left out.
 pub fn openvpn_tunnel_rows(tunnel: &OpenVpnTunnel, now_secs: i64) -> Vec<InfoRow> {
+    let t = &s().vpn;
     let mut rows = Vec::new();
-    push_row(&mut rows, "Server", tunnel.server.clone());
-    push_row(&mut rows, "Network", tunnel.network.to_uppercase());
-    push_row(&mut rows, "Cipher", tunnel.cipher.clone());
+    push_row(&mut rows, t.row_server, tunnel.server.clone());
+    push_row(&mut rows, t.row_network, tunnel.network.to_uppercase());
+    push_row(&mut rows, t.row_cipher, tunnel.cipher.clone());
     push_common(
         &mut rows,
         &tunnel.ipv4,
@@ -348,27 +352,29 @@ pub fn openconnect_flavor_label(flavor: &str) -> String {
 /// A coarse elapsed time: `45s`, `12 min`, `3 hr 4 min`, `2 d 5 hr`.
 /// Negative (clock skew) reads as `0s`.
 pub fn format_uptime(secs: i64) -> String {
-    let secs = secs.max(0);
+    let secs = secs.max(0) as u64;
+    let t = &s().time;
     if secs < 60 {
-        format!("{}s", secs)
+        (t.coarse_secs)(secs)
     } else if secs < 3600 {
-        format!("{} min", secs / 60)
+        (t.coarse_mins)(secs / 60)
     } else if secs < 86400 {
-        format!("{} hr {} min", secs / 3600, secs % 3600 / 60)
+        (t.coarse_hours_mins)(secs / 3600, secs % 3600 / 60)
     } else {
-        format!("{} d {} hr", secs / 86400, secs % 86400 / 3600)
+        (t.coarse_days_hours)(secs / 86400, secs % 86400 / 3600)
     }
 }
 
 /// How long until a challenge `deadline`, for the dialog.
 pub fn deadline_label(deadline: i64, now_secs: i64) -> String {
     let left = deadline - now_secs;
+    let t = &s().vpn;
     if left <= 0 {
-        "The server's time limit for this request has passed.".to_string()
+        t.deadline_passed.to_string()
     } else if left < 60 {
-        format!("The server waits {} more seconds.", left)
+        (t.deadline_secs)(left)
     } else {
-        format!("The server waits about {} more min.", (left + 30) / 60)
+        (t.deadline_mins)((left + 30) / 60)
     }
 }
 
@@ -377,36 +383,19 @@ pub fn deadline_label(deadline: i64, now_secs: i64) -> String {
 /// modes need values only an embedded browser can capture — BoxPilot hands
 /// sign-in to the system browser, which never gives them back.
 pub fn openconnect_browser_limitation(request: &OpenConnectBrowserRequest) -> Option<String> {
+    let t = &s().vpn;
     let captured = match request.mode() {
         OpenConnectBrowserMode::Callback => return None,
-        OpenConnectBrowserMode::Cookies => format!(
-            "the {} cookie{}",
-            request.cookie_names.join(", "),
-            if request.cookie_names.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
+        OpenConnectBrowserMode::Cookies => (t.cookies)(
+            &request.cookie_names.join(", "),
+            request.cookie_names.len(),
         ),
-        OpenConnectBrowserMode::Headers => format!(
-            "the {} response header{}",
-            request.header_names.join(", "),
-            if request.header_names.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
+        OpenConnectBrowserMode::Headers => (t.headers)(
+            &request.header_names.join(", "),
+            request.header_names.len(),
         ),
     };
-    Some(format!(
-        "This server finishes single sign-on by handing {} to an embedded \
-         browser. BoxPilot signs in through your system browser, which can't \
-         pass them back, so this sign-in can't be completed here. Use a \
-         sing-box client with an embedded browser, set the endpoint's \
-         \"cookie\" option to an existing session, or ask your administrator \
-         for password sign-in (\"external_auth_disabled\").",
-        captured
-    ))
+    Some((t.browser_limitation)(&captured))
 }
 
 #[cfg(test)]

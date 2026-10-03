@@ -11,7 +11,7 @@
 //! `false` and the stream (and sing-box's test) ends.
 
 use crate::core::network_tools::{
-    outbound_choices, test_error_message, OutboundChoice, QualityRun, StunRun, ENDED_WITHOUT_RESULT,
+    outbound_choices, test_error_message, OutboundChoice, QualityRun, StunRun, ended_without_result,
 };
 use crate::core::singbox_api::{
     ApiError, NetworkQualityProgress, NetworkQualityRequest, SingBoxApi, StunProgress, StunRequest,
@@ -296,7 +296,7 @@ fn drain<R: TestRun>(
             }
             if disconnected {
                 // A no-op when the final message already ended the run.
-                run.fail(ENDED_WITHOUT_RESULT.to_string());
+                run.fail(ended_without_result());
             }
             cx.notify();
             !run.is_running()

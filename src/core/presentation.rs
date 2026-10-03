@@ -5,6 +5,7 @@
 //! gpui dependency.
 
 use crate::core::settings::ProfileSource;
+use crate::i18n::{s, Strings};
 use crate::core::timefmt::{format_relative_time, format_uptime, from_unix_secs, uptime_since};
 use std::fmt::Write;
 use std::time::SystemTime;
@@ -34,10 +35,16 @@ impl ConnectionStatus {
     }
 
     pub fn label(self) -> &'static str {
+        self.label_in(s())
+    }
+
+    /// [`Self::label`] in a given language (the tray builds its menu from
+    /// the language in its snapshot).
+    pub fn label_in(self, t: &'static Strings) -> &'static str {
         match self {
-            ConnectionStatus::Disconnected => "Disconnected",
-            ConnectionStatus::Starting => "Starting…",
-            ConnectionStatus::Connected => "Connected",
+            ConnectionStatus::Disconnected => t.status.disconnected,
+            ConnectionStatus::Starting => t.status.starting,
+            ConnectionStatus::Connected => t.status.connected,
         }
     }
 
@@ -50,10 +57,14 @@ impl ConnectionStatus {
 
     /// The power button's tooltip: what a click does.
     pub fn power_action_label(self) -> &'static str {
+        self.power_action_label_in(s())
+    }
+
+    pub fn power_action_label_in(self, t: &'static Strings) -> &'static str {
         match self {
-            ConnectionStatus::Disconnected => "Connect",
-            ConnectionStatus::Starting => "Starting…",
-            ConnectionStatus::Connected => "Disconnect",
+            ConnectionStatus::Disconnected => t.status.connect,
+            ConnectionStatus::Starting => t.status.starting,
+            ConnectionStatus::Connected => t.status.disconnect,
         }
     }
 }
@@ -62,7 +73,7 @@ impl ConnectionStatus {
 /// `fallback` is page wording for `None` ("not updated yet" / "never updated").
 pub fn updated_label(last_updated_secs: Option<u64>, now: SystemTime, fallback: &str) -> String {
     last_updated_secs
-        .map(|secs| format!("updated {}", format_relative_time(from_unix_secs(secs), now)))
+        .map(|secs| (s().profiles.updated)(&format_relative_time(from_unix_secs(secs), now)))
         .unwrap_or_else(|| fallback.to_string())
 }
 
@@ -84,6 +95,7 @@ pub struct ProfileRowInfo {
 }
 
 pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
+    let t = s();
     let source_empty = source.is_empty_source();
     let subtitle = match source {
         ProfileSource::Remote {
@@ -91,22 +103,18 @@ pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
             auto_update_interval_minutes,
         } => {
             if source_empty {
-                "No subscription URL".to_string()
+                t.profiles.no_subscription_url.to_string()
             } else if *auto_update_interval_minutes > 0 {
-                format!(
-                    "{} · auto-update {}m",
-                    redact_url(url),
-                    auto_update_interval_minutes
-                )
+                (t.profiles.auto_update_every)(&redact_url(url), *auto_update_interval_minutes)
             } else {
-                format!("{} · auto-update off", redact_url(url))
+                (t.profiles.auto_update_off)(&redact_url(url))
             }
         }
         ProfileSource::Local { path } => {
             if source_empty {
-                "No file selected".to_string()
+                t.profiles.no_file_selected.to_string()
             } else {
-                format!("Local file · {}", path)
+                (t.profiles.local_file)(path)
             }
         }
     };
@@ -116,8 +124,9 @@ pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
     }
 }
 
-/// What `redact_url` shows for something that isn't a URL with a host.
-pub const INVALID_URL_LABEL: &str = "Invalid URL";
+/// What `redact_url` shows for something that isn't a URL with a host (in
+/// English; the UI shows the current language's `profiles.invalid_url`).
+pub const INVALID_URL_LABEL: &str = crate::i18n::EN.profiles.invalid_url;
 
 /// A subscription URL as BoxPilot shows or logs it: scheme, host, port and
 /// path, with what may carry a credential masked as `…`: the query, the
@@ -131,10 +140,10 @@ pub const INVALID_URL_LABEL: &str = "Invalid URL";
 /// the real URL.
 pub fn redact_url(raw: &str) -> String {
     let Ok(url) = reqwest::Url::parse(raw.trim()) else {
-        return INVALID_URL_LABEL.to_string();
+        return s().profiles.invalid_url.to_string();
     };
     let Some(host) = url.host_str().filter(|h| !h.is_empty()) else {
-        return INVALID_URL_LABEL.to_string();
+        return s().profiles.invalid_url.to_string();
     };
     let mut out = format!("{}://", url.scheme());
     if !url.username().is_empty() || url.password().is_some() {
@@ -200,7 +209,7 @@ pub fn log_count_label(visible: usize, total: usize) -> String {
     if visible == total {
         format!("{}", total)
     } else {
-        format!("{} of {}", visible, total)
+        (s().logs.count_of)(visible, total)
     }
 }
 
@@ -215,7 +224,7 @@ pub fn runtime_subtitle(
     now: SystemTime,
 ) -> Option<String> {
     let uptime = started_at_millis
-        .map(|started| format!("Running for {}", format_uptime(uptime_since(started, now))));
+        .map(|started| (s().home.running_for)(&format_uptime(uptime_since(started, now))));
     let version = version
         .filter(|v| !v.is_empty())
         .map(|v| format!("sing-box {}", v));

@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use crate::i18n::s;
+
 /// The granted copy. Root-owned file and directory, so a user process can't
 /// swap a different program in under the capabilities.
 pub const PRIVILEGED_COPY_PATH: &str = "/usr/local/lib/boxpilot/sing-box";
@@ -191,11 +193,9 @@ pub fn run_grant(bundled: &Path) -> Result<(), String> {
     let output = match Command::new(&program).args(&args).output() {
         Ok(output) => output,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(
-                "pkexec not found. Install polkit to grant TUN permission.".to_string(),
-            );
+            return Err(s().errors.pkexec_missing.to_string());
         }
-        Err(e) => return Err(format!("Failed to run pkexec: {}", e)),
+        Err(e) => return Err((s().errors.pkexec_run)(&e.to_string())),
     };
     if output.status.success() {
         return Ok(());
@@ -213,17 +213,16 @@ pub fn run_grant(bundled: &Path) -> Result<(), String> {
 /// rephrased.
 fn grant_error_message(code: Option<i32>, stderr: &str) -> String {
     let detail = stderr.lines().map(str::trim).find(|l| !l.is_empty());
+    let t = &s().errors;
     match (code, detail) {
-        (Some(126), _) => {
-            "TUN permission was not granted: the password prompt was dismissed.".to_string()
-        }
-        (Some(127), None) => "TUN permission was not granted: not authorized.".to_string(),
+        (Some(126), _) => t.tun_dismissed.to_string(),
+        (Some(127), None) => t.tun_not_authorized.to_string(),
         (Some(127), Some(detail)) if detail.contains("Not authorized") => {
-            "TUN permission was not granted: not authorized.".to_string()
+            t.tun_not_authorized.to_string()
         }
-        (_, Some(detail)) => format!("Failed to grant TUN permission: {}", detail),
-        (Some(code), None) => format!("Failed to grant TUN permission (exit code {}).", code),
-        (None, None) => "Failed to grant TUN permission: pkexec was terminated.".to_string(),
+        (_, Some(detail)) => (t.tun_failed)(detail),
+        (Some(code), None) => (t.tun_failed_code)(&code.to_string()),
+        (None, None) => t.tun_terminated.to_string(),
     }
 }
 

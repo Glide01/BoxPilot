@@ -313,19 +313,17 @@ impl AppSettings {
                         Ok(backup) => LoadedSettings {
                             settings: AppSettings::default(),
                             persist: true,
-                            problem: Some(format!(
-                                "Settings file was unreadable and has been backed up to {}. Started with default settings.",
-                                backup.display()
+                            problem: Some((crate::i18n::s().messages.settings_backed_up)(
+                                &backup.display().to_string(),
                             )),
                         },
                         Err(backup_err) => LoadedSettings {
                             settings: AppSettings::default(),
                             persist: false,
-                            problem: Some(format!(
-                                "Settings file {} is unreadable ({}) and could not be backed up ({}). Started with default settings; changes won't be saved this session.",
-                                settings_path.display(),
-                                e,
-                                backup_err
+                            problem: Some((crate::i18n::s().messages.settings_unreadable)(
+                                &settings_path.display().to_string(),
+                                &e.to_string(),
+                                &backup_err.to_string(),
                             )),
                         },
                     }
@@ -343,10 +341,9 @@ impl AppSettings {
                 LoadedSettings {
                     settings: AppSettings::default(),
                     persist: false,
-                    problem: Some(format!(
-                        "Couldn't read settings file {} ({}). Started with default settings; changes won't be saved until BoxPilot is restarted.",
-                        settings_path.display(),
-                        e
+                    problem: Some((crate::i18n::s().messages.settings_read_failed)(
+                        &settings_path.display().to_string(),
+                        &e.to_string(),
                     )),
                 }
             }

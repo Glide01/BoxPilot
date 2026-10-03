@@ -195,14 +195,17 @@ pub fn connection_age_ms(connection: &Connection, now_ms: i64) -> i64 {
 /// A compact duration: `0s`, `45s`, `3m 12s`, `1h 05m`, `2d 3h`.
 pub fn format_elapsed(ms: i64) -> String {
     let secs = ms.max(0) / 1000;
+    let t = &crate::i18n::s().time;
     if secs < 60 {
-        format!("{}s", secs)
+        format!("{}{}", secs, t.second)
     } else if secs < 3600 {
-        format!("{}m {:02}s", secs / 60, secs % 60)
+        format!("{}{}{}{:02}{}", secs / 60, t.minute, t.unit_sep, secs % 60, t.second)
     } else if secs < 86400 {
-        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
+        let (hours, mins) = (secs / 3600, (secs % 3600) / 60);
+        format!("{}{}{}{:02}{}", hours, t.hour, t.unit_sep, mins, t.minute)
     } else {
-        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
+        let (days, hours) = (secs / 86400, (secs % 86400) / 3600);
+        format!("{}{}{}{}{}", days, t.day, t.unit_sep, hours, t.hour)
     }
 }
 

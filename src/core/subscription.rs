@@ -6,6 +6,7 @@ use crate::core::settings::{AppSettings, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi, API_SERVICE_TAG};
 use crate::core::sub_usage::{parse_userinfo, SubscriptionUsage, USERINFO_HEADER};
 use crate::core::timefmt::to_unix_secs;
+use crate::i18n::s;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs;
@@ -51,7 +52,7 @@ impl UpdateOutcome {
                 let target = staged.target().to_path_buf();
                 staged
                     .commit()
-                    .map_err(|e| format!("Failed to write config ({}): {}", target.display(), e))?;
+                    .map_err(|e| (s().errors.write_config)(&target.display().to_string(), &e.to_string()))?;
                 Ok(true)
             }
             UpdateOutcome::Unchanged => Ok(false),
@@ -82,10 +83,10 @@ pub struct Fetched {
 /// form, short of the `cache_file.enabled` that prepare forces on.
 pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
     let mut json: Value = serde_json::from_str(config_data)
-        .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
+        .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
     let obj = json
         .as_object_mut()
-        .ok_or_else(|| "Config is not a JSON object".to_string())?;
+        .ok_or_else(|| s().errors.not_object.to_string())?;
     obj.remove("inbounds");
     if let Some(services) = obj.get_mut("services").and_then(Value::as_array_mut) {
         services.retain(|service| !is_boxpilot_api_service(service));
@@ -94,7 +95,7 @@ pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
         }
     }
     serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("Failed to serialize config: {}", e))
+        .map_err(|e| (s().errors.serialize_config)(&e.to_string()))
 }
 
 /// The TUN interface's IPv4 address — always present in TUN mode. Public so
@@ -167,11 +168,11 @@ const API_PORT_PICK_ATTEMPTS: usize = 16;
 /// picks again (`ApiPortRetry`).
 pub fn pick_api_port(config_data: &str, proxy_port: u16) -> Result<u16, String> {
     let json: Value = serde_json::from_str(config_data)
-        .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
+        .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
     let mut excluded = config_listen_ports(&json);
     excluded.push(proxy_port);
     pick_port_avoiding(&excluded, free_loopback_port)
-        .map_err(|e| format!("Failed to find a free port for the sing-box API: {}", e))
+        .map_err(|e| (s().errors.api_port)(&e.to_string()))
 }
 
 /// A port the OS hands out for `127.0.0.1:0`, with the listener that holds
@@ -274,9 +275,9 @@ fn mixed_listen_address(allow_lan: bool) -> &'static str {
 /// Inject mode-specific inbounds into config (used at process start)
 pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String, String> {
     let mut json: Value = serde_json::from_str(config_data)
-        .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
+        .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
     if !json.is_object() {
-        return Err("Config is not a JSON object".to_string());
+        return Err(s().errors.not_object.to_string());
     }
 
     let mut mixed_inbound = serde_json::json!({
@@ -334,7 +335,7 @@ pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String,
     json["services"] = Value::Array(services);
 
     serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("Failed to serialize config: {}", e))
+        .map_err(|e| (s().errors.serialize_config)(&e.to_string()))
 }
 
 /// Write a prepared runtime config. It carries the API secret, so on Unix
@@ -362,13 +363,13 @@ pub fn perform_update(
     sing_box_version: Option<&str>,
 ) -> Result<Fetched, String> {
     if !sub_url.starts_with("http://") && !sub_url.starts_with("https://") {
-        return Err("Invalid URL: must start with http:// or https://".to_string());
+        return Err(s().errors.invalid_sub_url.to_string());
     }
 
     let client = Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| (s().errors.http_client)(&e.to_string()))?;
 
     let response = client
         .get(sub_url)
@@ -376,20 +377,14 @@ pub fn perform_update(
         .send()
         .map_err(|e| {
             if e.is_timeout() {
-                "Update timed out. Please try again.".to_string()
+                s().errors.update_timed_out.to_string()
             } else {
-                format!(
-                    "Network error fetching subscription: {}",
-                    http_error_text(e)
-                )
+                (s().errors.network_error)(&http_error_text(e))
             }
         })?;
 
     if !response.status().is_success() {
-        return Err(format!(
-            "Failed to download subscription. Status: {}",
-            response.status()
-        ));
+        return Err((s().errors.download_status)(&response.status().to_string()));
     }
 
     // Before `text()`, which consumes the response.
@@ -401,10 +396,7 @@ pub fn perform_update(
         .and_then(|value| parse_userinfo(value, now));
 
     let config_data = response.text().map_err(|e| {
-        format!(
-            "Failed to read subscription response: {}",
-            http_error_text(e)
-        )
+        (s().errors.read_response)(&http_error_text(e))
     })?;
 
     let outcome = apply_config_text(&config_data, app_dir, config_path, sing_box)?;
@@ -464,14 +456,14 @@ fn apply_config_text(
 
     if let Some(parent) = config_path.parent() {
         create_private_dir(parent)
-            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+            .map_err(|e| (s().errors.create_failed)(&parent.display().to_string(), &e.to_string()))?;
     }
     // Staged beside the target and renamed over it by `UpdateOutcome::commit`:
     // a crash mid-write must not corrupt the profile's (possibly active)
     // config, and a result nobody wants any more must not land at all.
     // Owner-only on Unix: it holds server passwords and UUIDs.
     let staged = stage_atomic(config_path, stripped.as_bytes(), FileAccess::OwnerOnly)
-        .map_err(|e| format!("Failed to write config ({}): {}", config_path.display(), e))?;
+        .map_err(|e| (s().errors.write_config)(&config_path.display().to_string(), &e.to_string()))?;
 
     Ok(UpdateOutcome::Changed(staged))
 }
@@ -486,13 +478,13 @@ pub fn import_local_config(
     sing_box: Option<&Path>,
 ) -> Result<UpdateOutcome, String> {
     if !source_path.exists() {
-        return Err(format!("File not found: {}", source_path.display()));
+        return Err((s().errors.file_not_found)(&source_path.display().to_string()));
     }
     if !source_path.is_file() {
-        return Err(format!("Not a file: {}", source_path.display()));
+        return Err((s().errors.not_a_file)(&source_path.display().to_string()));
     }
     let raw = fs::read_to_string(source_path)
-        .map_err(|e| format!("Failed to read {}: {}", source_path.display(), e))?;
+        .map_err(|e| (s().errors.read_failed)(&source_path.display().to_string(), &e.to_string()))?;
     apply_config_text(&raw, app_dir, config_path, sing_box)
 }
 
@@ -525,7 +517,7 @@ fn validate_downloaded_config(
     )?;
     let tmp_path = validation_temp_path(app_dir, config_path);
     write_atomic(&tmp_path, prepared.as_bytes(), FileAccess::OwnerOnly)
-        .map_err(|e| format!("Failed to write validation temp file: {}", e))?;
+        .map_err(|e| (s().errors.validation_temp)(&e.to_string()))?;
     let result = crate::core::process::validate_config(sing_box, app_dir, &tmp_path);
     let _ = fs::remove_file(&tmp_path);
     result
