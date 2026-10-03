@@ -1,3 +1,4 @@
+use crate::core::groups_view::test_cover;
 use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{
     apply_expand_overrides, delay_states, merge_groups, parse_groups_from_config,
@@ -48,9 +49,17 @@ enum StreamEvent {
     /// Why the last subscription attempt ended; surfaced only if no snapshot
     /// ever arrives.
     Error(String),
-    /// From `test_delay`: a test started, so the drain task must run its
-    /// settle clock.
+    /// From `test_delay` / `test_node` / `test_all`: a test started, so the
+    /// drain task must run its settle clock.
     TestStarted,
+}
+
+/// What a user-started URL test was started on: a group's Test button (or
+/// Test all), or one node's delay badge.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum TestTarget {
+    Group(String),
+    Node(String),
 }
 
 /// A user-started URL test still in flight.
@@ -58,6 +67,9 @@ struct PendingTest {
     /// Unix seconds; results at least this recent count as this test's.
     started_at: i64,
     started: Instant,
+    /// The tags whose results end it: the group's nodes, or the one node
+    /// (a node that is itself a group: that group's nodes).
+    members: Vec<String>,
 }
 
 /// Selector groups + their live state. Owned by `AppState`; streamed while
@@ -74,6 +86,11 @@ pub struct ProxyGroups {
     pub delays: HashMap<String, DelayState>,
     /// 测速进行中的组名(Test 按钮 loading)。
     pub testing: HashSet<String>,
+    /// Nodes with a per-node test in flight (spinner on their delay badge).
+    pub testing_nodes: HashSet<String>,
+    /// Bumped on every change the Groups page shows, so it can cache what it
+    /// derives (filtered / sorted rows) until the next one.
+    pub revision: u64,
     /// sing-box API 句柄(端口 + 本次运行的 secret)。stream/select/test 都走它;
     /// AppState 每次启动 sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
@@ -85,7 +102,7 @@ pub struct ProxyGroups {
     /// history failed — sing-box deletes history on failure — so it shows
     /// `Timeout`.
     tested: HashSet<String>,
-    pending_tests: HashMap<String, PendingTest>,
+    pending_tests: HashMap<TestTarget, PendingTest>,
     /// Expand toggles made this run (group → expanded), laid over every
     /// snapshot: `SetGroupExpand` doesn't push, so a snapshot can predate it.
     /// sing-box stores them in `cache_file`, so the next run starts from
@@ -118,6 +135,8 @@ impl ProxyGroups {
             node_types: HashMap::new(),
             delays: HashMap::new(),
             testing: HashSet::new(),
+            testing_nodes: HashSet::new(),
+            revision: 0,
             api,
             config_path,
             history: HashMap::new(),
@@ -162,11 +181,18 @@ impl ProxyGroups {
         // 延迟数据只属于一次运行会话
         self.delays.clear();
         self.testing.clear();
+        self.testing_nodes.clear();
         self.history.clear();
         self.tested.clear();
         self.pending_tests.clear();
         self.expand_overrides.clear();
         self.last_snapshot = None;
+        self.changed(cx);
+    }
+
+    /// Something the page shows moved: new revision, re-render.
+    fn changed(&mut self, cx: &mut Context<Self>) {
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
 
@@ -259,12 +285,12 @@ impl ProxyGroups {
                 let alive = this.update(cx, |state, cx| {
                     if let Some(snapshot) = latest {
                         state.apply_snapshot(snapshot, &config_groups, &config_types);
-                        cx.notify();
+                        state.changed(cx);
                     }
                     // Tests can end without a snapshot (quiet stream / cap),
                     // so check on every wake, not just on arrival.
                     if state.settle_tests() {
-                        cx.notify();
+                        state.changed(cx);
                     }
                     !state.pending_tests.is_empty()
                 });
@@ -313,31 +339,28 @@ impl ProxyGroups {
     /// whether anything changed.
     fn settle_tests(&mut self) -> bool {
         let now = Instant::now();
-        let done: Vec<String> = self
+        let done: Vec<TestTarget> = self
             .pending_tests
             .iter()
-            .filter(|(name, test)| {
-                let Some(group) = self.groups.iter().find(|g| &g.name == *name) else {
-                    return true;
-                };
+            .filter(|(_, test)| {
                 let quiet_since = self
                     .last_snapshot
                     .map_or(test.started, |last| last.max(test.started));
                 url_test_done(
-                    group,
+                    &test.members,
                     &self.history,
                     test.started_at,
                     now - test.started,
                     now - quiet_since,
                 )
             })
-            .map(|(name, _)| name.clone())
+            .map(|(target, _)| target.clone())
             .collect();
         if done.is_empty() {
             return false;
         }
-        for name in done {
-            self.finish_test(&name);
+        for target in done {
+            self.finish_test(&target);
         }
         self.delays = delay_states(&self.history, &self.tested);
         true
@@ -345,12 +368,20 @@ impl ProxyGroups {
 
     /// Conclude a user-started test: its members now count as tested, so any
     /// without a result show `Timeout`.
-    fn finish_test(&mut self, group: &str) {
-        self.pending_tests.remove(group);
-        self.testing.remove(group);
-        if let Some(entry) = self.groups.iter().find(|g| g.name == group) {
-            self.tested.extend(entry.all.iter().cloned());
-        }
+    fn finish_test(&mut self, target: &TestTarget) {
+        let Some(test) = self.pending_tests.remove(target) else {
+            return;
+        };
+        self.forget_target(target);
+        self.tested.extend(test.members);
+    }
+
+    /// Drop `target` from the spinner sets.
+    fn forget_target(&mut self, target: &TestTarget) {
+        match target {
+            TestTarget::Group(group) => self.testing.remove(group),
+            TestTarget::Node(node) => self.testing_nodes.remove(node),
+        };
     }
 
     /// Optimistically switch `group` to `node`, then confirm via the API.
@@ -373,7 +404,7 @@ impl ProxyGroups {
             return;
         }
         let previous = std::mem::replace(&mut entry.now, node.clone());
-        cx.notify();
+        self.changed(cx);
 
         let api = self.api;
         cx.spawn(async move |this, cx| {
@@ -397,7 +428,7 @@ impl ProxyGroups {
                         level: StatusLevel::Error,
                         message,
                     });
-                    cx.notify();
+                    state.changed(cx);
                 });
             }
         })
@@ -420,7 +451,7 @@ impl ProxyGroups {
         }
         entry.expanded = expanded;
         self.expand_overrides.insert(group.clone(), expanded);
-        cx.notify();
+        self.changed(cx);
 
         let api = self.api;
         cx.spawn(async move |this, cx| {
@@ -445,52 +476,160 @@ impl ProxyGroups {
     /// 每 `SETTLE_TICK` 一次,见 `url_test_done`),此时仍无结果的节点标 `Timeout`。请求失败:
     /// Warning toast。detach 不存句柄:请求自带 2s 超时,不会泄漏。
     pub fn test_delay(&mut self, group: String, cx: &mut Context<Self>) {
-        if self.source != GroupSource::Api || self.testing.contains(&group) {
+        if self.source != GroupSource::Api {
             return;
         }
+        let target = TestTarget::Group(group.clone());
+        if self.begin_test(&target) {
+            self.tests_started(cx);
+            self.send_url_tests(vec![(group, target)], cx);
+        }
+    }
+
+    /// Test one node (its delay badge): `URLTest` on a plain outbound tag
+    /// probes just that outbound and records or clears its history, like a
+    /// group test does per member. Settles by the same rules; only this
+    /// node's badge spins.
+    pub fn test_node(&mut self, node: String, cx: &mut Context<Self>) {
+        if self.source != GroupSource::Api {
+            return;
+        }
+        let target = TestTarget::Node(node.clone());
+        if self.begin_test(&target) {
+            self.tests_started(cx);
+            self.send_url_tests(vec![(node, target)], cx);
+        }
+    }
+
+    /// Test every group (the page's Test all). Every group's button spins
+    /// until its own nodes have answered, but sing-box is only asked to test
+    /// enough groups to reach every node once (`test_cover`): one node sits
+    /// in several groups, and each `URLTest` probes all of a group's members.
+    pub fn test_all(&mut self, cx: &mut Context<Self>) {
+        if self.source != GroupSource::Api {
+            return;
+        }
+        let cover = test_cover(&self.groups, |name| self.testing.contains(name));
+        let names: Vec<String> = self
+            .groups
+            .iter()
+            .filter(|g| !self.testing.contains(&g.name))
+            .map(|g| g.name.clone())
+            .collect();
+        let mut requests: Vec<(String, TestTarget)> = cover
+            .iter()
+            .map(|&gi| {
+                let name = self.groups[gi].name.clone();
+                (name.clone(), TestTarget::Group(name))
+            })
+            .collect();
+        let mut started = false;
+        for name in names {
+            started |= self.begin_test(&TestTarget::Group(name));
+        }
+        requests.retain(|(_, target)| self.pending_tests.contains_key(target));
+        if started {
+            self.tests_started(cx);
+            self.send_url_tests(requests, cx);
+        }
+    }
+
+    /// Whether any group test is in flight (Test all's spinner).
+    pub fn testing_any_group(&self) -> bool {
+        !self.testing.is_empty()
+    }
+
+    /// Register a test of `target` (without asking sing-box yet). `false`
+    /// if one is already running or the group is gone.
+    fn begin_test(&mut self, target: &TestTarget) -> bool {
+        if self.pending_tests.contains_key(target) {
+            return false;
+        }
+        let group_members = |name: &str| {
+            self.groups
+                .iter()
+                .find(|g| g.name == name)
+                .map(|g| g.all.clone())
+        };
+        let members = match target {
+            TestTarget::Group(group) => match group_members(group) {
+                Some(members) => members,
+                None => return false,
+            },
+            // A member that is itself a group: sing-box tests its nodes, and
+            // records history under their tags.
+            TestTarget::Node(node) => group_members(node).unwrap_or_else(|| vec![node.clone()]),
+        };
+        // A re-test starts clean: don't keep showing last run's Timeouts while
+        // this one is in flight (recorded results stay until replaced).
+        for node in &members {
+            self.tested.remove(node);
+        }
+        if let TestTarget::Node(node) = target {
+            self.tested.remove(node);
+        }
+        match target {
+            TestTarget::Group(group) => self.testing.insert(group.clone()),
+            TestTarget::Node(node) => self.testing_nodes.insert(node.clone()),
+        };
         self.pending_tests.insert(
-            group.clone(),
+            target.clone(),
             PendingTest {
                 started_at: unix_now(),
                 started: Instant::now(),
+                members,
             },
         );
-        self.testing.insert(group.clone());
-        // A re-test starts clean: don't keep showing last run's Timeouts while
-        // this one is in flight (recorded results stay until replaced).
-        if let Some(entry) = self.groups.iter().find(|g| g.name == group) {
-            for node in &entry.all {
-                self.tested.remove(node);
-            }
-        }
+        true
+    }
+
+    /// After `begin_test`: show it, and start the drain task's settle clock —
+    /// it may be asleep on the stream.
+    fn tests_started(&mut self, cx: &mut Context<Self>) {
         self.delays = delay_states(&self.history, &self.tested);
-        cx.notify();
-        // The drain task may be asleep on the stream: start its settle clock.
+        self.changed(cx);
         if let Some(wake) = &self.wake {
             let _ = wake.unbounded_send(StreamEvent::TestStarted);
         }
+    }
 
+    /// Ask sing-box to run `URLTest` on each tag, in order, off the UI
+    /// thread. A rejected request ends its test and warns once (the first
+    /// error) — a dead API would otherwise toast once per group on Test all.
+    /// Detached: every request carries its own 2s timeout.
+    fn send_url_tests(&mut self, requests: Vec<(String, TestTarget)>, cx: &mut Context<Self>) {
+        if requests.is_empty() {
+            return;
+        }
         let api = self.api;
         cx.spawn(async move |this, cx| {
-            let request_group = group.clone();
-            let result = cx
+            let failed = cx
                 .background_executor()
                 .spawn(async move {
-                    api.url_test(&request_group)
-                        .map_err(|e| format!("Delay test failed: {}", e))
+                    let mut failed = Vec::new();
+                    for (tag, target) in requests {
+                        if let Err(e) = api.url_test(&tag) {
+                            failed.push((target, e.to_string()));
+                        }
+                    }
+                    failed
                 })
                 .await;
-            if let Err(message) = result {
-                let _ = this.update(cx, |state, cx| {
-                    state.pending_tests.remove(&group);
-                    state.testing.remove(&group);
-                    cx.emit(StatusEvent {
-                        level: StatusLevel::Warning,
-                        message,
-                    });
-                    cx.notify();
+            let Some((_, first_error)) = failed.first() else {
+                return;
+            };
+            let message = format!("Delay test failed: {}", first_error);
+            let _ = this.update(cx, |state, cx| {
+                for (target, _) in &failed {
+                    state.pending_tests.remove(target);
+                    state.forget_target(target);
+                }
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Warning,
+                    message,
                 });
-            }
+                state.changed(cx);
+            });
         })
         .detach();
     }

@@ -33,14 +33,17 @@ impl SingBoxApi {
         self.unary("SelectOutbound", &request)
     }
 
-    /// `URLTest` — start a delay test of every node in `group` (a urltest
-    /// group re-checks and may re-select; a plain outbound tag tests just
-    /// that one). Returns as soon as sing-box has accepted it; results
-    /// arrive on the `SubscribeGroups` / `SubscribeOutbounds` streams.
-    /// `NOT_FOUND` for an unknown tag.
-    pub fn url_test(&self, group: &str) -> Result<(), ApiError> {
+    /// `URLTest` — start a delay test of every node in a group (a urltest
+    /// group re-checks and may re-select), or of just one outbound when
+    /// `tag` is a plain node: sing-box then probes only that outbound and
+    /// stores its result, or deletes its history on failure, as a group test
+    /// does for each member (checked against sing-box 1.14.2). Returns as
+    /// soon as sing-box has accepted it; results arrive on the
+    /// `SubscribeGroups` / `SubscribeOutbounds` streams, one push per
+    /// finished probe. `NOT_FOUND` for an unknown tag.
+    pub fn url_test(&self, tag: &str) -> Result<(), ApiError> {
         let request = pb::UrlTestRequest {
-            outbound_tag: group.to_string(),
+            outbound_tag: tag.to_string(),
         };
         self.unary("URLTest", &request)
     }
@@ -235,32 +238,32 @@ pub fn delay_states(
     states
 }
 
-/// Whether a URL test of `group` started at `started_at` (unix seconds) has
-/// visibly finished: every member has a result at least that recent. Failed
-/// probes never show up here (they delete history) — see `url_test_done`.
-pub fn url_test_settled(
-    group: &ProxyGroup,
+/// Whether a URL test of `members` (a group's nodes, or the one node a
+/// per-node test probes) started at `started_at` (unix seconds) has visibly
+/// finished: every member has a result at least that recent. Failed probes
+/// never show up here (they delete history) — see `url_test_done`.
+pub fn members_settled(
+    members: &[String],
     history: &HashMap<String, UrlTestHistory>,
     started_at: i64,
 ) -> bool {
-    group
-        .all
+    members
         .iter()
         .all(|node| history.get(node).is_some_and(|h| h.time >= started_at))
 }
 
-/// Whether the Test button's spinner should stop: every member answered, or
-/// the stream has gone quiet (`quiet` = time since the later of the test start
+/// Whether a test's spinner should stop: every member answered, or the
+/// stream has gone quiet (`quiet` = time since the later of the test start
 /// and the last snapshot), or the hard cap passed (`elapsed` = time since the
 /// test start).
 pub fn url_test_done(
-    group: &ProxyGroup,
+    members: &[String],
     history: &HashMap<String, UrlTestHistory>,
     started_at: i64,
     elapsed: Duration,
     quiet: Duration,
 ) -> bool {
-    url_test_settled(group, history, started_at)
+    members_settled(members, history, started_at)
         || quiet >= URL_TEST_QUIET
         || elapsed >= URL_TEST_WINDOW
 }
@@ -529,24 +532,42 @@ mod tests {
     #[test]
     fn url_test_settles_only_when_every_member_is_fresh() {
         let snapshot = GroupsSnapshot::from_proto(proto_groups());
-        let auto = &snapshot.groups[1];
-        assert!(url_test_settled(auto, &snapshot.history, 1_700_000_000));
+        let auto = &snapshot.groups[1].all;
+        assert!(members_settled(auto, &snapshot.history, 1_700_000_000));
         assert!(
-            !url_test_settled(auto, &snapshot.history, 1_700_000_001),
+            !members_settled(auto, &snapshot.history, 1_700_000_001),
             "stale result"
         );
-        let selector = &snapshot.groups[0];
+        let selector = &snapshot.groups[0].all;
         assert!(
-            !url_test_settled(selector, &snapshot.history, 0),
+            !members_settled(selector, &snapshot.history, 0),
             "a member without history keeps the test open"
+        );
+    }
+
+    #[test]
+    fn a_single_node_test_settles_on_that_node_alone() {
+        let snapshot = GroupsSnapshot::from_proto(proto_groups());
+        assert!(
+            members_settled(&["香港-01".to_string()], &snapshot.history, 1_700_000_000),
+            "日本-02 shares the group without a result, but isn't under test"
+        );
+        assert!(!members_settled(
+            &["日本-02".to_string()],
+            &snapshot.history,
+            0
+        ));
+        assert!(
+            members_settled(&[], &snapshot.history, 0),
+            "nothing to wait for"
         );
     }
 
     #[test]
     fn url_test_ends_on_results_quiet_stream_or_cap() {
         let snapshot = GroupsSnapshot::from_proto(proto_groups());
-        let selector = &snapshot.groups[0];
-        let auto = &snapshot.groups[1];
+        let selector = &snapshot.groups[0].all;
+        let auto = &snapshot.groups[1].all;
         let short = Duration::from_secs(1);
         assert!(url_test_done(
             auto,
