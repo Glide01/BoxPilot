@@ -4,9 +4,8 @@ use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
 use box_pilot_gui::ui::assets::AppAssets;
-use box_pilot_gui::ui::{app_window, tray};
+use box_pilot_gui::ui::{app_window, theme, tray};
 use gpui::*;
-use gpui_component::Theme;
 
 /// On Windows, ensure the process is running with admin rights. If not,
 /// re-launch self via `ShellExecuteW("runas", ...)` (UAC prompt) and exit.
@@ -133,13 +132,6 @@ fn main() {
 
     gpui_platform::application().with_assets(AppAssets).run(move |cx| {
         gpui_component::init(cx);
-        let theme = Theme::global_mut(cx);
-        // 浅色主题默认 primary 是黑色系(shadcn 风);按设计稿改为蓝色强调。
-        theme.primary = rgb(0x2563EB).into(); // blue-600
-        theme.primary_hover = rgb(0x1D4ED8).into(); // blue-700
-        theme.primary_active = rgb(0x1E40AF).into(); // blue-800
-        theme.sidebar_accent = rgb(0xEAF1FE).into();
-        theme.sidebar_accent_foreground = rgb(0x1D4ED8).into();
 
         // Anywhere in the main window (`RootView` keeps focus inside its
         // context). Ctrl+S not while typing in a text field (gpui-component's
@@ -154,6 +146,11 @@ fn main() {
         ]);
 
         let app_state = AppState::new(deeplink_rx, cx);
+        // Light / dark per the saved Appearance preference (System resolved
+        // against the OS; the window re-resolves against its own
+        // appearance when it opens).
+        let theme_pref = app_state.read(cx).settings.theme;
+        theme::apply(theme_pref, None, cx);
         // The window lifecycle owns `AppState` from here on (dropped on
         // quit, which stops sing-box); the tray comes up alongside, in the
         // background on Linux.

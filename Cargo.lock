@@ -709,6 +709,7 @@ dependencies = [
  "ksni",
  "libc",
  "prost",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",

@@ -14,13 +14,13 @@ use crate::core::settings::{CloseAction, StatusEvent, StatusLevel};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
 use crate::state::{ActivateRequested, AppState};
-use crate::ui::{toast, tray, RootView};
+use crate::ui::{theme, toast, tray, RootView};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     dialog::DialogFooter,
-    ActiveTheme, Root, WindowExt,
+    Root, WindowExt,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -217,8 +217,16 @@ fn open(cx: &mut App) {
         },
         |window, cx| {
             window.on_window_should_close(cx, should_close);
+            // Resolve System against this window's own appearance (the
+            // reliable source on Linux), set its title bar, and follow OS
+            // switches for as long as the window lives.
+            let theme_pref = app_state.read(cx).settings.theme;
+            theme::apply(theme_pref, Some(window), cx);
+            theme::watch_system(window, &app_state, cx).detach();
             let view = cx.new(|cx| RootView::new(app_state.clone(), window, cx));
-            cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+            // No `.bg(..)`: `Root` paints the current theme's background
+            // itself, so it follows light/dark switches.
+            cx.new(|cx| Root::new(view, window, cx))
         },
     );
     match opened {
