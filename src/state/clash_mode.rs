@@ -40,7 +40,7 @@ pub struct ClashMode {
     pub modes: Vec<String>,
     /// The current mode, spelled as in `modes`; empty while stopped.
     pub current: String,
-    /// sing-box API 句柄(端口 Settings 可配);改端口经 `set_api` 换新句柄。
+    /// sing-box API 句柄(端口 + 本次运行的 secret);每次启动前经 `set_api` 换新。
     api: SingBoxApi,
     /// Liveness flag for the current session's reader thread. Cleared by
     /// `clear()` and `Drop` so the detached thread self-terminates.
@@ -62,8 +62,9 @@ impl ClashMode {
         }
     }
 
-    /// Swap the sing-box API handle after a Settings port change. AppState
-    /// restarts sing-box when running, and the edges re-drive the stream.
+    /// Swap in the API handle (port + secret) of the sing-box run about to
+    /// start; AppState calls this before every start, and the edges re-drive
+    /// the stream.
     pub fn set_api(&mut self, api: SingBoxApi) {
         self.api = api;
     }

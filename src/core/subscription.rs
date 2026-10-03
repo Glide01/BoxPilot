@@ -3,6 +3,7 @@ use crate::core::settings::{AppSettings, API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -72,7 +73,9 @@ pub struct RuntimeOptions {
     pub proxy_mode: bool,
     pub set_system_proxy: bool,
     pub proxy_port: u16,
-    pub api_port: u16,
+    /// The sing-box API endpoint (port + secret) of the run this config is
+    /// for. The clients must use this same value, or sing-box rejects them.
+    pub api: SingBoxApi,
     /// TUN mode only: give the TUN interface an IPv6 address so IPv6 traffic
     /// is routed into the tunnel. Off means the interface carries no IPv6
     /// route at all and IPv6 traffic leaves via the physical interface — this
@@ -81,25 +84,28 @@ pub struct RuntimeOptions {
 }
 
 impl Default for RuntimeOptions {
-    /// Mirrors `AppSettings::default()`: TUN mode, default ports, IPv6 off.
+    /// Mirrors `AppSettings::default()`: TUN mode, default ports, IPv6 off,
+    /// and a fresh API secret.
     fn default() -> Self {
         Self {
             proxy_mode: false,
             set_system_proxy: false,
             proxy_port: PROXY_PORT,
-            api_port: API_PORT,
+            api: SingBoxApi::new(API_PORT),
             tun_ipv6: false,
         }
     }
 }
 
 impl From<&AppSettings> for RuntimeOptions {
+    /// Generates a fresh API secret on every call: one call per sing-box
+    /// start, and hand that call's `api` to the clients.
     fn from(settings: &AppSettings) -> Self {
         Self {
             proxy_mode: settings.proxy_mode,
             set_system_proxy: settings.set_system_proxy,
             proxy_port: settings.proxy_port,
-            api_port: settings.api_port,
+            api: SingBoxApi::new(settings.api_port),
             tun_ipv6: settings.tun_ipv6,
         }
     }
@@ -167,11 +173,32 @@ pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String,
                 .collect()
         })
         .unwrap_or_default();
-    services.push(SingBoxApi::new(opts.api_port).service_config());
+    services.push(opts.api.service_config());
     json["services"] = Value::Array(services);
 
     serde_json::to_string_pretty(&json)
         .map_err(|e| format!("Failed to serialize config: {}", e))
+}
+
+/// Write a prepared runtime config. It carries the API secret, so on Unix
+/// the file is owner-only (sing-box, the privileged TUN copy included, runs
+/// as the same user); on Windows it inherits the per-user data folder's ACL.
+/// An existing file is narrowed before the new secret goes in.
+pub fn save_runtime_config(path: &Path, prepared: &str) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(prepared.as_bytes())
 }
 
 /// Fetch the subscription, strip its inbounds, and write to `config_path`
@@ -310,7 +337,7 @@ fn validate_downloaded_config(
     app_dir: &Path,
     stripped: &str,
 ) -> Result<(), String> {
-    // 校验用的入站/API 端口与运行时无关,固定默认值即可;proxy_mode
+    // 校验用的入站/API 端口和 API secret 与运行时无关,用默认值即可;proxy_mode
     // 显式设 true,校验的就是注释里说的那个 mixed 形态。
     let prepared = prepare_config(
         stripped,
@@ -426,6 +453,42 @@ mod tests {
         assert_eq!(services[0]["listen_port"], API_PORT);
     }
 
+    /// The injected service is exactly the one `opts.api` describes — its
+    /// secret included — so the clients holding that `api` get in.
+    #[test]
+    fn prepare_injects_the_runs_api_secret() {
+        let opts = proxy_opts();
+        let prepared = parse(&prepare_config(SUB_CONFIG, opts).unwrap());
+        let service = &prepared["services"][0];
+        assert_eq!(*service, opts.api.service_config());
+        assert!(!service["secret"].as_str().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_config_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = sub_temp_dir("runtime_mode");
+        let path = dir.join("running_config.json");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        save_runtime_config(&path, "{}").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Each runtime config gets its own secret.
+    #[test]
+    fn runtime_options_from_settings_use_a_fresh_secret() {
+        let settings = AppSettings::default();
+        let first = RuntimeOptions::from(&settings);
+        let second = RuntimeOptions::from(&settings);
+        assert_ne!(first.api, second.api);
+        assert_eq!(first.api.service_config()["listen_port"], settings.api_port);
+    }
+
     /// A subscription's own `api` service is replaced by ours; its other
     /// services survive in order.
     #[test]
@@ -504,7 +567,7 @@ mod tests {
             &prepare_config(
                 &stripped,
                 RuntimeOptions {
-                    api_port: 17900,
+                    api: SingBoxApi::new(17900),
                     ..proxy_opts()
                 },
             )
@@ -579,15 +642,17 @@ mod tests {
     #[test]
     fn tun_ipv6_does_not_affect_proxy_mode() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        // One options value for both, so the API secret matches too.
+        let opts = proxy_opts();
         let with = prepare_config(
             &stripped,
             RuntimeOptions {
                 tun_ipv6: true,
-                ..proxy_opts()
+                ..opts
             },
         )
         .unwrap();
-        let without = prepare_config(&stripped, proxy_opts()).unwrap();
+        let without = prepare_config(&stripped, opts).unwrap();
         assert_eq!(with, without);
     }
 

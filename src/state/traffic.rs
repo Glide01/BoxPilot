@@ -44,8 +44,8 @@ pub struct Traffic {
     pub started_at: Option<i64>,
     /// The running sing-box's own version (`GetVersion`).
     pub version: Option<String>,
-    /// sing-box API 句柄(端口 Settings 可配)。`start()` 从它订阅
-    /// `SubscribeStatus`;改端口经 `set_api` 换新句柄,运行中由 AppState 重启才生效。
+    /// sing-box API 句柄(端口 + 本次运行的 secret)。`start()` 从它订阅
+    /// `SubscribeStatus`;AppState 每次启动 sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
     /// Liveness flag for the current streaming session. Cleared by `stop()`
     /// and `Drop` so the detached reader thread self-terminates instead of
@@ -74,9 +74,9 @@ impl Traffic {
         }
     }
 
-    /// Swap the sing-box API handle after a Settings port change. The next
-    /// `start()` streams from it; AppState restarts sing-box when running so
-    /// a live session moves to the new port.
+    /// Swap in the API handle (port + secret) of the sing-box run about to
+    /// start; AppState calls this before every start. The next `start()`
+    /// streams from it.
     pub fn set_api(&mut self, api: SingBoxApi) {
         self.api = api;
     }

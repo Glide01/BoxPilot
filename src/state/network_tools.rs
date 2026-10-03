@@ -83,8 +83,8 @@ pub struct NetworkTools {
     pub quality: Option<QualityRun>,
     /// The current or last STUN run of this session.
     pub stun: Option<StunRun>,
-    /// sing-box API 句柄(端口 Settings 可配);改端口经 `set_api` 换新句柄,
-    /// 运行中由 AppState 重启 sing-box 才生效。
+    /// sing-box API 句柄(端口 + 本次运行的 secret);AppState 每次启动
+    /// sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
     /// Liveness flag for the current sing-box session. Cleared by `stop()`
     /// and `Drop` so detached threads exit at their next check.
@@ -111,8 +111,9 @@ impl NetworkTools {
         }
     }
 
-    /// Swap the sing-box API handle after a Settings port change. AppState
-    /// restarts sing-box when running, so the edges move a live session over.
+    /// Swap in the API handle (port + secret) of the sing-box run about to
+    /// start; AppState calls this before every start, and the edges move a
+    /// live session over.
     pub fn set_api(&mut self, api: SingBoxApi) {
         self.api = api;
     }

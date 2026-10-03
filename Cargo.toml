@@ -59,6 +59,9 @@ dirs = "5.0"
 # Windows/MSVC build. The transport is gRPC-Web over the blocking reqwest
 # client above, so no tonic/tokio either.
 prost ={ version = "0.14", default-features = false, features = ["derive", "std"] }
+# OS RNG for the per-run sing-box API secret (`core/singbox_api`). Already in
+# the dep graph at 0.3, so this adds no new crate.
+getrandom = "0.3"
 
 # Used by `ensure_elevated()` in `src/main.rs` (token elevation check +
 # `ShellExecuteW("runas", ...)` self-relaunch), by the deep-link

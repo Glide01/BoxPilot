@@ -61,6 +61,7 @@ pub use transport::{grpc_code, ApiError, IDLE_STREAM_READ_TIMEOUT};
 pub use usbip::*;
 
 use serde_json::Value;
+use std::fmt;
 
 /// Tag of the `api` service BoxPilot injects into the runtime config.
 /// Distinct from anything a subscription is likely to use, since service tags
@@ -85,28 +86,68 @@ pub fn supports_api_service(version: &str) -> bool {
     }
 }
 
-/// The sing-box API service endpoint, always on loopback. The single owner of
-/// host + port: every request URL *and* the `api` service entry injected into
-/// the runtime config derive from here, so they can't disagree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Bytes of OS randomness in each run's API secret (hex-encoded on the wire).
+const SECRET_LEN: usize = 32;
+
+/// Origin the `api` service's CORS allows. `.invalid` can never resolve
+/// (RFC 6761), so no page can be served from it — unlike `null`, which
+/// sandboxed iframes and `file:` pages send. BoxPilot itself sends no
+/// `Origin` at all, which the CORS layer lets through.
+const ALLOWED_ORIGIN: &str = "http://boxpilot.invalid";
+
+/// The sing-box API service endpoint for one sing-box run, always on
+/// loopback, plus that run's secret. The single owner of host + port +
+/// secret: every request URL and `Authorization` header *and* the `api`
+/// service entry injected into the runtime config derive from here, so they
+/// can't disagree.
+///
+/// The secret keeps other local processes, and any web page the browser
+/// opens, off an API that can list connections and logs, switch nodes and
+/// hand out the Tailscale certificate key: a loopback listener alone is
+/// reachable from all of them. `Debug` redacts it.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SingBoxApi {
     port: u16,
+    secret: [u8; SECRET_LEN],
 }
 
 impl SingBoxApi {
+    /// An endpoint on `port` with a fresh secret from the OS RNG. Make one
+    /// per sing-box start and give the same value to the runtime config
+    /// and to every client.
+    ///
+    /// Panics only if the OS RNG fails, the same failure std's `HashMap`
+    /// seeding already panics on.
     pub fn new(port: u16) -> Self {
-        Self { port }
+        let mut secret = [0u8; SECRET_LEN];
+        getrandom::fill(&mut secret).expect("OS random number generator unavailable");
+        Self { port, secret }
+    }
+
+    /// The secret as sing-box's `secret` option and the bearer token carry
+    /// it: lowercase hex.
+    fn secret_hex(&self) -> String {
+        self.secret.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Value of the `Authorization` header every call sends.
+    fn authorization(&self) -> String {
+        format!("Bearer {}", self.secret_hex())
     }
 
     /// The `services[]` entry for the runtime config — sing-box must listen
-    /// exactly where this client will call. No secret: it is loopback-only,
-    /// same exposure the Clash API had.
+    /// exactly where this client will call, and accept only its secret.
+    /// Without `secret` sing-box serves anyone who can reach the port, and
+    /// without `access_control_allow_origin` its CORS answers `*`, so every
+    /// web page could read the responses.
     pub fn service_config(&self) -> Value {
         serde_json::json!({
             "type": "api",
             "tag": API_SERVICE_TAG,
             "listen": "127.0.0.1",
-            "listen_port": self.port
+            "listen_port": self.port,
+            "secret": self.secret_hex(),
+            "access_control_allow_origin": [ALLOWED_ORIGIN]
         })
     }
 
@@ -119,6 +160,15 @@ impl SingBoxApi {
             transport::SERVICE_NAME,
             method
         )
+    }
+}
+
+impl fmt::Debug for SingBoxApi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SingBoxApi")
+            .field("port", &self.port)
+            .field("secret", &"<redacted>")
+            .finish()
     }
 }
 
@@ -160,5 +210,41 @@ mod tests {
         assert!(api
             .method_url("URLTest")
             .starts_with("http://127.0.0.1:17900/"));
+    }
+
+    /// sing-box enforces the bearer token only when `secret` is set, and its
+    /// CORS answers `*` unless an origin is named.
+    #[test]
+    fn service_config_requires_the_secret_and_names_no_real_origin() {
+        let api = SingBoxApi::new(7789);
+        let service = api.service_config();
+        let secret = service["secret"].as_str().unwrap();
+        assert_eq!(secret.len(), 2 * SECRET_LEN);
+        assert!(secret.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(api.authorization(), format!("Bearer {}", secret));
+        assert_eq!(
+            service["access_control_allow_origin"],
+            serde_json::json!(["http://boxpilot.invalid"])
+        );
+    }
+
+    #[test]
+    fn every_endpoint_gets_its_own_secret() {
+        let first = SingBoxApi::new(7789);
+        let second = SingBoxApi::new(7789);
+        assert_ne!(first, second);
+        assert_ne!(
+            first.service_config()["secret"],
+            second.service_config()["secret"]
+        );
+    }
+
+    #[test]
+    fn debug_redacts_the_secret() {
+        let api = SingBoxApi::new(7789);
+        let debug = format!("{:?}", api);
+        assert!(debug.contains("7789"));
+        assert!(!debug.contains(&api.secret_hex()));
+        assert!(debug.contains("<redacted>"));
     }
 }

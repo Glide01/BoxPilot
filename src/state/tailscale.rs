@@ -105,7 +105,8 @@ pub struct TailscaleState {
     pub inboxes: HashMap<String, TaildropInbox>,
     pub ping: Option<PingSession>,
     pub busy: HashSet<TailscaleAction>,
-    /// sing-box API handle; swapped by `set_api` on a Settings port change.
+    /// sing-box API handle (port + this run's secret); swapped by `set_api`
+    /// before every sing-box start.
     api: SingBoxApi,
     /// Liveness flag for the current session's reader threads (status and
     /// every inbox). Cleared by `clear()` and `Drop`.

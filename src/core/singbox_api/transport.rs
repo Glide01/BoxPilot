@@ -8,6 +8,7 @@
 use super::SingBoxApi;
 use prost::Message;
 use reqwest::blocking::{Client, Response};
+use reqwest::header::{HeaderValue, AUTHORIZATION};
 use std::fmt;
 use std::io::{self, ErrorKind, Read};
 use std::time::Duration;
@@ -160,6 +161,15 @@ impl SingBoxApi {
         self.exchange(&client, method, request, on_message)
     }
 
+    /// This run's bearer token, marked sensitive so reqwest keeps it out of
+    /// its own `Debug` output.
+    fn authorization_header(&self) -> Result<HeaderValue, ApiError> {
+        let mut value = HeaderValue::from_str(&self.authorization())
+            .map_err(|_| ApiError::Unreachable("invalid API secret".into()))?;
+        value.set_sensitive(true);
+        Ok(value)
+    }
+
     fn exchange<M: Message + Default>(
         &self,
         client: &Client,
@@ -169,6 +179,7 @@ impl SingBoxApi {
     ) -> Result<(), ApiError> {
         let response = client
             .post(self.method_url(method))
+            .header(AUTHORIZATION, self.authorization_header()?)
             .header("Content-Type", "application/grpc-web+proto")
             .header("X-Grpc-Web", "1")
             .body(encode_frame(request))
@@ -541,6 +552,72 @@ mod tests {
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%zz"), "%zz");
         assert_eq!(percent_decode("%4"), "%4");
+    }
+
+    /// Serve one gRPC-Web call on a loopback port: answer an empty message
+    /// and an OK trailer, and hand back the raw request head.
+    fn serve_once() -> (u16, std::thread::JoinHandle<String>) {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let head = String::from_utf8(request).unwrap();
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            socket.read_exact(&mut vec![0u8; length]).unwrap();
+            let mut body = encode_frame(&());
+            body.extend(trailer_frame("grpc-status: 0\r\n"));
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/grpc-web+proto\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            socket.write_all(&body).unwrap();
+            head
+        });
+        (port, server)
+    }
+
+    fn authorization_of(head: &str) -> Option<&str> {
+        head.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("authorization")
+                .then(|| value.trim())
+        })
+    }
+
+    /// sing-box only lets through calls bearing the secret its config got.
+    #[test]
+    fn unary_and_stream_calls_send_the_bearer_secret() {
+        let (port, server) = serve_once();
+        let api = SingBoxApi::new(port);
+        api.unary::<()>("GetVersion", &()).unwrap();
+        let head = server.join().unwrap();
+        assert!(head.starts_with("POST /daemon.StartedService/GetVersion "));
+        assert_eq!(authorization_of(&head), Some(api.authorization().as_str()));
+
+        let (port, server) = serve_once();
+        let api = SingBoxApi::new(port);
+        api.stream::<()>("SubscribeStatus", &(), Duration::from_secs(5), |_| false)
+            .unwrap();
+        let head = server.join().unwrap();
+        assert_eq!(authorization_of(&head), Some(api.authorization().as_str()));
     }
 
     #[test]

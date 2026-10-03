@@ -65,8 +65,8 @@ pub struct ProxyGroups {
     pub delays: HashMap<String, DelayState>,
     /// 测速进行中的组名(Test 按钮 loading)。
     pub testing: HashSet<String>,
-    /// sing-box API 句柄(端口 Settings 可配)。stream/select/test 都走它;改端口
-    /// 经 `set_api` 换新句柄,运行中由 AppState 重启 sing-box 才生效。
+    /// sing-box API 句柄(端口 + 本次运行的 secret)。stream/select/test 都走它;
+    /// AppState 每次启动 sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
     config_path: PathBuf,
     /// Latest URL-test results from the stream (sing-box's own history, which
@@ -117,9 +117,9 @@ impl ProxyGroups {
         }
     }
 
-    /// Swap the sing-box API handle after a Settings port change. The next
-    /// start/select/test uses it; AppState restarts sing-box when running so
-    /// a live session actually moves to the new port.
+    /// Swap in the API handle (port + secret) of the sing-box run about to
+    /// start; AppState calls this before every start. The next
+    /// start/select/test uses it.
     pub fn set_api(&mut self, api: SingBoxApi) {
         self.api = api;
     }

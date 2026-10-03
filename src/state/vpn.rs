@@ -153,8 +153,9 @@ impl VpnStatus {
         }
     }
 
-    /// Swap the sing-box API handle after a Settings port change; AppState
-    /// restarts a running sing-box, and the edges restart the streams.
+    /// Swap in the API handle (port + secret) of the sing-box run about to
+    /// start; AppState calls this before every start, and the edges restart
+    /// the streams.
     pub fn set_api(&mut self, api: SingBoxApi) {
         self.api = api;
     }

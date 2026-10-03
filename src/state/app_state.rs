@@ -12,7 +12,8 @@ use crate::core::settings::{
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::subscription::{
-    import_local_config, perform_update, prepare_config, RuntimeOptions, UpdateOutcome,
+    import_local_config, perform_update, prepare_config, save_runtime_config, RuntimeOptions,
+    UpdateOutcome,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
 use crate::state::clash_mode::ClashMode;
@@ -120,6 +121,10 @@ pub struct AppState {
     /// Fires once `RootView` has wired its subscribers, releasing the
     /// launch-attempt gate in the deep-link task. `None` after that.
     view_ready: Option<oneshot::Sender<()>>,
+    /// sing-box API endpoint + secret of the current (or last) run. `launch`
+    /// makes a fresh one for every start, writes it into the runtime config
+    /// and hands the same value to every entity below (`set_api`).
+    api: SingBoxApi,
     pub process: Entity<ProcessSession>,
     pub logs: Entity<LogBuffer>,
     pub proxy_groups: Entity<ProxyGroups>,
@@ -237,6 +242,8 @@ impl AppState {
             ))
         };
 
+        // Replaced by `launch` before any sing-box runs; until then nothing
+        // listens for this one.
         let api = SingBoxApi::new(settings.api_port);
         let logs = cx.new(|_| LogBuffer::new(api));
         let process = cx.new({
@@ -484,6 +491,7 @@ impl AppState {
                 pending_status,
                 pending_import: None,
                 view_ready: Some(view_ready_tx),
+                api,
                 process,
                 logs,
                 proxy_groups,
@@ -540,19 +548,36 @@ impl AppState {
     }
 
     /// Read the active profile's canonical config, inject mode-specific
-    /// inbounds + experimental, and write the result to the separate runtime
-    /// config (the `-c` target). Returns that path. Done synchronously
-    /// immediately before the prep task — order matters, do not move to the
-    /// background executor.
-    fn write_runtime_config(&self) -> Result<PathBuf, String> {
+    /// inbounds + experimental + the `api` service with a fresh secret, and
+    /// write the result to the separate runtime config (the `-c` target).
+    /// Returns that path and the API endpoint it was written for. Done
+    /// synchronously immediately before the prep task — order matters, do
+    /// not move to the background executor.
+    fn write_runtime_config(&self) -> Result<(PathBuf, SingBoxApi), String> {
         let config_path = self.active_config_path();
         let data = fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        let prepared = prepare_config(&data, RuntimeOptions::from(&self.settings))?;
+        let opts = RuntimeOptions::from(&self.settings);
+        let prepared = prepare_config(&data, opts)?;
         let runtime_path = runtime_config_path(&self.app_dir);
-        fs::write(&runtime_path, prepared)
+        save_runtime_config(&runtime_path, &prepared)
             .map_err(|e| format!("Failed to write {}: {}", runtime_path.display(), e))?;
-        Ok(runtime_path)
+        Ok((runtime_path, opts.api))
+    }
+
+    /// Give every entity that calls the sing-box API this run's endpoint.
+    /// Their streams start on the Running edge, after this.
+    fn set_api(&mut self, api: SingBoxApi, cx: &mut Context<Self>) {
+        self.api = api;
+        self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
+        self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.clash_mode.update(cx, |mode, _| mode.set_api(api));
+        self.connections
+            .update(cx, |connections, _| connections.set_api(api));
+        self.network_tools.update(cx, |tools, _| tools.set_api(api));
+        self.tailscale.update(cx, |tailscale, _| tailscale.set_api(api));
+        self.logs.update(cx, |logs, _| logs.set_api(api));
+        self.vpn.update(cx, |vpn, _| vpn.set_api(api));
     }
 
     /// Validate paths, prepare the config, and ask the `ProcessSession` to
@@ -627,7 +652,10 @@ impl AppState {
     /// whichever binary runs, so `cache.db` and friends stay user-owned.
     fn launch(&mut self, sing_path: PathBuf, cx: &mut Context<Self>) {
         let config_path = match self.write_runtime_config() {
-            Ok(path) => path,
+            Ok((path, api)) => {
+                self.set_api(api, cx);
+                path
+            }
             Err(e) => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Error,
@@ -727,7 +755,7 @@ impl AppState {
         if !self.process.read(cx).is_running() {
             return;
         }
-        let api = SingBoxApi::new(self.settings.api_port);
+        let api = self.api;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -774,24 +802,14 @@ impl AppState {
         cx.notify();
     }
 
-    /// Settings 页改 sing-box API 端口:持久化 + 给 ProxyGroups/Traffic/
-    /// LogBuffer 换新的 `SingBoxApi` 句柄(下次启动用它)+ 运行中重启
-    /// sing-box 让新的 api 服务端口生效。
+    /// Settings 页改 sing-box API 端口:持久化 + 运行中重启 sing-box 让新的
+    /// api 服务端口生效。各实体的 `SingBoxApi` 句柄由下次 `launch` 统一换新
+    /// (连同新 secret)。
     pub fn set_api_port(&mut self, value: u16, cx: &mut Context<Self>) {
         if self.settings.api_port == value {
             return;
         }
         self.settings.api_port = value;
-        let api = SingBoxApi::new(value);
-        self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
-        self.traffic.update(cx, |traffic, _| traffic.set_api(api));
-        self.clash_mode.update(cx, |mode, _| mode.set_api(api));
-        self.connections
-            .update(cx, |connections, _| connections.set_api(api));
-        self.network_tools.update(cx, |tools, _| tools.set_api(api));
-        self.tailscale.update(cx, |tailscale, _| tailscale.set_api(api));
-        self.logs.update(cx, |logs, _| logs.set_api(api));
-        self.vpn.update(cx, |vpn, _| vpn.set_api(api));
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

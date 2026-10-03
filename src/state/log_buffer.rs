@@ -41,8 +41,8 @@ pub struct LogBuffer {
     default_level: LogLevel,
     /// The user's pick on the level control; `None` follows `default_level`.
     level_override: Option<LogLevel>,
-    /// sing-box API 句柄(端口 Settings 可配)。改端口经 `set_api` 换新句柄,
-    /// 运行中由 AppState 重启 sing-box 才生效。
+    /// sing-box API 句柄(端口 + 本次运行的 secret)。AppState 每次启动
+    /// sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
     /// Liveness flag for the current API stream. Cleared by `stop_api()` and
     /// `Drop` so the detached reader thread self-terminates.
@@ -101,8 +101,9 @@ impl LogBuffer {
         }
     }
 
-    /// Swap the sing-box API handle after a Settings port change. The next
-    /// `start_api()` streams from it.
+    /// Swap in the API handle (port + secret) of the sing-box run about to
+    /// start; AppState calls this before every start. The next `start_api()`
+    /// streams from it.
     pub fn set_api(&mut self, api: SingBoxApi) {
         self.api = api;
     }
