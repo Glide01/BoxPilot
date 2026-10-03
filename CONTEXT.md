@@ -70,3 +70,39 @@ Rule / Global / Direct), switched live from Home while sing-box runs. The
 modes come from the running config; sing-box remembers the chosen one in its
 cache file. Distinct from the **Proxy Mode** toggle (TUN vs. Proxy inbound).
 _Avoid_: routing mode, outbound mode
+
+## Simplified Chinese UI terms (zh-CN)
+
+The UI ships in English and Simplified Chinese (`src/i18n/`, Settings ›
+General "Language"). Chinese strings use these terms, full-width punctuation
+(，。：；（）？「」) and a space between Chinese and Latin words or numbers (compact
+durations such as 1小时23分 excepted).
+
+| English | 简体中文 | Notes |
+|---|---|---|
+| sing-box | sing-box | Never translated. _Avoid_: 内核, 核心 |
+| sing-box API | sing-box API | |
+| Profile | 配置 | The Profiles page is 「配置」. A profile's downloaded JSON is its 配置文件 |
+| config (file) | 配置文件 | e.g. Running config = 运行配置, "Config not found" = 未找到配置文件 |
+| Subscription | 订阅 | Subscription URL = 订阅链接 |
+| Import link | 导入链接 | _Avoid_: 深链接, URI |
+| Group | 分组 | urltest groups' badge: 自动 |
+| Node | 节点 | |
+| Outbound | 出站 | |
+| Test / Test all | 测速 / 全部测速 | Test delay (one node) = 测试延迟 |
+| Delay | 延迟 | |
+| timeout | 超时 | |
+| Clash mode | Clash 模式 | Mode names (Rule / Global / Direct) come from the config, untranslated |
+| Proxy Mode: TUN / Proxy | 代理模式：TUN / 代理 | |
+| System Proxy | 系统代理 | |
+| Allow LAN connections | 允许局域网连接 | |
+| Connect / Disconnect | 连接 / 断开 | Power button and tray menu |
+| Connected / Disconnected / Starting… | 已连接 / 未连接 / 正在启动… | Connection status |
+| Connection (page, list) | 连接 | Open / closed connections = 活动 / 已关闭 |
+| Logs | 日志 | Level names stay English (Error / Warn / Info / Debug / Trace), as in the log text |
+| Tools | 工具 | |
+| Settings | 设置 | Sections: 常规 / 网络 / TUN / 终端环境 / 故障排查 / 关于 |
+| System (follow the OS) | 跟随系统 | Language and Appearance options |
+| Appearance: Light / Dark | 外观：浅色 / 深色 | |
+| Close button: Ask / Minimize to tray / Quit | 关闭按钮：询问 / 最小化到托盘 / 退出 | |
+| Update (a profile) | 更新 | Check for updates (BoxPilot) = 检查更新 |

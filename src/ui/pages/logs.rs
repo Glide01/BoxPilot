@@ -1,6 +1,7 @@
 use crate::core::log_merge::ViewText;
 use crate::core::presentation::log_count_label;
 use crate::core::singbox_api::LogLevel;
+use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::card_frame;
 use crate::ui::widgets::{empty_card, page_header};
@@ -12,7 +13,9 @@ use gpui_component::{
 };
 
 /// The level control's choices, most severe first. `panic`/`fatal` lines
-/// show under every one of them.
+/// show under every one of them. The names stay English in every UI
+/// language: they are sing-box's own level names, the same words the
+/// coloured badges in the log text show (`ERROR`, `INFO`…).
 const LEVEL_CHOICES: [(&str, &str, LogLevel); 5] = [
     ("level-error", "Error", LogLevel::Error),
     ("level-warn", "Warn", LogLevel::Warn),
@@ -240,7 +243,7 @@ fn level_pill(
         b = b.ghost();
     }
     if is_default {
-        b = b.tooltip("sing-box's configured log level");
+        b = b.tooltip(s().logs.configured_level);
     }
     b.on_click(move |_, _, cx| on_click(cx))
 }
@@ -275,7 +278,7 @@ impl Render for LogsPage {
             .h_flex()
             .items_center()
             .gap_2()
-            .child(page_header(theme, "Logs"))
+            .child(page_header(theme, s().logs.title))
             .child(
                 div()
                     .text_sm()
@@ -302,7 +305,7 @@ impl Render for LogsPage {
                 Button::new("logs-clear")
                     .ghost()
                     .small()
-                    .label("Clear")
+                    .label(s().logs.clear)
                     .on_click(move |_, _, cx| {
                         app_state_entity.update(cx, |state, cx| state.clear_logs(cx));
                     }),
@@ -322,8 +325,8 @@ impl Render for LogsPage {
             empty_card(
                 theme,
                 IconName::SquareTerminal,
-                "No logs yet",
-                "Connect to start streaming sing-box output.",
+                s().logs.empty_title,
+                s().logs.empty_hint,
             )
             .into_any_element()
         } else {

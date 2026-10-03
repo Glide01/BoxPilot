@@ -4,7 +4,7 @@ use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
 use box_pilot_gui::ui::assets::AppAssets;
-use box_pilot_gui::ui::{app_window, theme, tray};
+use box_pilot_gui::ui::{app_window, locale, theme, tray};
 use gpui::*;
 
 /// On Windows, ensure the process is running with admin rights. If not,
@@ -146,6 +146,10 @@ fn main() {
         ]);
 
         let app_state = AppState::new(deeplink_rx, cx);
+        // The saved language (System resolved from the OS locale), for
+        // gpui-component's built-in strings too, before any window opens.
+        let language = app_state.read(cx).settings.language;
+        locale::apply(language, cx);
         // Light / dark per the saved Appearance preference (System resolved
         // against the OS; the window re-resolves against its own
         // appearance when it opens).

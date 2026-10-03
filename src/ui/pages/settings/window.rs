@@ -3,6 +3,7 @@
 
 use super::SettingsPage;
 use crate::core::settings::CloseAction;
+use crate::i18n::{s, Strings};
 use crate::state::AppState;
 use crate::ui::{tray, widgets::setting_row};
 use gpui::{div, AnyElement, Context, Entity, IntoElement, ParentElement, Styled, Window};
@@ -13,11 +14,19 @@ use gpui_component::{
 
 /// The options, in display order (never rely on `CloseAction`'s variant
 /// order: serde's `other` fallback forces `Ask` last).
-const OPTIONS: [(CloseAction, &str); 3] = [
-    (CloseAction::Ask, "Ask"),
-    (CloseAction::MinimizeToTray, "Minimize to tray"),
-    (CloseAction::Quit, "Quit"),
+const OPTIONS: [CloseAction; 3] = [
+    CloseAction::Ask,
+    CloseAction::MinimizeToTray,
+    CloseAction::Quit,
 ];
+
+fn label(action: CloseAction, t: &'static Strings) -> &'static str {
+    match action {
+        CloseAction::Ask => t.settings.close_ask,
+        CloseAction::MinimizeToTray => t.settings.close_minimize,
+        CloseAction::Quit => t.settings.close_quit,
+    }
+}
 
 /// This slot's rows, in display order; empty = nothing to show.
 pub(super) fn rows(
@@ -35,15 +44,15 @@ pub(super) fn rows(
         let theme = cx.theme();
         return vec![setting_row(
             theme,
-            "Close button",
-            Some("No system tray on this desktop to keep BoxPilot running in."),
+            s().settings.close_button,
+            Some(s().settings.close_no_tray_hint),
         )
         .child(
             div()
                 .flex_shrink_0()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child("Quits BoxPilot"),
+                .child(s().settings.close_quits),
         )
         .into_any_element()];
     }
@@ -51,7 +60,7 @@ pub(super) fn rows(
     let current = app_state.read(cx).settings.close_action;
     let selected = OPTIONS
         .iter()
-        .position(|(action, _)| *action == current)
+        .position(|action| *action == current)
         .unwrap_or(0);
 
     let app_state = app_state.clone();
@@ -59,17 +68,21 @@ pub(super) fn rows(
         .segmented()
         .selected_index(selected)
         .on_click(move |ix: &usize, _, cx| {
-            if let Some((action, _)) = OPTIONS.get(*ix) {
+            if let Some(action) = OPTIONS.get(*ix) {
                 let action = *action;
                 app_state.update(cx, |state, cx| state.set_close_action(action, cx));
             }
         })
-        .children(OPTIONS.iter().map(|(_, label)| Tab::new().label(*label)));
+        .children(
+            OPTIONS
+                .iter()
+                .map(|action| Tab::new().label(label(*action, s()))),
+        );
 
     vec![setting_row(
         cx.theme(),
-        "Close button",
-        Some("While BoxPilot runs in the tray, sing-box stays connected."),
+        s().settings.close_button,
+        Some(s().settings.close_hint),
     )
     .child(control)
     .into_any_element()]

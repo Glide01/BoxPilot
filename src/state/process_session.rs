@@ -197,7 +197,7 @@ impl ProcessSession {
                                     _ => None,
                                 }
                             } else {
-                                Some("sing-box exited.".to_string())
+                                Some(crate::i18n::s().messages.sing_box_exited.to_string())
                             }
                         });
                         match exited {
@@ -229,11 +229,10 @@ impl ProcessSession {
                 self.state = ProcessState::Stopped { cleanup: None };
                 cx.emit(StatusEvent {
                     level: StatusLevel::Error,
-                    message: format!(
-                        "Failed to start {} with config {}: {}",
+                    message: (crate::i18n::s().messages.start_failed)(
                         SING_EXECUTABLE,
-                        pending.config_path.display(),
-                        e
+                        &pending.config_path.display().to_string(),
+                        &e.to_string(),
                     ),
                 });
             }

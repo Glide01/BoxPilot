@@ -74,7 +74,7 @@ pub fn parse_import_uri(uri: &str) -> Result<ImportRequest, String> {
                 // Schemes are pure ASCII, so byte slicing is safe.
                 .then(|| &trimmed[scheme.len()..])
         })
-        .ok_or_else(|| "unsupported URL scheme".to_string())?;
+        .ok_or_else(|| crate::i18n::s().errors.unsupported_scheme.to_string())?;
 
     let (body, fragment) = match rest.split_once('#') {
         Some((body, fragment)) => (body, Some(fragment)),
@@ -86,7 +86,7 @@ pub fn parse_import_uri(uri: &str) -> Result<ImportRequest, String> {
     };
     let action = action.trim_end_matches('/');
     if !action.eq_ignore_ascii_case("import-remote-profile") {
-        return Err(format!("unsupported action \"{}\"", action));
+        return Err((crate::i18n::s().errors.unsupported_action)(action));
     }
 
     let mut url = None;
@@ -101,9 +101,9 @@ pub fn parse_import_uri(uri: &str) -> Result<ImportRequest, String> {
     }
     let url = url
         .filter(|u| !u.is_empty())
-        .ok_or_else(|| "missing url parameter".to_string())?;
+        .ok_or_else(|| crate::i18n::s().errors.missing_url.to_string())?;
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("profile URL must be http:// or https://".to_string());
+        return Err(crate::i18n::s().errors.profile_url_scheme.to_string());
     }
 
     // The spec puts the name in the fragment; some generators use a `name`
@@ -129,7 +129,7 @@ pub fn derive_profile_name(url: &str) -> String {
         .unwrap_or("");
     let host = host.split(':').next().unwrap_or(host);
     if host.is_empty() {
-        "Imported".to_string()
+        crate::i18n::s().profiles.imported.to_string()
     } else {
         host.to_string()
     }

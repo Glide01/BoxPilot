@@ -308,19 +308,19 @@ pub fn openvpn_answer(
 ) -> Result<OpenVpnAnswer, String> {
     let prompt = challenge.prompt();
     if !prompt.answerable() {
-        return Err("This request can't be answered here.".to_string());
+        return Err(crate::i18n::s().vpn.cannot_answer.to_string());
     }
     let mut answer = OpenVpnAnswer::default();
     if prompt.credentials {
         if username.trim().is_empty() {
-            return Err("Enter a username.".to_string());
+            return Err(crate::i18n::s().vpn.enter_username.to_string());
         }
         answer.username = username.to_string();
         answer.password = password.to_string();
     }
     if prompt.secret.is_some() {
         if secret.is_empty() {
-            return Err("Enter a response to the challenge.".to_string());
+            return Err(crate::i18n::s().vpn.enter_response.to_string());
         }
         answer.secret = secret.to_string();
     }

@@ -10,6 +10,7 @@
 
 use crate::core::config_view::{load, ConfigRequest, ConfigSource, ConfigView, ConfigViewError};
 use crate::core::paths::profile_config_path;
+use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::widgets::{pill, PillTone};
 use gpui::{prelude::FluentBuilder, *};
@@ -40,7 +41,7 @@ pub fn open(app_state: Entity<AppState>, window: &mut Window, cx: &mut App) {
     let viewer = cx.new(|cx| ConfigViewer::new(app_state, window, cx));
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("Running config")
+            .title(s().config_viewer.title)
             .w(px(DIALOG_WIDTH))
             .margin_top(px(DIALOG_TOP))
             .child(viewer.clone())
@@ -236,16 +237,10 @@ impl ConfigViewer {
             return None;
         };
         let theme = cx.theme();
+        let t = &s().config_viewer;
         let (badge, hint) = match view.source {
-            ConfigSource::Running => (
-                pill(theme, PillTone::Primary, "Running"),
-                "The config sing-box was started with (running_config.json).",
-            ),
-            ConfigSource::Preview => (
-                pill(theme, PillTone::Muted, "Preview — not running"),
-                "What connecting now would run: the active profile with your current \
-                 settings. BoxPilot picks its API port and secret at each start.",
-            ),
+            ConfigSource::Running => (pill(theme, PillTone::Primary, t.running), t.running_hint),
+            ConfigSource::Preview => (pill(theme, PillTone::Muted, t.preview), t.preview_hint),
         };
         let row = div()
             .h_flex()
@@ -274,11 +269,8 @@ impl ConfigViewer {
                 div().flex_shrink_0().child(
                     Switch::new("config-hide-credentials")
                         .checked(self.hide_credentials)
-                        .label("Hide credentials")
-                        .tooltip(
-                            "Masks passwords, keys, UUIDs and URL tokens. \
-                             BoxPilot's own API secret is always masked.",
-                        )
+                        .label(t.hide_credentials)
+                        .tooltip(t.hide_credentials_tooltip)
                         .on_click(cx.listener(|this, checked: &bool, window, cx| {
                             this.set_hide_credentials(*checked, window, cx)
                         })),
@@ -289,6 +281,7 @@ impl ConfigViewer {
 
     fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
+        let t = s();
         let frame = || {
             div()
                 .flex_1()
@@ -329,22 +322,20 @@ impl ConfigViewer {
                         .text_sm(),
                 )
                 .into_any_element(),
-            Content::Loading => empty(IconName::Loader, "Loading…", SharedString::default()),
+            Content::Loading => empty(IconName::Loader, t.common.loading, SharedString::default()),
             Content::Empty(ConfigViewError::NoProfile) => empty(
                 IconName::Inbox,
-                "No profile yet",
-                "Add a subscription or a local config on the Profiles page, and its config \
-                 shows up here."
-                    .into(),
+                t.config_viewer.no_profile_title,
+                t.config_viewer.no_profile_hint.into(),
             ),
             Content::Empty(ConfigViewError::NotDownloaded) => empty(
                 IconName::Inbox,
-                "This profile has no config yet",
-                "Update it on the Profiles page to download its config.".into(),
+                t.config_viewer.no_config_title,
+                t.config_viewer.no_config_hint.into(),
             ),
             Content::Empty(ConfigViewError::Failed(message)) => empty(
                 IconName::TriangleAlert,
-                "Couldn't load the config",
+                t.config_viewer.load_failed_title,
                 message.clone().into(),
             ),
         }
@@ -362,6 +353,7 @@ impl ConfigViewer {
             .map(|name| name.to_string_lossy().into_owned().into())
             .unwrap_or_default();
         let theme = cx.theme();
+        let t = s();
         let row = div()
             .h_flex()
             .items_center()
@@ -388,8 +380,8 @@ impl ConfigViewer {
                             .ghost()
                             .small()
                             .icon(IconName::Search)
-                            .label("Search")
-                            .tooltip("Search (Ctrl+F)")
+                            .label(t.common.search)
+                            .tooltip(t.config_viewer.search_tooltip)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.editor
                                     .update(cx, |editor, cx| editor.open_search(false, cx));
@@ -400,8 +392,8 @@ impl ConfigViewer {
                             .outline()
                             .small()
                             .icon(IconName::FolderOpen)
-                            .label("Open folder")
-                            .tooltip("Show the file in your file manager")
+                            .label(t.config_viewer.open_folder)
+                            .tooltip(t.config_viewer.open_folder_tooltip)
                             .on_click(move |_, _, cx| cx.reveal_path(&file)),
                     )
                     .child(
@@ -411,8 +403,8 @@ impl ConfigViewer {
                             .min_w(px(84.))
                             .when_else(
                                 self.copied,
-                                |button| button.icon(IconName::Check).label("Copied"),
-                                |button| button.icon(IconName::Copy).label("Copy"),
+                                |button| button.icon(IconName::Check).label(t.common.copied),
+                                |button| button.icon(IconName::Copy).label(t.common.copy),
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
                     ),

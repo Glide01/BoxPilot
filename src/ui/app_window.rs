@@ -345,18 +345,16 @@ fn ask_keep_running(window: &mut Window, cx: &mut App) {
     set_close_prompt_open(true, cx);
     let remember = Rc::new(Cell::new(false));
     window.open_alert_dialog(cx, move |alert, _, _| {
+        let t = &crate::i18n::s().close_dialog;
         let remember_toggle = remember.clone();
         let remember_quit = remember.clone();
         let remember_keep = remember.clone();
         alert
-            .title("Keep BoxPilot running in the tray?")
-            .description(
-                "BoxPilot can stay in the system tray when its window closes, so \
-                 sing-box stays connected. Quit stops sing-box.",
-            )
+            .title(t.title)
+            .description(t.body)
             .child(
                 Checkbox::new("close-remember")
-                    .label("Don't ask again")
+                    .label(t.dont_ask_again)
                     .checked(remember.get())
                     .on_click(move |checked: &bool, window, _| {
                         remember_toggle.set(*checked);
@@ -367,7 +365,7 @@ fn ask_keep_running(window: &mut Window, cx: &mut App) {
             .on_close(|_, _, cx| set_close_prompt_open(false, cx))
             .footer(
                 DialogFooter::new()
-                    .child(Button::new("close-quit").label("Quit").on_click(
+                    .child(Button::new("close-quit").label(t.quit).on_click(
                         move |_, window, cx| {
                             window.close_dialog(cx);
                             set_close_prompt_open(false, cx);
@@ -375,25 +373,22 @@ fn ask_keep_running(window: &mut Window, cx: &mut App) {
                             cx.quit();
                         },
                     ))
-                    .child(
-                        Button::new("close-keep")
-                            .primary()
-                            .label("Keep in tray")
-                            .on_click(move |_, window, cx| {
-                                window.close_dialog(cx);
-                                set_close_prompt_open(false, cx);
-                                remember_close_action(
-                                    remember_keep.get(),
-                                    CloseAction::MinimizeToTray,
-                                    cx,
-                                );
-                                // The icon may have gone while the prompt
-                                // was up: then this close quits after all.
-                                set_keep_running(tray::is_available(cx), cx);
-                                remember_bounds(window, cx);
-                                window.remove_window();
-                            }),
-                    ),
+                    .child(Button::new("close-keep").primary().label(t.keep).on_click(
+                        move |_, window, cx| {
+                            window.close_dialog(cx);
+                            set_close_prompt_open(false, cx);
+                            remember_close_action(
+                                remember_keep.get(),
+                                CloseAction::MinimizeToTray,
+                                cx,
+                            );
+                            // The icon may have gone while the prompt
+                            // was up: then this close quits after all.
+                            set_keep_running(tray::is_available(cx), cx);
+                            remember_bounds(window, cx);
+                            window.remove_window();
+                        },
+                    )),
             )
     });
 }

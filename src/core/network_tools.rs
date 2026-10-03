@@ -7,6 +7,7 @@ use crate::core::singbox_api::{
     Accuracy, ApiError, NatFiltering, NatMapping, NetworkQualityPhase, NetworkQualityProgress,
     OutboundItem, StunPhase, StunProgress,
 };
+use crate::i18n::s;
 
 /// Max-runtime choices offered for a network quality test, in seconds.
 /// 20 is sing-box's own default.
@@ -38,7 +39,7 @@ impl RunStatus {
 /// re-subscribe.
 pub fn test_error_message(error: &ApiError) -> String {
     if error.is_timeout() {
-        "Timed out waiting for progress from sing-box".to_string()
+        s().tools.progress_timeout.to_string()
     } else {
         error.to_string()
     }
@@ -46,7 +47,9 @@ pub fn test_error_message(error: &ApiError) -> String {
 
 /// Shown when a test stream ends without its final message and without an
 /// error — sing-box closed it early.
-pub const ENDED_WITHOUT_RESULT: &str = "sing-box ended the test without a result";
+pub fn ended_without_result() -> String {
+    s().tools.ended_without_result.to_string()
+}
 
 /// Format a capacity in bits/sec the way sing-box's own CLI does
 /// (`networkquality.FormatBitrate`): decimal units, one decimal place.
@@ -65,10 +68,11 @@ pub fn format_bitrate(bits_per_sec: u64) -> String {
 
 /// sing-box's own accuracy wording.
 pub fn accuracy_label(accuracy: Accuracy) -> &'static str {
+    let t = &s().tools;
     match accuracy {
-        Accuracy::Low => "Low",
-        Accuracy::Medium => "Medium",
-        Accuracy::High => "High",
+        Accuracy::Low => t.accuracy_low,
+        Accuracy::Medium => t.accuracy_medium,
+        Accuracy::High => t.accuracy_high,
     }
 }
 
@@ -98,7 +102,7 @@ impl OutboundChoice {
 
     pub fn label(&self) -> &str {
         if self.tag.is_empty() {
-            "Default outbound"
+            s().tools.default_outbound
         } else {
             &self.tag
         }
@@ -192,26 +196,28 @@ impl QualityRun {
 
     /// One line describing where the run stands.
     pub fn status_label(&self) -> String {
+        let t = &s().tools;
         match &self.status {
-            RunStatus::Done => "Done".to_string(),
-            RunStatus::Failed(_) => "Failed".to_string(),
-            RunStatus::Cancelled => "Cancelled".to_string(),
+            RunStatus::Done => t.done,
+            RunStatus::Failed(_) => t.failed,
+            RunStatus::Cancelled => t.cancelled,
             RunStatus::Running => {
                 let Some(latest) = &self.latest else {
-                    return "Fetching test config…".to_string();
+                    return t.fetching_config.to_string();
                 };
                 match latest.phase {
-                    NetworkQualityPhase::Idle => "Measuring idle latency…".to_string(),
+                    NetworkQualityPhase::Idle => t.measuring_idle,
                     NetworkQualityPhase::Download | NetworkQualityPhase::Upload if !self.serial => {
-                        "Measuring download and upload…".to_string()
+                        t.measuring_both
                     }
-                    NetworkQualityPhase::Download => "Measuring download…".to_string(),
-                    NetworkQualityPhase::Upload => "Measuring upload…".to_string(),
-                    NetworkQualityPhase::Done => "Finishing…".to_string(),
-                    NetworkQualityPhase::Unknown(_) => "Measuring…".to_string(),
+                    NetworkQualityPhase::Download => t.measuring_download,
+                    NetworkQualityPhase::Upload => t.measuring_upload,
+                    NetworkQualityPhase::Done => t.finishing,
+                    NetworkQualityPhase::Unknown(_) => t.measuring,
                 }
             }
         }
+        .to_string()
     }
 
     /// Measurement progress 0–100 while measuring (elapsed against the
@@ -374,19 +380,18 @@ impl StunRun {
     }
 
     pub fn status_label(&self) -> &'static str {
+        let t = &s().tools;
         match &self.status {
-            RunStatus::Done => "Done",
-            RunStatus::Failed(_) => "Failed",
-            RunStatus::Cancelled => "Cancelled",
+            RunStatus::Done => t.done,
+            RunStatus::Failed(_) => t.failed,
+            RunStatus::Cancelled => t.cancelled,
             RunStatus::Running => match self.phase {
-                None | Some(StunPhase::Binding) if self.external_addr.is_empty() => {
-                    "Sending binding request…"
-                }
-                None | Some(StunPhase::Binding) => "Binding answered…",
-                Some(StunPhase::NatMapping) => "Detecting NAT mapping behavior…",
-                Some(StunPhase::NatFiltering) => "Detecting NAT filtering behavior…",
-                Some(StunPhase::Done) => "Finishing…",
-                Some(StunPhase::Unknown(_)) => "Testing…",
+                None | Some(StunPhase::Binding) if self.external_addr.is_empty() => t.stun_binding,
+                None | Some(StunPhase::Binding) => t.stun_binding_answered,
+                Some(StunPhase::NatMapping) => t.stun_mapping,
+                Some(StunPhase::NatFiltering) => t.stun_filtering,
+                Some(StunPhase::Done) => t.finishing,
+                Some(StunPhase::Unknown(_)) => t.stun_testing,
             },
         }
     }
@@ -411,16 +416,22 @@ impl StunRun {
     /// Mapping/filtering label: sing-box's RFC 4787 wording, `NOT_MEASURED`
     /// while not determined (yet).
     pub fn mapping_label(&self) -> &'static str {
+        let t = &s().tools;
         match self.mapping {
             NatMapping::Unknown => NOT_MEASURED,
-            other => other.as_str(),
+            NatMapping::EndpointIndependent => t.nat_endpoint_independent,
+            NatMapping::AddressDependent => t.nat_address_dependent,
+            NatMapping::AddressAndPortDependent => t.nat_address_port_dependent,
         }
     }
 
     pub fn filtering_label(&self) -> &'static str {
+        let t = &s().tools;
         match self.filtering {
             NatFiltering::Unknown => NOT_MEASURED,
-            other => other.as_str(),
+            NatFiltering::EndpointIndependent => t.nat_endpoint_independent,
+            NatFiltering::AddressDependent => t.nat_address_dependent,
+            NatFiltering::AddressAndPortDependent => t.nat_address_port_dependent,
         }
     }
 
@@ -457,38 +468,24 @@ pub struct NatSummary {
 pub fn nat_summary(mapping: NatMapping, filtering: NatFiltering) -> Option<NatSummary> {
     use NatFiltering as F;
     use NatMapping as M;
+    let t = &s().tools;
     let (classic, explanation) = match (mapping, filtering) {
         (M::Unknown, _) => return None,
-        (M::EndpointIndependent, F::EndpointIndependent) => (
-            Some("Full cone (NAT1)"),
-            "Your external address is the same for every destination, and any \
-             host can reach it. The most open NAT: best for P2P, games and calls.",
-        ),
-        (M::EndpointIndependent, F::AddressDependent) => (
-            Some("Restricted cone (NAT2)"),
-            "Your external address is the same for every destination, but only \
-             hosts you have sent to can reach it (from any of their ports).",
-        ),
+        (M::EndpointIndependent, F::EndpointIndependent) => {
+            (Some(t.nat_full_cone), t.nat_full_cone_hint)
+        }
+        (M::EndpointIndependent, F::AddressDependent) => {
+            (Some(t.nat_restricted_cone), t.nat_restricted_cone_hint)
+        }
         (M::EndpointIndependent, F::AddressAndPortDependent) => (
-            Some("Port-restricted cone (NAT3)"),
-            "Your external address is the same for every destination, but only \
-             the exact address and port you have sent to can reach it.",
+            Some(t.nat_port_restricted_cone),
+            t.nat_port_restricted_cone_hint,
         ),
-        (M::EndpointIndependent, F::Unknown) => (
-            None,
-            "Your external address is the same for every destination. Filtering \
-             behaviour could not be determined.",
-        ),
-        (M::AddressAndPortDependent, F::AddressAndPortDependent) => (
-            Some("Symmetric (NAT4)"),
-            "Every destination gets a different external port, so peers cannot \
-             reuse your address. P2P connections usually need a relay.",
-        ),
-        (M::AddressDependent | M::AddressAndPortDependent, _) => (
-            None,
-            "Different destinations get different external mappings, so peers \
-             cannot reuse your address. P2P connections usually need a relay.",
-        ),
+        (M::EndpointIndependent, F::Unknown) => (None, t.nat_independent_unknown_hint),
+        (M::AddressAndPortDependent, F::AddressAndPortDependent) => {
+            (Some(t.nat_symmetric), t.nat_symmetric_hint)
+        }
+        (M::AddressDependent | M::AddressAndPortDependent, _) => (None, t.nat_dependent_hint),
     };
     Some(NatSummary {
         classic,

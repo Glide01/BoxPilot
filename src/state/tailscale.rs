@@ -15,6 +15,7 @@ use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{
     SingBoxApi, TaildropInbox, TailscaleCertificate, TailscaleEndpointStatus, TailscalePing,
 };
+use crate::i18n::s;
 use crate::state::drain::next_batch;
 use futures_channel::mpsc::{self, UnboundedSender};
 use futures_channel::oneshot;
@@ -337,7 +338,7 @@ impl TailscaleState {
         let call_tag = tag.clone();
         self.run_action(
             TailscaleAction::ExitNode { tag },
-            "Failed to set the exit node",
+            s().tailscale.set_exit_node_failed,
             move || api.set_tailscale_exit_node(&call_tag, &stable_id),
             |_| None,
             cx,
@@ -350,9 +351,9 @@ impl TailscaleState {
         let call_tag = tag.clone();
         self.run_action(
             TailscaleAction::Logout { tag },
-            "Failed to log out of Tailscale",
+            s().tailscale.logout_failed,
             move || api.tailscale_logout(&call_tag),
-            |_| Some((StatusLevel::Success, "Logged out of Tailscale.".to_string())),
+            |_| Some((StatusLevel::Success, s().tailscale.logged_out.to_string())),
             cx,
         );
     }
@@ -362,7 +363,7 @@ impl TailscaleState {
         let call_tag = tag.clone();
         self.run_action(
             TailscaleAction::MarkRead { tag },
-            "Failed to mark Taildrop files read",
+            s().tailscale.mark_read_failed,
             move || api.mark_taildrop_inbox_read(&call_tag),
             |_| None,
             cx,
@@ -374,7 +375,7 @@ impl TailscaleState {
         let (call_tag, call_name) = (tag.clone(), name.clone());
         self.run_action(
             TailscaleAction::Delete { tag, name },
-            "Failed to delete the file",
+            s().tailscale.delete_failed,
             move || api.delete_taildrop_file(&call_tag, &call_name),
             |_| None,
             cx,
@@ -396,7 +397,7 @@ impl TailscaleState {
                 sender_id,
                 name,
             },
-            "Failed to cancel the transfer",
+            s().tailscale.cancel_failed,
             move || api.cancel_taildrop_receiving(&call_tag, &call_sender, &call_name),
             |_| None,
             cx,
@@ -417,9 +418,9 @@ impl TailscaleState {
         let shown = dest.display().to_string();
         self.run_action(
             TailscaleAction::Download { tag, name },
-            "Failed to save the file",
+            s().tailscale.save_failed,
             move || api.download_taildrop_file_to(&call_tag, &call_name, &dest, |_, _| true),
-            move |_| Some((StatusLevel::Success, format!("Saved to {}", shown))),
+            move |_| Some((StatusLevel::Success, (s().tailscale.saved_to)(&shown))),
             cx,
         );
     }
@@ -451,7 +452,7 @@ impl TailscaleState {
                     Some(Ok(fetched)) => cx.emit(fetched),
                     Some(Err(e)) => cx.emit(StatusEvent {
                         level: StatusLevel::Error,
-                        message: format!("Failed to get the certificate: {}", e),
+                        message: (s().tailscale.certificate_failed)(&e.to_string()),
                     }),
                     None => {}
                 }
@@ -484,7 +485,10 @@ impl TailscaleState {
                 state.busy.remove(&action);
                 let status = match result {
                     Some(Ok(value)) => success(value),
-                    Some(Err(e)) => Some((StatusLevel::Error, format!("{}: {}", failure, e))),
+                    Some(Err(e)) => Some((
+                        StatusLevel::Error,
+                        format!("{}{}{}", failure, s().common.colon, e),
+                    )),
                     None => None,
                 };
                 if let Some((level, message)) = status {

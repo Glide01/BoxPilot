@@ -3,6 +3,7 @@
 //! connection-status row (dot + label). Pure function — `RootView` supplies the
 //! active page, status, speeds, badges, and the navigation callback.
 
+use crate::i18n::s;
 use crate::ui::pages::ActivePage;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -51,18 +52,19 @@ pub fn sidebar(
     badge_color: Hsla,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
+    let nav = &s().nav;
     let items = [
-        (ActivePage::Home, "Home", Icon::new(IconName::LayoutDashboard)),
-        (ActivePage::Groups, "Groups", Icon::new(IconName::Globe)),
-        (ActivePage::Connections, "Connections", Icon::new(IconName::Network)),
-        (ActivePage::Tailscale, "Tailscale", Icon::new(IconName::Frame)),
+        (ActivePage::Home, nav.home, Icon::new(IconName::LayoutDashboard)),
+        (ActivePage::Groups, nav.groups, Icon::new(IconName::Globe)),
+        (ActivePage::Connections, nav.connections, Icon::new(IconName::Network)),
+        (ActivePage::Tailscale, nav.tailscale, Icon::new(IconName::Frame)),
         // gauge.svg / shield-check.svg aren't in gpui-component's IconName
         // set; AppAssets serves them.
-        (ActivePage::Vpn, "VPN", Icon::empty().path("icons/shield-check.svg")),
-        (ActivePage::Profiles, "Profiles", Icon::new(IconName::GalleryVerticalEnd)),
-        (ActivePage::Logs, "Logs", Icon::new(IconName::SquareTerminal)),
-        (ActivePage::Tools, "Tools", Icon::empty().path("icons/gauge.svg")),
-        (ActivePage::Settings, "Settings", Icon::new(IconName::Settings)),
+        (ActivePage::Vpn, nav.vpn, Icon::empty().path("icons/shield-check.svg")),
+        (ActivePage::Profiles, nav.profiles, Icon::new(IconName::GalleryVerticalEnd)),
+        (ActivePage::Logs, nav.logs, Icon::new(IconName::SquareTerminal)),
+        (ActivePage::Tools, nav.tools, Icon::empty().path("icons/gauge.svg")),
+        (ActivePage::Settings, nav.settings, Icon::new(IconName::Settings)),
     ];
     // Tailscale / VPN are offered only while the running config needs them.
     let items = items.into_iter().filter(|(page, ..)| match page {

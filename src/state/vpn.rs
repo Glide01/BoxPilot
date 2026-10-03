@@ -23,6 +23,7 @@ use crate::core::vpn::{
     failed_endpoints, newly_seen, pending_challenges, should_report_stream_error,
     stream_error_is_permanent, ChallengeKey, EndpointFailure, VpnPresence, VpnProtocol,
 };
+use crate::i18n::s;
 use crate::state::drain::next_batch;
 use crate::state::process_session::ProcessSession;
 use futures_channel::mpsc::{self, UnboundedSender};
@@ -288,8 +289,10 @@ impl VpnStatus {
             .map_or(Duration::ZERO, |started| started.elapsed());
         for (stream, error, permanent) in failures {
             if should_report_stream_error(permanent, self.loaded.contains(&stream), elapsed) {
-                self.stream_errors
-                    .insert(stream, format!("{} status: {}", stream.label(), error));
+                self.stream_errors.insert(
+                    stream,
+                    (s().vpn.stream_status)(stream.label(), &error.to_string()),
+                );
             }
         }
         let endpoints_changed = openconnect.is_some() || openvpn.is_some();
@@ -368,7 +371,7 @@ impl VpnStatus {
         cx: &mut Context<Self>,
     ) {
         let api = self.api;
-        self.run_action(key, "Sign-in failed", cx, move |key| {
+        self.run_action(key, s().vpn.sign_in_failed, cx, move |key| {
             api.submit_openconnect_form(&key.endpoint_tag, &key.challenge_id, values)
         });
     }
@@ -381,7 +384,7 @@ impl VpnStatus {
         cx: &mut Context<Self>,
     ) {
         let api = self.api;
-        self.run_action(key, "Sign-in failed", cx, move |key| {
+        self.run_action(key, s().vpn.sign_in_failed, cx, move |key| {
             api.submit_openconnect_browser(&key.endpoint_tag, &key.challenge_id, &result)
         });
     }
@@ -394,7 +397,7 @@ impl VpnStatus {
         cx: &mut Context<Self>,
     ) {
         let api = self.api;
-        self.run_action(key, "Sign-in failed", cx, move |key| {
+        self.run_action(key, s().vpn.sign_in_failed, cx, move |key| {
             api.submit_openvpn_challenge(&key.endpoint_tag, &key.challenge_id, &answer)
         });
     }
@@ -403,16 +406,19 @@ impl VpnStatus {
     /// OpenConnect retries later and asks again.
     pub fn cancel_challenge(&mut self, key: ChallengeKey, cx: &mut Context<Self>) {
         let api = self.api;
-        self.run_action(key, "Couldn't cancel sign-in", cx, move |key| {
-            match key.protocol {
+        self.run_action(
+            key,
+            s().vpn.cancel_sign_in_failed,
+            cx,
+            move |key| match key.protocol {
                 VpnProtocol::OpenConnect => {
                     api.cancel_openconnect_auth(&key.endpoint_tag, &key.challenge_id)
                 }
                 VpnProtocol::OpenVpn => {
                     api.cancel_openvpn_challenge(&key.endpoint_tag, &key.challenge_id)
                 }
-            }
-        });
+            },
+        );
     }
 
     /// One submit/cancel off the UI thread. While in flight the challenge is
@@ -440,7 +446,7 @@ impl VpnStatus {
                 if let Err(error) = result {
                     cx.emit(StatusEvent {
                         level: StatusLevel::Error,
-                        message: format!("{}: {}", failure, error),
+                        message: format!("{}{}{}", failure, s().common.colon, error),
                     });
                 }
                 cx.notify();

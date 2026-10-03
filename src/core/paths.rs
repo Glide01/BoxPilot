@@ -1,4 +1,5 @@
 use crate::core::settings::{PROFILES_DIR, RUNTIME_CONFIG_FILENAME};
+use crate::i18n::s;
 use std::env;
 use std::fs;
 use std::io;
@@ -16,14 +17,14 @@ pub fn get_app_data_dir() -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .or_else(dirs::config_dir)
         .or_else(|| env::current_dir().ok())
-        .ok_or_else(|| "Failed to resolve config or current directory".to_string())?;
+        .ok_or_else(|| s().errors.resolve_dir.to_string())?;
     let app_dir = base.join("BoxPilot");
     if !app_dir.exists() {
         // The parent (`~/.config`, or whatever `BOXPILOT_DATA_DIR` names)
         // isn't BoxPilot's: it gets the default mode, only our dir is private.
         fs::create_dir_all(&base)
             .and_then(|()| create_private_dir(&app_dir))
-            .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+            .map_err(|e| (s().errors.create_app_dir)(&e.to_string()))?;
     }
     restrict_data_dir(&app_dir);
     Ok(app_dir)
@@ -132,10 +133,10 @@ pub fn runtime_config_path(app_dir: &Path) -> PathBuf {
 
 pub fn get_install_dir() -> Result<PathBuf, String> {
     env::current_exe()
-        .map_err(|e| format!("Failed to get current executable path: {}", e))?
+        .map_err(|e| (s().errors.exe_path)(&e.to_string()))?
         .parent()
         .map(|p| p.to_path_buf())
-        .ok_or_else(|| "Failed to get executable directory".to_string())
+        .ok_or_else(|| s().errors.exe_dir.to_string())
 }
 
 #[cfg(all(test, unix))]

@@ -22,7 +22,9 @@
 
 use crate::core::groups_view::{flatten_rows, normalize_query, GroupsLayout, NodeSort, Row};
 use crate::core::singbox_api::{classify_delay, DelayLevel, GroupKind, ProxyGroup};
+use crate::i18n::s;
 use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
+use crate::ui::locale;
 use crate::ui::widgets::{empty_card, page_header, pill, PillTone};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -84,7 +86,13 @@ impl GroupsPage {
         cx.observe(&proxy_groups, |_, _, cx| cx.notify()).detach();
 
         let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search nodes or protocols…"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(s().groups.search_placeholder));
+        locale::observe(window, cx, |this: &mut Self, window, cx| {
+            this.search.update(cx, |search, cx| {
+                search.set_placeholder(s().groups.search_placeholder, window, cx)
+            });
+        })
+        .detach();
         cx.subscribe_in(&search, window, |this, _, ev: &InputEvent, _, cx| {
             if matches!(ev, InputEvent::Change) {
                 this.scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -250,7 +258,7 @@ impl GroupsPage {
             Button::new(("group-test", gi))
                 .outline()
                 .small()
-                .label("Test")
+                .label(s().groups.test)
                 // `loading` only animates an icon, and keeps the button inert.
                 .when(is_testing, |button| button.icon(Spinner::new()))
                 .loading(is_testing)
@@ -302,7 +310,7 @@ impl GroupsPage {
                     .child(SharedString::from(group.name.clone())),
             )
             .when(group.kind == GroupKind::UrlTest, |area| {
-                area.child(pill(theme, PillTone::Muted, "auto"))
+                area.child(pill(theme, PillTone::Muted, s().groups.auto))
             })
             .child(
                 div()
@@ -382,7 +390,7 @@ fn delay_color(state: DelayState, theme: &Theme) -> Hsla {
 fn delay_label(state: DelayState) -> SharedString {
     match state {
         DelayState::Ok(ms) => format!("{}ms", ms).into(),
-        DelayState::Timeout => "timeout".into(),
+        DelayState::Timeout => s().groups.timeout.into(),
     }
 }
 
@@ -502,7 +510,7 @@ fn delay_badge(card: &NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Them
         .text_xs()
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
-        .tooltip(|window, cx| Tooltip::new("Test delay").build(window, cx))
+        .tooltip(|window, cx| Tooltip::new(s().groups.test_delay).build(window, cx))
         .on_click(move |_, _, cx| {
             // Don't let the card under it switch to this node as well.
             cx.stop_propagation();
@@ -551,6 +559,7 @@ impl Render for GroupsPage {
         let has_groups = !state.groups.is_empty();
         let testing_all = state.testing_any_group();
         let theme = cx.theme();
+        let t = &s().groups;
 
         let mut header = div()
             .h_flex()
@@ -558,7 +567,7 @@ impl Render for GroupsPage {
             .items_center()
             .gap_2()
             .w_full()
-            .child(div().mr_2().child(page_header(theme, "Groups")));
+            .child(div().mr_2().child(page_header(theme, t.title)));
         if has_groups {
             header = header
                 .child(
@@ -575,11 +584,11 @@ impl Render for GroupsPage {
                         .ml_1()
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .child("Sort"),
+                        .child(t.sort),
                 );
             for (id, label, sort) in [
-                ("groups-sort-default", "Default", NodeSort::Default),
-                ("groups-sort-delay", "Delay", NodeSort::Delay),
+                ("groups-sort-default", t.sort_default, NodeSort::Default),
+                ("groups-sort-delay", t.sort_delay, NodeSort::Delay),
             ] {
                 let page = weak_page.clone();
                 header = header.child(toggle_pill(id, label, self.sort == sort, move |_, cx| {
@@ -593,7 +602,7 @@ impl Render for GroupsPage {
                     Button::new("groups-test-all")
                         .outline()
                         .small()
-                        .label("Test all")
+                        .label(t.test_all)
                         .when(testing_all, |button| button.icon(Spinner::new()))
                         .loading(testing_all)
                         .disabled(!live)
@@ -604,21 +613,10 @@ impl Render for GroupsPage {
         }
 
         let body = if !has_groups {
-            empty_card(
-                theme,
-                IconName::Globe,
-                "No node groups",
-                "Connect to see node groups here.",
-            )
-            .into_any_element()
+            empty_card(theme, IconName::Globe, t.empty_title, t.empty_hint).into_any_element()
         } else if self.layout.rows.is_empty() {
-            empty_card(
-                theme,
-                IconName::Search,
-                "No matching nodes",
-                "Try a different search.",
-            )
-            .into_any_element()
+            empty_card(theme, IconName::Search, t.no_match_title, t.no_match_hint)
+                .into_any_element()
         } else {
             let list = v_virtual_list(
                 page,

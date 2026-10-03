@@ -103,7 +103,7 @@ impl UsbSharedDevice {
     pub fn display_name(&self) -> &str {
         let product = self.product.trim();
         if product.is_empty() {
-            "USB device"
+            crate::i18n::s().vpn.usb_device
         } else {
             product
         }
@@ -134,11 +134,12 @@ impl UsbDeviceState {
     }
 
     pub fn label(self) -> &'static str {
+        let t = crate::i18n::s();
         match self {
-            UsbDeviceState::Idle => "Available",
-            UsbDeviceState::Attached => "In use",
-            UsbDeviceState::Unavailable => "Unavailable",
-            UsbDeviceState::Unknown(_) => "Unknown",
+            UsbDeviceState::Idle => t.vpn.usb_available,
+            UsbDeviceState::Attached => t.vpn.usb_in_use,
+            UsbDeviceState::Unavailable => t.vpn.usb_unavailable,
+            UsbDeviceState::Unknown(_) => t.common.unknown,
         }
     }
 }
@@ -175,7 +176,7 @@ pub fn usb_speed_label(speed: u32) -> Option<&'static str> {
         1 => Some("1.5 Mbps"),
         2 => Some("12 Mbps"),
         3 => Some("480 Mbps"),
-        4 => Some("Wireless"),
+        4 => Some(crate::i18n::s().vpn.usb_wireless),
         5 => Some("5 Gbps"),
         6 => Some("10 Gbps"),
         _ => None,

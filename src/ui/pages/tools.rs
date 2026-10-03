@@ -9,9 +9,10 @@ use crate::core::network_tools::{
     MAX_RUNTIME_CHOICES,
 };
 use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
+use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
-use crate::ui::card_frame;
 use crate::ui::widgets::{empty_card, page_header, setting_row};
+use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -90,7 +91,14 @@ impl ToolsPage {
         let outbounds = tools.read(cx).outbounds.clone();
         let quality_outbound = Self::outbound_select(&outbounds, window, cx);
         let stun_outbound = Self::outbound_select(&outbounds, window, cx);
-        let config_url = cx.new(|cx| InputState::new(window, cx).placeholder("Default (Apple)"));
+        let config_url =
+            cx.new(|cx| InputState::new(window, cx).placeholder(s().tools.config_url_placeholder));
+        locale::observe(window, cx, |this: &mut Self, window, cx| {
+            this.config_url.update(cx, |input, cx| {
+                input.set_placeholder(s().tools.config_url_placeholder, window, cx)
+            });
+        })
+        .detach();
         let stun_server = cx.new(|cx| InputState::new(window, cx).placeholder(DEFAULT_STUN_SERVER));
 
         cx.observe_in(&tools, window, |this: &mut Self, tools, window, cx| {
@@ -194,12 +202,13 @@ impl ToolsPage {
             .position(|&s| s == self.max_runtime)
             .unwrap_or(1);
         let theme = cx.theme();
+        let t = s();
 
         let start = if running {
             Button::new("nq-cancel")
                 .outline()
                 .small()
-                .label("Cancel")
+                .label(t.common.cancel)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.tools.update(cx, |tools, cx| tools.cancel_quality(cx));
                 }))
@@ -207,32 +216,25 @@ impl ToolsPage {
             Button::new("nq-start")
                 .primary()
                 .small()
-                .label("Start")
+                .label(t.common.start)
                 .on_click(cx.listener(|this, _, _, cx| this.start_quality(cx)))
         };
 
         let mut card = card_frame(theme)
-            .child(section_label(theme, "NETWORK QUALITY"))
-            .child(hint(
-                theme,
-                "Measures throughput and responsiveness (round trips per minute under load) \
-                 through an outbound, the way Apple's networkQuality does.",
-            ))
-            .child(setting_row(theme, "Outbound", None).child(
-                div().w(px(FIELD_WIDTH)).child(
-                    Select::new(&self.quality_outbound)
-                        .small()
-                        .search_placeholder("Search outbounds")
-                        .disabled(running),
-                ),
-            ))
+            .child(section_label(theme, t.tools.quality_section))
+            .child(hint(theme, t.tools.quality_hint))
             .child(
-                setting_row(
-                    theme,
-                    "Mode",
-                    Some("Parallel loads both directions at once; serial measures download, then upload."),
-                )
-                .child(
+                setting_row(theme, t.tools.outbound, None).child(
+                    div().w(px(FIELD_WIDTH)).child(
+                        Select::new(&self.quality_outbound)
+                            .small()
+                            .search_placeholder(t.tools.search_outbounds)
+                            .disabled(running),
+                    ),
+                ),
+            )
+            .child(
+                setting_row(theme, t.tools.mode, Some(t.tools.mode_hint)).child(
                     TabBar::new("nq-mode")
                         .segmented()
                         .selected_index(if serial { 1 } else { 0 })
@@ -241,13 +243,13 @@ impl ToolsPage {
                             cx.notify();
                         }))
                         .children(
-                            ["Parallel", "Serial"]
+                            [t.tools.parallel, t.tools.serial]
                                 .map(|label| Tab::new().label(label).disabled(running)),
                         ),
                 ),
             )
             .child(
-                setting_row(theme, "Max runtime", None).child(
+                setting_row(theme, t.tools.max_runtime, None).child(
                     TabBar::new("nq-runtime")
                         .segmented()
                         .selected_index(runtime_ix)
@@ -258,12 +260,12 @@ impl ToolsPage {
                             }
                         }))
                         .children(MAX_RUNTIME_CHOICES.map(|secs| {
-                            Tab::new().label(format!("{}s", secs)).disabled(running)
+                            Tab::new().label((t.tools.seconds)(secs)).disabled(running)
                         })),
                 ),
             )
             .child(
-                setting_row(theme, "HTTP/3", Some("Measure over QUIC instead of TCP.")).child(
+                setting_row(theme, "HTTP/3", Some(t.tools.http3_hint)).child(
                     Switch::new("nq-http3")
                         .checked(http3)
                         .disabled(running)
@@ -274,12 +276,7 @@ impl ToolsPage {
                 ),
             )
             .child(
-                setting_row(
-                    theme,
-                    "Config URL",
-                    Some("A networkQuality config; empty uses Apple's test servers."),
-                )
-                .child(
+                setting_row(theme, t.tools.config_url, Some(t.tools.config_url_hint)).child(
                     div()
                         .w(px(FIELD_WIDTH))
                         .on_mouse_down_out(|_, window, cx| window.blur(cx))
@@ -306,7 +303,7 @@ impl ToolsPage {
         // Accuracy arrives with the final result only.
         let accuracy = |capacity: Option<&str>, rpm: Option<&str>| match (capacity, rpm) {
             (Some(capacity), Some(rpm)) => {
-                vec![format!("Accuracy: {} · RPM {}", capacity, rpm)]
+                vec![(s().tools.accuracy)(capacity, rpm)]
             }
             _ => Vec::new(),
         };
@@ -318,7 +315,7 @@ impl ToolsPage {
                 .w_full()
                 .child(metric_tile(
                     theme,
-                    "Download",
+                    t.common.download,
                     metrics.download,
                     std::iter::once(metrics.download_rpm)
                         .chain(accuracy(
@@ -329,7 +326,7 @@ impl ToolsPage {
                 ))
                 .child(metric_tile(
                     theme,
-                    "Upload",
+                    t.common.upload,
                     metrics.upload,
                     std::iter::once(metrics.upload_rpm)
                         .chain(accuracy(
@@ -340,18 +337,13 @@ impl ToolsPage {
                 ))
                 .child(metric_tile(
                     theme,
-                    "Idle latency",
+                    t.tools.idle_latency,
                     metrics.idle_latency,
                     Vec::new(),
                 )),
         )
         .when(run.status == RunStatus::Done, |this| {
-            this.child(hint(
-                theme,
-                "RPM: round trips per minute while the link is loaded — higher means \
-                 more responsive. Accuracy: how stable each measurement became within the \
-                 runtime.",
-            ))
+            this.child(hint(theme, t.tools.rpm_hint))
         })
         .when_some(failure(&run.status), |this, message| {
             this.child(error_text(theme, message))
@@ -361,12 +353,13 @@ impl ToolsPage {
     fn stun_card(&self, run: Option<&StunRun>, cx: &mut Context<Self>) -> Div {
         let running = run.is_some_and(|r| r.status.is_running());
         let theme = cx.theme();
+        let t = s();
 
         let start = if running {
             Button::new("stun-cancel")
                 .outline()
                 .small()
-                .label("Cancel")
+                .label(t.common.cancel)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.tools.update(cx, |tools, cx| tools.cancel_stun(cx));
                 }))
@@ -374,35 +367,25 @@ impl ToolsPage {
             Button::new("stun-start")
                 .primary()
                 .small()
-                .label("Start")
+                .label(t.common.start)
                 .on_click(cx.listener(|this, _, _, cx| this.start_stun(cx)))
         };
 
         let card = card_frame(theme)
-            .child(section_label(theme, "NAT TYPE (STUN)"))
-            .child(hint(
-                theme,
-                "Sends STUN requests over UDP through an outbound to find the external \
-                 address and how the NAT on that path maps and filters (RFC 5780). Through \
-                 a proxy, this describes the proxy server's UDP path.",
-            ))
+            .child(section_label(theme, t.tools.stun_section))
+            .child(hint(theme, t.tools.stun_hint))
             .child(
-                setting_row(theme, "Outbound", None).child(
+                setting_row(theme, t.tools.outbound, None).child(
                     div().w(px(FIELD_WIDTH)).child(
                         Select::new(&self.stun_outbound)
                             .small()
-                            .search_placeholder("Search outbounds")
+                            .search_placeholder(t.tools.search_outbounds)
                             .disabled(running),
                     ),
                 ),
             )
             .child(
-                setting_row(
-                    theme,
-                    "STUN server",
-                    Some("host[:port]; empty uses sing-box's default."),
-                )
-                .child(
+                setting_row(theme, t.tools.stun_server, Some(t.tools.stun_server_hint)).child(
                     div()
                         .w(px(FIELD_WIDTH))
                         .on_mouse_down_out(|_, window, cx| window.blur(cx))
@@ -426,29 +409,25 @@ impl ToolsPage {
                 .w_full()
                 .child(result_row(
                     theme,
-                    "External address",
+                    t.tools.external_address,
                     run.external_addr_label(),
                 ))
-                .child(result_row(theme, "Latency", run.latency_label()))
+                .child(result_row(theme, t.tools.latency, run.latency_label()))
                 .when(!unsupported, |this| {
                     this.child(result_row(
                         theme,
-                        "NAT mapping",
+                        t.tools.nat_mapping,
                         run.mapping_label().to_string(),
                     ))
                     .child(result_row(
                         theme,
-                        "NAT filtering",
+                        t.tools.nat_filtering,
                         run.filtering_label().to_string(),
                     ))
                 }),
         )
         .when(unsupported, |this| {
-            this.child(hint(
-                theme,
-                "This server doesn't support NAT type detection (RFC 5780 OTHER-ADDRESS). \
-                 Try another STUN server to see mapping and filtering behaviour.",
-            ))
+            this.child(hint(theme, t.tools.nat_unsupported))
         })
         .when_some(run.summary(), |this, summary| {
             this.child(
@@ -492,8 +471,8 @@ impl Render for ToolsPage {
             empty_card(
                 cx.theme(),
                 IconName::Network,
-                "sing-box is not running",
-                "Connect to test network quality and NAT type.",
+                s().tools.not_running_title,
+                s().tools.not_running_hint,
             )
             .into_any_element()
         } else {
@@ -513,7 +492,7 @@ impl Render for ToolsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .child(page_header(cx.theme(), "Tools"))
+            .child(page_header(cx.theme(), s().tools.title))
             .child(body)
     }
 }

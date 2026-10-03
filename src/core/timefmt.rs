@@ -1,6 +1,7 @@
 //! Time formatting: the subscription "last updated" label and the Home
 //! uptime readout.
 
+use crate::i18n::s;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -11,16 +12,15 @@ pub fn format_relative_time(then: SystemTime, now: SystemTime) -> String {
         .duration_since(then)
         .unwrap_or(Duration::ZERO)
         .as_secs();
+    let t = &s().time;
     if secs < 60 {
-        "just now".to_string()
+        t.just_now.to_string()
     } else if secs < 3600 {
-        format!("{} min ago", secs / 60)
+        (t.minutes_ago)(secs / 60)
     } else if secs < 86400 {
-        format!("{} hr ago", secs / 3600)
-    } else if secs < 86400 * 2 {
-        "1 day ago".to_string()
+        (t.hours_ago)(secs / 3600)
     } else {
-        format!("{} days ago", secs / 86400)
+        (t.days_ago)(secs / 86400)
     }
 }
 
@@ -48,20 +48,21 @@ pub fn from_unix_secs(secs: u64) -> SystemTime {
 /// first hour, where the per-second tick is what tells the user it's live.
 pub fn format_uptime(elapsed: Duration) -> String {
     let secs = elapsed.as_secs();
-    let (days, hours, mins, s) = (
+    let (days, hours, mins, sec) = (
         secs / 86400,
         secs % 86400 / 3600,
         secs % 3600 / 60,
         secs % 60,
     );
+    let t = &s().time;
     if secs < 60 {
-        format!("{}s", s)
+        format!("{}{}", secs, t.second)
     } else if secs < 3600 {
-        format!("{}m {}s", mins, s)
+        format!("{}{}{}{}{}", mins, t.minute, t.unit_sep, sec, t.second)
     } else if secs < 86400 {
-        format!("{}h {}m", hours, mins)
+        format!("{}{}{}{}{}", hours, t.hour, t.unit_sep, mins, t.minute)
     } else {
-        format!("{}d {}h", days, hours)
+        format!("{}{}{}{}{}", days, t.day, t.unit_sep, hours, t.hour)
     }
 }
 

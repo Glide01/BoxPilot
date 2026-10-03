@@ -34,9 +34,10 @@ running in the tray?" with a "Don't ask again" box.
   a tray icon is actually showing (`tray::is_available`). Without one — a
   Linux desktop with no StatusNotifier host (e.g. GNOME without the
   AppIndicator extension), a headless/xvfb session, a failed registration —
-  closing quits exactly as before, and the Settings row is disabled with "No
-  system tray on this desktop — closing quits BoxPilot". If the host goes
-  away while the window is closed, the window reopens.
+  closing quits exactly as before, and the Settings row shows no choice,
+  just "Quits BoxPilot" with the hint "No system tray on this desktop to
+  keep BoxPilot running in." If the host goes away while the window is
+  closed, the window reopens.
 - **Backends.** Windows: `tray-icon` + `muda`, created on the UI thread,
   whose hidden window gpui's own `GetMessageW` loop pumps. Linux: a
   StatusNotifierItem over D-Bus via `ksni` (no GTK), registered on a thread
@@ -45,6 +46,9 @@ running in the tray?" with a "Don't ask again" box.
   clicks as `TrayCommand`s into a channel; the UI-thread task draining it is
   the only place a click turns into an `AppState` call. Neither backend ever
   touches gpui from its callbacks.
+- **Language.** The menu and tooltip are in the UI language
+  (Settings › General "Language"): the snapshot carries it, so switching
+  languages is a snapshot change and the backend rebuilds the menu.
 
 ## Departure from ADR 0001
 

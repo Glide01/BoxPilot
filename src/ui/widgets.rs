@@ -4,6 +4,7 @@
 
 use crate::core::sub_usage::{expiry_date_utc, SubscriptionUsage, UsageLevel};
 use crate::core::timefmt::{format_relative_time, from_unix_secs, to_unix_secs};
+use crate::i18n::s;
 use crate::ui::card_frame;
 use gpui::{
     div, Context, Div, ElementId, FontWeight, Hsla, InteractiveElement, ParentElement, Pixels,
@@ -146,15 +147,16 @@ pub fn usage_meter(
         UsageLevel::Warning => (color, Some(IconName::TriangleAlert)),
         UsageLevel::Critical => (color, Some(IconName::CircleX)),
     };
+    let t = s();
     let mut tooltip = Vec::new();
     if let Some(expire) = usage.expire {
-        tooltip.push(format!("Expires {} (UTC)", expiry_date_utc(expire)));
+        tooltip.push((t.usage.expires_on)(&expiry_date_utc(expire)));
     }
-    tooltip.push(format!(
-        "Usage as of {}",
-        format_relative_time(from_unix_secs(usage.fetched_at), now)
-    ));
-    let tooltip: SharedString = tooltip.join(" · ").into();
+    tooltip.push((t.usage.as_of)(&format_relative_time(
+        from_unix_secs(usage.fetched_at),
+        now,
+    )));
+    let tooltip: SharedString = tooltip.join(t.common.sep).into();
 
     div()
         .id(id.clone())

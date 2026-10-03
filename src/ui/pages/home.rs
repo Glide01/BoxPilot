@@ -5,6 +5,7 @@
 use crate::actions::{ToggleProcess, KEY_CONTEXT};
 use crate::core::bytefmt::format_bytes;
 use crate::core::presentation::{runtime_subtitle, updated_label, ConnectionStatus};
+use crate::i18n::s;
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
 use crate::ui::traffic_chart::{self, TrafficChart};
@@ -100,7 +101,7 @@ fn clash_mode_card(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Op
     let tab_modes = modes.clone();
     Some(
         card_frame(theme).child(
-            setting_row(theme, "Clash Mode", None).child(
+            setting_row(theme, s().home.clash_mode, None).child(
                 TabBar::new("clash-mode")
                     .segmented()
                     .when_some(selected, |this, ix| this.selected_index(ix))
@@ -120,6 +121,7 @@ impl Render for HomePage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.app_state.read(cx);
 
+        let t = s();
         if !state.settings.has_profiles() {
             let app_state_add = self.app_state.clone();
             let theme = cx.theme();
@@ -140,18 +142,18 @@ impl Render for HomePage {
                         .text_lg()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.foreground)
-                        .child("No subscription yet"),
+                        .child(t.home.no_subscription_title),
                 )
                 .child(
                     div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child("Add one to get started"),
+                        .child(t.home.no_subscription_hint),
                 )
                 .child(
                     Button::new("home-add-subscription")
                         .primary()
-                        .label("Add subscription")
+                        .label(t.home.add_subscription)
                         .on_click(move |_, window, cx| {
                             super::profiles::ProfilesPage::open_profile_dialog(
                                 app_state_add.clone(),
@@ -198,7 +200,7 @@ impl Render for HomePage {
         let sub_label = updated_label(
             active.and_then(|p| p.last_updated_secs),
             now,
-            "not updated yet",
+            t.home.not_updated_yet,
         );
         let usage = active.and_then(|p| p.usage);
 
@@ -210,8 +212,12 @@ impl Render for HomePage {
         let theme = cx.theme();
 
         // —— 电源按钮(三态:断开 / 启动中 / 已连接) ——
+        // Keyed by status: a new state is a new element, so a tooltip shown
+        // while the pointer stays on the button (built once, from the old
+        // status) goes away instead of still offering "Connect" after the
+        // click connected.
         let power_base = div()
-            .id("power-button")
+            .id(("power-button", status as usize))
             .size(px(POWER_BUTTON_DIAMETER))
             .rounded_full()
             .flex()
@@ -334,20 +340,24 @@ impl Render for HomePage {
                                 .flex_row()
                                 .gap_4()
                                 .w_full()
-                                .child(stat_cell(theme, "Memory", format_bytes(runtime.memory)))
                                 .child(stat_cell(
                                     theme,
-                                    "Connections",
+                                    t.home.memory,
+                                    format_bytes(runtime.memory),
+                                ))
+                                .child(stat_cell(
+                                    theme,
+                                    t.home.connections,
                                     runtime.connections_in.to_string(),
                                 ))
                                 .child(stat_cell(
                                     theme,
-                                    "Uploaded",
+                                    t.home.uploaded,
                                     format_bytes(runtime.uplink_total),
                                 ))
                                 .child(stat_cell(
                                     theme,
-                                    "Downloaded",
+                                    t.home.downloaded,
                                     format_bytes(runtime.downlink_total),
                                 )),
                         )
@@ -368,7 +378,7 @@ impl Render for HomePage {
                         // justify_center:两卡被拉到等高时,行内容垂直居中
                         // (右卡比左卡矮一截,否则内容贴顶)。
                         card_frame(theme).flex_1().justify_center().child(
-                            setting_row(theme, "Proxy Mode", None).child(
+                            setting_row(theme, t.home.proxy_mode, None).child(
                                 TabBar::new("proxy-mode")
                                     .segmented()
                                     .selected_index(if proxy_mode { 1 } else { 0 })
@@ -378,12 +388,12 @@ impl Render for HomePage {
                                             state.set_proxy_mode(value, cx)
                                         });
                                     })
-                                    .children(vec!["TUN", "Proxy"]),
+                                    .children(vec![t.home.mode_tun, t.home.mode_proxy]),
                             ),
                         ),
                     )
                     .child(card_frame(theme).flex_1().justify_center().child(
-                        setting_row(theme, "System Proxy", None).child(
+                        setting_row(theme, t.home.system_proxy, None).child(
                             Switch::new("system-proxy").checked(system_proxy).on_click(
                                 move |checked: &bool, _, cx| {
                                     let value = *checked;
@@ -443,7 +453,7 @@ impl Render for HomePage {
                             Button::new("home-update")
                                 .outline()
                                 .small()
-                                .label("Update")
+                                .label(t.home.update)
                                 .when(is_updating, |this| this.icon(Spinner::new()))
                                 .disabled(is_updating)
                                 .on_click(move |_, _, cx| {

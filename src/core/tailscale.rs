@@ -8,6 +8,7 @@ use crate::core::singbox_api::{
     TailscalePing, TailscaleUserGroup,
 };
 use crate::core::timefmt::{format_relative_time, from_unix_secs};
+use crate::i18n::s;
 use std::cmp::Ordering;
 use std::fs;
 use std::io::{self, Write};
@@ -55,7 +56,7 @@ pub fn user_label(group: &TailscaleUserGroup) -> String {
     } else if !group.login_name.is_empty() {
         group.login_name.clone()
     } else {
-        "Unknown user".to_string()
+        s().tailscale.unknown_user.to_string()
     }
 }
 
@@ -164,38 +165,39 @@ pub fn current_exit_node_label(status: &TailscaleEndpointStatus) -> Option<Strin
 
 /// "Online", "Last seen 5 min ago", or "Offline" (never seen).
 pub fn peer_presence_label(peer: &TailscalePeer, now: SystemTime) -> String {
+    let t = &s().tailscale;
     if peer.online {
-        return "Online".to_string();
+        return t.online.to_string();
     }
     match peer.last_seen {
-        Some(secs) if secs > 0 => format!(
-            "Last seen {}",
-            format_relative_time(from_unix_secs(secs as u64), now)
-        ),
-        _ => "Offline".to_string(),
+        Some(secs) if secs > 0 => {
+            (t.last_seen)(&format_relative_time(from_unix_secs(secs as u64), now))
+        }
+        _ => t.offline.to_string(),
     }
 }
 
 /// One ping result line: "23.4 ms · direct (1.2.3.4:41641)", "… · DERP
 /// (fra)", "… · peer relay (…)", or "Failed: …".
 pub fn ping_summary(ping: &TailscalePing) -> String {
+    let t = &s().tailscale;
     if let Some(error) = &ping.error {
-        return format!("Failed: {}", error);
+        return (t.ping_failed)(error);
     }
     let path = if ping.is_direct {
         if ping.endpoint.is_empty() {
-            "direct".to_string()
+            t.direct.to_string()
         } else {
-            format!("direct ({})", ping.endpoint)
+            (t.direct_via)(&ping.endpoint)
         }
     } else if !ping.peer_relay.is_empty() {
-        format!("peer relay ({})", ping.peer_relay)
+        (t.peer_relay)(&ping.peer_relay)
     } else if !ping.derp_region_code.is_empty() {
         format!("DERP ({})", ping.derp_region_code)
     } else if ping.derp_region_id != 0 {
-        format!("DERP (region {})", ping.derp_region_id)
+        (t.derp_region)(ping.derp_region_id.into())
     } else {
-        "relayed".to_string()
+        t.relayed.to_string()
     };
     format!("{:.1} ms · {}", ping.latency_ms, path)
 }
@@ -236,13 +238,12 @@ pub fn receiving_fraction(file: &TaildropReceivingFile) -> Option<f32> {
 /// "1.0 MB of 4.0 MB (25%)", or "1.0 MB received" when the size is unknown.
 pub fn receiving_progress_label(file: &TaildropReceivingFile) -> String {
     match (file.size, receiving_fraction(file)) {
-        (Some(size), Some(fraction)) => format!(
-            "{} of {} ({}%)",
-            format_bytes(file.received_bytes),
-            format_bytes(size),
-            (fraction * 100.0).floor() as u32
+        (Some(size), Some(fraction)) => (s().tailscale.progress_of)(
+            &format_bytes(file.received_bytes),
+            &format_bytes(size),
+            (fraction * 100.0).floor() as u32,
         ),
-        _ => format!("{} received", format_bytes(file.received_bytes)),
+        _ => (s().tailscale.received)(&format_bytes(file.received_bytes)),
     }
 }
 
