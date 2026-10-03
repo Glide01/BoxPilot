@@ -21,6 +21,10 @@ use crate::core::subscription::{
     Fetched, RuntimeOptions,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
+use crate::core::update_check::{
+    check_proxy, fetch_latest, is_newer, same_version, should_notify, ReleaseInfo, CHECK_INTERVAL,
+    CURRENT_VERSION, FIRST_CHECK_DELAY,
+};
 use crate::state::clash_mode::ClashMode;
 use crate::state::connections::Connections;
 use crate::state::log_buffer::LogBuffer;
@@ -44,6 +48,27 @@ use std::time::{Duration, Instant, SystemTime};
 /// time vs. the configured interval, so changing the interval via settings
 /// takes effect at the next tick without restarting the task.
 const AUTO_UPDATE_TICK: Duration = Duration::from_secs(60);
+
+/// How often the BoxPilot update-check loop wakes to see whether a check is
+/// due (`CHECK_INTERVAL` since the last one). Hourly is plenty against a
+/// daily interval and keeps the loop's idle wakeups negligible; wall-clock
+/// time (`SystemTime`) decides, so a machine that slept through the day
+/// still checks within the hour after waking.
+const UPDATE_CHECK_TICK: Duration = Duration::from_secs(60 * 60);
+
+/// The BoxPilot update check (Settings › About; the Settings sidebar dot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateCheck {
+    /// No check has run this session.
+    Idle,
+    Checking,
+    UpToDate,
+    /// A newer release exists. It may be one the user skipped — see
+    /// [`AppState::update_available`].
+    Available(ReleaseInfo),
+    /// The last check failed; a short reason.
+    Failed(String),
+}
 
 /// The one profile fetch in flight, if any. `fetch` numbers it (see
 /// `AppState::begin_fetch`); a result lands only while it is still its
@@ -206,6 +231,17 @@ pub struct AppState {
     /// session (`warn_usage`): one toast per profile and level, again only
     /// after it changes. Seeded by the startup status.
     usage_warned: HashMap<String, UsageLevel>,
+    /// The BoxPilot update check's latest state (`check_for_updates`).
+    pub update_check: UpdateCheck,
+    /// When the last update check started (manual or automatic); the
+    /// automatic loop waits `CHECK_INTERVAL` from here.
+    last_update_check: Option<SystemTime>,
+    /// The release version this session already toasted about — one toast
+    /// per newly found version.
+    update_notified: Option<String>,
+    /// Wakes `FIRST_CHECK_DELAY` after start, then every `UPDATE_CHECK_TICK`,
+    /// and runs a check when one is due and automatic checks are on.
+    _update_check_task: Task<()>,
 }
 
 impl EventEmitter<StatusEvent> for AppState {}
@@ -616,6 +652,22 @@ impl AppState {
             })
             .detach();
 
+            // BoxPilot update check: first shortly after start, then daily.
+            // The loop itself never touches the network; the check does,
+            // on the background executor, and only while enabled.
+            let update_check_task = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(FIRST_CHECK_DELAY).await;
+                loop {
+                    let alive = this.update(cx, |state: &mut AppState, cx| {
+                        state.check_for_updates_if_due(cx)
+                    });
+                    if alive.is_err() {
+                        return;
+                    }
+                    cx.background_executor().timer(UPDATE_CHECK_TICK).await;
+                }
+            });
+
             Self {
                 settings,
                 persist_settings,
@@ -647,6 +699,10 @@ impl AppState {
                 latest_fetch: HashMap::new(),
                 queued_fetches: VecDeque::new(),
                 usage_warned,
+                update_check: UpdateCheck::Idle,
+                last_update_check: None,
+                update_notified: None,
+                _update_check_task: update_check_task,
             }
         })
     }
@@ -1168,13 +1224,111 @@ impl AppState {
         cx.notify();
     }
 
-    /// Settings › About "Check automatically".
+    /// Settings › About "Check for updates automatically". Turning it on
+    /// checks right away when a check is due (none yet, or the last one is a
+    /// day old) — the loop would otherwise only notice at its next tick.
     pub fn set_check_updates(&mut self, value: bool, cx: &mut Context<Self>) {
         if self.settings.check_updates == value {
             return;
         }
         self.settings.check_updates = value;
         self.save_settings();
+        cx.notify();
+        if value {
+            self.check_for_updates_if_due(cx);
+        }
+    }
+
+    /// The release to offer — newer than this BoxPilot and not skipped.
+    /// Drives the Settings sidebar dot and the About card's Skip button.
+    pub fn update_available(&self) -> Option<&ReleaseInfo> {
+        match &self.update_check {
+            UpdateCheck::Available(info)
+                if !self
+                    .settings
+                    .skipped_update_version
+                    .as_deref()
+                    .is_some_and(|skipped| same_version(skipped, &info.version)) =>
+            {
+                Some(info)
+            }
+            _ => None,
+        }
+    }
+
+    /// The automatic check: runs only while enabled and when the last check
+    /// (if any) is `CHECK_INTERVAL` old. A clock set back counts as due.
+    fn check_for_updates_if_due(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.check_updates {
+            return;
+        }
+        let due = self.last_update_check.is_none_or(|last| {
+            SystemTime::now()
+                .duration_since(last)
+                .map_or(true, |elapsed| elapsed >= CHECK_INTERVAL)
+        });
+        if due {
+            self.check_for_updates(false, cx);
+        }
+    }
+
+    /// Ask GitHub for the latest BoxPilot release, off the UI thread. An
+    /// automatic check (`manual` false) never runs while the setting is off;
+    /// "Check now" always does. One check at a time. Goes through sing-box's
+    /// local proxy while it runs in Proxy mode (TUN mode captures it
+    /// anyway), directly otherwise. A newer release that isn't skipped gets
+    /// one Info toast per session.
+    pub fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
+        if self.update_check == UpdateCheck::Checking || !(manual || self.settings.check_updates) {
+            return;
+        }
+        let proxy = check_proxy(
+            self.settings.proxy_mode,
+            self.process.read(cx).is_running(),
+            self.settings.proxy_port,
+        );
+        self.update_check = UpdateCheck::Checking;
+        self.last_update_check = Some(SystemTime::now());
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { fetch_latest(proxy.as_deref()) })
+                .await;
+            let _ = this.update(cx, |state: &mut AppState, cx| {
+                state.finish_update_check(result, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn finish_update_check(&mut self, result: Result<ReleaseInfo, String>, cx: &mut Context<Self>) {
+        self.update_check = match result {
+            Ok(info) if is_newer(&info.version, CURRENT_VERSION) => {
+                if should_notify(
+                    &info.version,
+                    CURRENT_VERSION,
+                    self.settings.skipped_update_version.as_deref(),
+                    self.update_notified.as_deref(),
+                ) {
+                    self.update_notified = Some(info.version.clone());
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Info,
+                        message: format!(
+                            "BoxPilot {} is available — see Settings › About.",
+                            info.version
+                        ),
+                    });
+                }
+                UpdateCheck::Available(info)
+            }
+            Ok(_) => UpdateCheck::UpToDate,
+            Err(reason) => {
+                eprintln!("Update check failed: {reason}");
+                UpdateCheck::Failed(reason)
+            }
+        };
         cx.notify();
     }
 

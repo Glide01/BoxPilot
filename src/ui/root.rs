@@ -9,7 +9,7 @@ use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
     TailscalePage, ToolsPage, VpnPage,
 };
-use crate::ui::sidebar::{sidebar, OptionalPages};
+use crate::ui::sidebar::{sidebar, Badges, OptionalPages};
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt};
@@ -28,6 +28,9 @@ pub struct RootView {
     /// Last `AppState::is_starting`, so the sidebar status re-renders when a
     /// Linux TUN gate (which `ProcessSession` doesn't see) opens or closes.
     starting: bool,
+    /// Last `AppState::update_available().is_some()` — the Settings
+    /// sidebar dot; re-rendered on its edges only, like `starting`.
+    update_badge: bool,
     active_page: ActivePage,
     home: Entity<HomePage>,
     groups: Entity<GroupsPage>,
@@ -106,12 +109,16 @@ impl RootView {
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();
-        // …and the Linux TUN gate, which only `AppState` knows about. Only
-        // its edges re-render: `AppState` notifies often.
+        // …and the Linux TUN gate, which only `AppState` knows about; plus
+        // the Settings update dot. Only their edges re-render: `AppState`
+        // notifies often.
         cx.observe(&app_state, |this: &mut Self, state, cx| {
-            let starting = state.read(cx).is_starting(cx);
-            if starting != this.starting {
+            let state = state.read(cx);
+            let starting = state.is_starting(cx);
+            let update_badge = state.update_available().is_some();
+            if starting != this.starting || update_badge != this.update_badge {
                 this.starting = starting;
+                this.update_badge = update_badge;
                 cx.notify();
             }
         })
@@ -173,11 +180,13 @@ impl RootView {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let starting = app_state.read(cx).is_starting(cx);
+        let update_badge = app_state.read(cx).update_available().is_some();
 
         Self {
             app_state,
             focus_handle,
             starting,
+            update_badge,
             active_page: ActivePage::Home,
             home,
             groups,
@@ -300,6 +309,7 @@ impl Render for RootView {
         let bg = theme.muted;
         let fg = theme.foreground;
         let speed_color = theme.muted_foreground;
+        let badge_color = theme.primary;
         // 网速行只在已连接时显示;读 traffic 实体格式化 ↓/↑ 速率。
         let speed = is_running.then(|| {
             let traffic = self.app_state.read(cx).traffic.read(cx);
@@ -351,6 +361,10 @@ impl Render for RootView {
                     tailscale: self.tailscale_visible,
                     vpn: self.vpn_visible,
                 },
+                Badges {
+                    settings: self.update_badge,
+                },
+                badge_color,
                 on_nav,
             ))
             // Cached: the page re-renders only when it notifies (each page

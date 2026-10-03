@@ -1,7 +1,7 @@
 //! Left navigation column: app title header, the page items, and a footer
 //! holding a live up/down network-speed row (only while connected) above the
 //! connection-status row (dot + label). Pure function — `RootView` supplies the
-//! active page, status, speeds, and the navigation callback.
+//! active page, status, speeds, badges, and the navigation callback.
 
 use crate::ui::pages::ActivePage;
 use gpui::prelude::FluentBuilder;
@@ -31,6 +31,14 @@ pub struct OptionalPages {
     pub vpn: bool,
 }
 
+/// Dots on sidebar items asking for attention.
+#[derive(Clone, Copy, Default)]
+pub struct Badges {
+    /// A BoxPilot update is available and not skipped
+    /// (`AppState::update_available`).
+    pub settings: bool,
+}
+
 pub fn sidebar(
     active: ActivePage,
     dot_color: Hsla,
@@ -39,6 +47,8 @@ pub fn sidebar(
     speed: Option<(String, String)>,
     speed_color: Hsla,
     optional: OptionalPages,
+    badges: Badges,
+    badge_color: Hsla,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let items = [
@@ -74,9 +84,22 @@ pub fn sidebar(
         )
         .child(SidebarMenu::new().children(items.map(|(page, label, icon)| {
             let on_nav = on_nav.clone();
+            let badge = match page {
+                ActivePage::Settings => badges.settings,
+                _ => false,
+            };
             SidebarMenuItem::new(label)
                 .icon(icon)
                 .active(active == page)
+                .when(badge, |item| {
+                    item.suffix(move |_, _| {
+                        div()
+                            .flex_shrink_0()
+                            .size_2()
+                            .rounded_full()
+                            .bg(badge_color)
+                    })
+                })
                 .on_click(move |_, window, cx| on_nav(page, window, cx))
         })))
         .footer(
