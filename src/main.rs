@@ -3,10 +3,10 @@
 use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
-use box_pilot_gui::ui::RootView;
-use gpui::*;
-use gpui_component::{ActiveTheme, Root, Theme};
 use box_pilot_gui::ui::assets::AppAssets;
+use box_pilot_gui::ui::{app_window, tray};
+use gpui::*;
+use gpui_component::Theme;
 
 /// On Windows, ensure the process is running with admin rights. If not,
 /// re-launch self via `ShellExecuteW("runas", ...)` (UAC prompt) and exit.
@@ -154,29 +154,13 @@ fn main() {
         ]);
 
         let app_state = AppState::new(deeplink_rx, cx);
-        let bounds = Bounds::centered(None, size(px(860.), px(620.)), cx);
+        // The window lifecycle owns `AppState` from here on (dropped on
+        // quit, which stops sing-box); the tray comes up alongside, in the
+        // background on Linux.
+        app_window::init(app_state.clone(), cx);
+        tray::init(&app_state, cx);
+        drop(app_state);
 
-        cx.spawn(async move |cx| {
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(720.), px(500.))),
-                    // Wayland only raises a window that has an app id, and the
-                    // `.desktop` file is matched by it. Ignored elsewhere.
-                    app_id: Some("boxpilot".into()),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("BoxPilot".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let view = cx.new(|cx| RootView::new(app_state.clone(), window, cx));
-                    cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
-                },
-            )
-            .expect("Failed to open window");
-        })
-        .detach();
+        cx.spawn(async move |cx| cx.update(app_window::show)).detach();
     });
 }
