@@ -36,12 +36,25 @@ use std::time::SystemTime;
 
 pub struct TailscalePage {
     tailscale: Entity<TailscaleState>,
+    /// The minute (unix secs / 60) the relative times ("Last seen 5 min
+    /// ago") were last rendered for.
+    rendered_minute: u64,
 }
 
 impl TailscalePage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tailscale = app_state.read(cx).tailscale.clone();
         cx.observe(&tailscale, |_, _, cx| cx.notify()).detach();
+        // The page is a cached view: re-render for the relative times when
+        // the minute turns. The status samples (once a second while
+        // connected — the only time this page has content) are the clock.
+        let traffic = app_state.read(cx).traffic.clone();
+        cx.observe(&traffic, |this: &mut Self, _, cx| {
+            if current_minute() != this.rendered_minute {
+                cx.notify();
+            }
+        })
+        .detach();
         // 证书取回后弹窗展示/保存;证书只活在弹窗闭包里,不进状态、不写日志。
         cx.subscribe_in(
             &tailscale,
@@ -56,13 +69,23 @@ impl TailscalePage {
             },
         )
         .detach();
-        Self { tailscale }
+        Self {
+            tailscale,
+            rendered_minute: 0,
+        }
     }
+}
+
+fn current_minute() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() / 60)
 }
 
 impl Render for TailscalePage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = self.tailscale.clone();
+        self.rendered_minute = current_minute();
         let state = self.tailscale.read(cx);
         let theme = cx.theme();
         let now = SystemTime::now();
