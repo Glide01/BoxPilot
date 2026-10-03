@@ -2,6 +2,7 @@
 //! 状态条(内存 / 连接数 / 累计上传下载,仅运行中)+ Clash 模式切换(仅运行中
 //! 且 ≥2 个模式)+ 设置行(代理模式 / 系统代理)+ 订阅条。
 
+use crate::actions::{ToggleProcess, KEY_CONTEXT};
 use crate::core::bytefmt::format_bytes;
 use crate::core::presentation::{runtime_subtitle, updated_label, ConnectionStatus};
 use crate::state::{AppState, ClashMode};
@@ -11,7 +12,7 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants}, scroll::ScrollableElement, spinner::Spinner,
     switch::Switch, tab::TabBar,
-    theme::Theme, ActiveTheme, Disableable,
+    theme::Theme, tooltip::Tooltip, ActiveTheme, Disableable,
     Icon, Sizable, StyledExt,
 };
 use std::time::SystemTime;
@@ -141,10 +142,8 @@ impl Render for HomePage {
 
         let process = state.process.read(cx);
 
-        let status =
-            ConnectionStatus::from_flags(process.is_starting(), process.is_running());
+        let status = ConnectionStatus::from_flags(state.is_starting(cx), process.is_running());
         let is_updating = state.is_updating();
-        let busy = status == ConnectionStatus::Starting || is_updating;
         let proxy_mode = state.settings.proxy_mode;
         let system_proxy = state.settings.set_system_proxy;
         let status_title = status.label();
@@ -230,12 +229,26 @@ impl Render for HomePage {
                 ),
         };
 
-        // busy(启动中 / 更新订阅)时不挂 on_click = 禁用。
-        let power_button = power_button.when(!busy, |this| {
-            this.cursor_pointer().on_click(move |_, _, cx| {
-                app_state_toggle.update(cx, |state, cx| state.toggle_process(cx));
+        // 仅启动中(含 Linux TUN gate)禁用:不挂 on_click,半透明 + 禁止光标
+        // (同 gpui-component Button 的 loading 态)。拉订阅(含后台自动更新)
+        // 不挡开关,与 Ctrl+S 一致。
+        let power_button = power_button
+            .map(|this| {
+                if status.can_toggle() {
+                    this.cursor_pointer().on_click(move |_, _, cx| {
+                        app_state_toggle.update(cx, |state, cx| state.toggle_process(cx));
+                    })
+                } else {
+                    this.opacity(0.8).cursor_not_allowed()
+                }
             })
-        });
+            .tooltip(move |window, cx| {
+                Tooltip::new(status.power_action_label())
+                    .when(status.can_toggle(), |this| {
+                        this.action(&ToggleProcess, Some(KEY_CONTEXT))
+                    })
+                    .build(window, cx)
+            });
 
         div()
             .v_flex()

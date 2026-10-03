@@ -828,6 +828,7 @@ impl AppState {
                 .await;
             let _ = this.update(cx, |state, cx| {
                 state.tun_gate = None;
+                cx.notify();
                 match plan {
                     TunPlan::UseBundled(path) | TunPlan::UsePrivilegedCopy(path) => {
                         state.launch_after_gate(path, cx)
@@ -838,6 +839,8 @@ impl AppState {
                 }
             });
         }));
+        // Shows as Starting (`is_starting`) until it resolves.
+        cx.notify();
     }
 
     /// The user confirmed the TUN grant: install + setcap the copy through
@@ -857,6 +860,7 @@ impl AppState {
                 .await;
             let _ = this.update(cx, |state, cx| {
                 state.tun_gate = None;
+                cx.notify();
                 match result {
                     Ok(()) => state.launch_after_gate(PathBuf::from(PRIVILEGED_COPY_PATH), cx),
                     Err(message) => cx.emit(StatusEvent {
@@ -866,6 +870,7 @@ impl AppState {
                 }
             });
         }));
+        cx.notify();
     }
 
     /// Launch the sing-box a resolved TUN gate picked. Settings changed
@@ -927,6 +932,13 @@ impl AppState {
             }
         })
         .detach();
+    }
+
+    /// A start is under way: sing-box `Preparing`, or a Linux TUN gate
+    /// (plan probe or pkexec prompt) still pending. What Home and the
+    /// sidebar show as Starting, and what holds the power button off.
+    pub fn is_starting(&self, cx: &App) -> bool {
+        matches!(self.start_phase(cx), StartPhase::Gated | StartPhase::Preparing)
     }
 
     /// How far a start has got; see `StartPhase`.

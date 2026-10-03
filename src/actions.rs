@@ -7,3 +7,6 @@
 use gpui::actions;
 
 actions!(box_pilot, [UpdateSubscription, ToggleProcess]);
+
+/// Key context of `RootView`, the scope both shortcuts are bound in.
+pub const KEY_CONTEXT: &str = "BoxPilot";

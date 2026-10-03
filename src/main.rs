@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription};
+use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
 use box_pilot_gui::ui::RootView;
@@ -141,9 +141,16 @@ fn main() {
         theme.sidebar_accent = rgb(0xEAF1FE).into();
         theme.sidebar_accent_foreground = rgb(0x1D4ED8).into();
 
+        // Anywhere in the main window (`RootView` keeps focus inside its
+        // context). Ctrl+S not while typing in a text field (gpui-component's
+        // `Input` context): a stray save chord there shouldn't toggle sing-box.
         cx.bind_keys([
-            KeyBinding::new("ctrl-u", UpdateSubscription, Some("BoxPilot")),
-            KeyBinding::new("ctrl-s", ToggleProcess, Some("BoxPilot")),
+            KeyBinding::new("ctrl-u", UpdateSubscription, Some(KEY_CONTEXT)),
+            KeyBinding::new(
+                "ctrl-s",
+                ToggleProcess,
+                Some(&format!("{KEY_CONTEXT} && !Input")),
+            ),
         ]);
 
         let app_state = AppState::new(deeplink_rx, cx);

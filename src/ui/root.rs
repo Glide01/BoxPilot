@@ -1,4 +1,4 @@
-use crate::actions::{ToggleProcess, UpdateSubscription};
+use crate::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use crate::core::bytefmt::format_speed;
 use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::StatusEvent;
@@ -20,6 +20,14 @@ use gpui_component::{ActiveTheme, StyledExt, WindowExt};
 /// active one is rendered.
 pub struct RootView {
     app_state: Entity<AppState>,
+    /// Keeps keyboard focus inside the `KEY_CONTEXT` subtree. With nothing
+    /// focused gpui dispatches keys from the window's root element, above
+    /// this view, so the shortcuts would never fire. Focused at creation;
+    /// a click on anything not focusable itself lands focus back here.
+    focus_handle: FocusHandle,
+    /// Last `AppState::is_starting`, so the sidebar status re-renders when a
+    /// Linux TUN gate (which `ProcessSession` doesn't see) opens or closes.
+    starting: bool,
     active_page: ActivePage,
     home: Entity<HomePage>,
     groups: Entity<GroupsPage>,
@@ -82,6 +90,16 @@ impl RootView {
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();
+        // …and the Linux TUN gate, which only `AppState` knows about. Only
+        // its edges re-render: `AppState` notifies often.
+        cx.observe(&app_state, |this: &mut Self, state, cx| {
+            let starting = state.read(cx).is_starting(cx);
+            if starting != this.starting {
+                this.starting = starting;
+                cx.notify();
+            }
+        })
+        .detach();
         // Sidebar footer 网速行随 traffic 实体实时刷新(~1/sec)。
         let traffic = app_state.read(cx).traffic.clone();
         cx.observe(&traffic, |_, _, cx| cx.notify()).detach();
@@ -133,8 +151,14 @@ impl RootView {
         // still opening).
         app_state.update(cx, |state, _| state.view_attached());
 
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
+        let starting = app_state.read(cx).is_starting(cx);
+
         Self {
             app_state,
+            focus_handle,
+            starting,
             active_page: ActivePage::Home,
             home,
             groups,
@@ -236,11 +260,10 @@ impl RootView {
 
 impl Render for RootView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let process = self.app_state.read(cx).process.clone();
-        let process = process.read(cx);
-        let is_running = process.is_running();
+        let is_starting = self.app_state.read(cx).is_starting(cx);
+        let is_running = self.app_state.read(cx).process.read(cx).is_running();
         let theme = cx.theme();
-        let status = ConnectionStatus::from_flags(process.is_starting(), is_running);
+        let status = ConnectionStatus::from_flags(is_starting, is_running);
         let dot_color = match status {
             ConnectionStatus::Starting => theme.warning,
             ConnectionStatus::Connected => theme.success,
@@ -286,7 +309,8 @@ impl Render for RootView {
         };
 
         div()
-            .key_context("BoxPilot")
+            .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_update_sub))
             .on_action(cx.listener(Self::on_toggle_process))
             // 注意:不要用 gpui-component 的 `.h_flex()` —— 它附带
