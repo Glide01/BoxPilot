@@ -50,3 +50,10 @@ reopening if deep-link handling ever grows more view-side behaviour.
 but that field is drained exactly once by `RootView::new`, so writing to it
 while the app is running swallows the message forever. Telling the two cases
 apart needs a "view attached" flag — i.e. the gate, minus the tidiness.
+
+## Update
+
+ADR 0004 lets the window close while BoxPilot keeps running in the tray.
+The invariant is unchanged ("seeing the window" can now mean reopening it),
+but the `ActivateRequested` subscriber moved from `RootView` to app level
+(`ui::app_window`), and a reopened window picks up a pending import itself.
