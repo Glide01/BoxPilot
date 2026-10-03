@@ -109,8 +109,8 @@ struct AutoUpdateSnap {
 pub struct ImportRequested;
 
 /// A launch attempt reached this instance — any launch attempt, whatever it
-/// carried. `RootView` responds by bringing the window to the foreground;
-/// see `docs/adr/0001-launch-attempt-invariant.md`.
+/// carried. `app_window` responds by showing the main window, reopening it
+/// if it was closed to the tray; see `docs/adr/0004-tray-and-window-lifecycle.md`.
 pub struct ActivateRequested;
 
 /// A TUN-mode start found no usable granted sing-box copy (Linux, not
