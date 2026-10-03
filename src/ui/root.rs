@@ -2,7 +2,7 @@ use crate::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use crate::core::bytefmt::format_speed;
 use crate::core::presentation::{redact_url, ConnectionStatus};
 use crate::core::settings::StatusEvent;
-use crate::state::{ActivateRequested, AppState, ImportRequested};
+use crate::state::{AppState, ImportRequested};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
 use crate::ui::pages::{
@@ -116,17 +116,9 @@ impl RootView {
         )
         .detach();
 
-        // Any launch attempt that reached this instance — plain second
-        // launch, good link, or unparsable one: the user reached for
-        // BoxPilot, so BoxPilot shows itself (ADR-0001).
-        cx.subscribe_in(
-            &app_state,
-            window,
-            |_, _, _: &ActivateRequested, window, _| {
-                window.activate_window();
-            },
-        )
-        .detach();
+        // Surfacing the window for every launch attempt (ADR 0001) is
+        // app-level now (`ui::app_window`): it must also reopen a window
+        // that was closed to the tray, when no `RootView` exists.
 
         // A Linux TUN-mode start without CAP_NET_ADMIN stops short and asks
         // for the one-time grant here.
@@ -150,6 +142,17 @@ impl RootView {
         // startup (argv link, or one the pipe forwarded while the window was
         // still opening).
         app_state.update(cx, |state, _| state.view_attached());
+        // A window (re)opened *for* an import link — closed to the tray when
+        // the link arrived — is built while that link's `ImportRequested` is
+        // already queued, and gpui only activates the subscription above
+        // after it: ask from here instead. `prompt_import` takes the request,
+        // so a second call is a no-op.
+        if app_state.read(cx).pending_import.is_some() {
+            let app_state = app_state.clone();
+            cx.on_next_frame(window, move |_, window, cx| {
+                Self::prompt_import(app_state, window, cx);
+            });
+        }
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -206,9 +209,10 @@ impl RootView {
         let Some(request) = app_state.update(cx, |state, _| state.pending_import.take()) else {
             return;
         };
-        // No activate_window() here: the `ActivateRequested` handler above
-        // already ran for this attempt (emitted first, and gpui dispatches
-        // effects in emit order), so the window is up before the dialog.
+        // No activate_window() here: the app-level `ActivateRequested`
+        // handler (`ui::app_window`) already ran for this attempt (emitted
+        // first, and gpui dispatches effects in emit order), so the window
+        // is up before the dialog.
         window.open_alert_dialog(cx, move |alert, _, _| {
             let app_state = app_state.clone();
             let request = request.clone();
@@ -239,7 +243,11 @@ impl RootView {
     /// Offer the one-time TUN grant (`core::privilege`). Cancel leaves
     /// sing-box stopped; OK runs pkexec, which shows its own password prompt.
     #[cfg(target_os = "linux")]
-    fn prompt_tun_grant(app_state: Entity<AppState>, window: &mut Window, cx: &mut App) {
+    pub(crate) fn prompt_tun_grant(
+        app_state: Entity<AppState>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         window.open_alert_dialog(cx, move |alert, _, _| {
             let app_state = app_state.clone();
             alert
