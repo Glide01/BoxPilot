@@ -50,7 +50,7 @@ pub struct RootView {
 impl RootView {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let home = cx.new(|cx| HomePage::new(app_state.clone(), cx));
-        let groups = cx.new(|cx| GroupsPage::new(app_state.clone(), cx));
+        let groups = cx.new(|cx| GroupsPage::new(app_state.clone(), window, cx));
         let connections = cx.new(|cx| ConnectionsPage::new(app_state.clone(), window, cx));
         let profiles = cx.new(|cx| ProfilesPage::new(app_state.clone(), cx));
         let logs = cx.new(|cx| LogsPage::new(app_state.clone(), window, cx));
