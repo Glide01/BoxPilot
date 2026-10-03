@@ -10,3 +10,18 @@ actions!(box_pilot, [UpdateSubscription, ToggleProcess]);
 
 /// Key context of `RootView`, the scope both shortcuts are bound in.
 pub const KEY_CONTEXT: &str = "BoxPilot";
+
+// The Connections page's details panel: Esc closes it, Up / Down select the
+// neighbouring connection. Dispatched from `ConnectionsPage`.
+actions!(
+    box_pilot,
+    [
+        CloseConnectionDetails,
+        SelectPreviousConnection,
+        SelectNextConnection
+    ]
+);
+
+/// Key context the Connections page sets while its details panel is open;
+/// the panel's keys are bound in it (and not while typing in an `Input`).
+pub const CONNECTION_DETAILS_CONTEXT: &str = "ConnectionDetails";

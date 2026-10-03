@@ -127,6 +127,7 @@ pub struct Strings {
     pub usage: Usage,
     pub groups: Groups,
     pub connections: Connections,
+    pub connection_details: ConnectionDetails,
     pub logs: Logs,
     pub tools: Tools,
     pub tailscale: Tailscale,
@@ -322,6 +323,49 @@ pub struct Connections {
     pub no_active_hint: &'static str,
     pub no_closed_title: &'static str,
     pub no_closed_hint: &'static str,
+}
+
+/// The Connections page's details panel (one connection).
+pub struct ConnectionDetails {
+    /// Tooltip of the panel's ✕ (Esc does the same).
+    pub close_panel: &'static str,
+    pub gone_title: &'static str,
+    pub gone_hint: &'static str,
+    // Section headings.
+    pub overview: &'static str,
+    pub route: &'static str,
+    pub source_section: &'static str,
+    pub process_section: &'static str,
+    pub traffic_section: &'static str,
+    // Field labels.
+    pub destination: &'static str,
+    pub domain: &'static str,
+    pub protocol: &'static str,
+    pub network: &'static str,
+    pub ip_version: &'static str,
+    pub state: &'static str,
+    pub active: &'static str,
+    pub closed: &'static str,
+    pub inbound: &'static str,
+    pub rule: &'static str,
+    pub chain: &'static str,
+    pub outbound: &'static str,
+    /// `from_outbound`: the outbound that handed the connection back to the
+    /// router.
+    pub from_outbound: &'static str,
+    pub source_address: &'static str,
+    pub user: &'static str,
+    pub process_name: &'static str,
+    pub process_path: &'static str,
+    pub process_id: &'static str,
+    pub process_user: &'static str,
+    pub upload_speed: &'static str,
+    pub download_speed: &'static str,
+    pub uploaded: &'static str,
+    pub downloaded: &'static str,
+    pub opened_at: &'static str,
+    pub closed_at: &'static str,
+    pub duration: &'static str,
 }
 
 pub struct Logs {

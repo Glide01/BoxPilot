@@ -695,6 +695,7 @@ name = "box_pilot_gui"
 version = "1.13.5"
 dependencies = [
  "anyhow",
+ "chrono",
  "dirs 5.0.1",
  "embed-resource 2.5.2",
  "futures-channel",

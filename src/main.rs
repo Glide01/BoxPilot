@@ -1,6 +1,9 @@
 #![windows_subsystem = "windows"]
 
-use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
+use box_pilot_gui::actions::{
+    CloseConnectionDetails, SelectNextConnection, SelectPreviousConnection, ToggleProcess,
+    UpdateSubscription, CONNECTION_DETAILS_CONTEXT, KEY_CONTEXT,
+};
 use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
 use box_pilot_gui::ui::assets::AppAssets;
@@ -143,6 +146,15 @@ fn main() {
                 ToggleProcess,
                 Some(&format!("{KEY_CONTEXT} && !Input")),
             ),
+        ]);
+        // Connections details panel, only while it is open (the page sets
+        // the context then) and never while typing in the filter box, whose
+        // own Esc / arrow keys stay its own.
+        let details = format!("{CONNECTION_DETAILS_CONTEXT} && !Input");
+        cx.bind_keys([
+            KeyBinding::new("escape", CloseConnectionDetails, Some(&details)),
+            KeyBinding::new("up", SelectPreviousConnection, Some(&details)),
+            KeyBinding::new("down", SelectNextConnection, Some(&details)),
         ]);
 
         let app_state = AppState::new(deeplink_rx, cx);

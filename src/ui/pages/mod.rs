@@ -1,6 +1,7 @@
 //! Page views for the sidebar-navigation layout. One entity per page;
 //! `RootView` keeps all of them alive and renders the active one.
 
+mod connection_details;
 pub mod connections;
 pub mod groups;
 pub mod home;

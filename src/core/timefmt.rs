@@ -1,5 +1,5 @@
-//! Time formatting: the subscription "last updated" label and the Home
-//! uptime readout.
+//! Time formatting: the subscription "last updated" label, the Home
+//! uptime readout and local date-times (connection details).
 
 use crate::i18n::s;
 use std::path::Path;
@@ -74,9 +74,45 @@ pub fn uptime_since(started_at_millis: i64, now: SystemTime) -> Duration {
     now.duration_since(started).unwrap_or(Duration::ZERO)
 }
 
+/// Unix milliseconds as a date-time in the local time zone:
+/// `2026-10-03 14:05:09`. The same in every UI language.
+pub fn format_local_datetime(unix_millis: i64) -> String {
+    format_datetime_in(unix_millis, &chrono::Local)
+}
+
+/// `format_local_datetime` in an explicit zone (tests pin one). Empty for a
+/// timestamp chrono can't represent.
+fn format_datetime_in<Tz: chrono::TimeZone>(unix_millis: i64, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    match chrono::DateTime::from_timestamp_millis(unix_millis) {
+        Some(utc) => utc
+            .with_timezone(zone)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn datetime_is_shown_in_the_given_zone() {
+        // 2026-10-03 06:05:09.750 UTC; sub-seconds are dropped.
+        let ms = 1_791_007_509_750;
+        assert_eq!(format_datetime_in(ms, &chrono::Utc), "2026-10-03 06:05:09");
+        let utc8 = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        assert_eq!(format_datetime_in(ms, &utc8), "2026-10-03 14:05:09");
+        // West of UTC it is still the day before.
+        let utc_minus_7 = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
+        assert_eq!(format_datetime_in(ms, &utc_minus_7), "2026-10-02 23:05:09");
+        assert_eq!(format_datetime_in(i64::MAX, &chrono::Utc), "");
+        // The local zone gives the same shape, whatever zone the test runs in.
+        assert_eq!(format_local_datetime(ms).len(), "2026-10-03 06:05:09".len());
+    }
 
     fn at(secs_ago: u64) -> (SystemTime, SystemTime) {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
