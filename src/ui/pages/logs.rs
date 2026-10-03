@@ -36,6 +36,10 @@ const LEVEL_CHOICES: [(&str, &str, LogLevel); 5] = [
 /// 跟随最新行(还没布局过就把光标放到末行,首次布局时编辑器自己滚过去);
 /// 否则按行 id 保持同一批行可见(`ViewText::map_row`),上方淘汰旧行、下方
 /// 追加新行都不会让视图跳走。
+///
+/// 不可见时不刷新:页面自上次刷新后没渲染过(不在前台,或窗口没画),新日志
+/// 只记 `stale`,不重组文本、不 `set_value`;下次渲染开头补一次刷新。忙碌的
+/// 日志流因此不会在别的页面上持续占用 UI 线程。
 pub struct LogsPage {
     app_state: Entity<AppState>,
     /// 只读编辑器,承载日志文本,供选中 / 复制 / 搜索 / 横向滚动。
@@ -51,6 +55,10 @@ pub struct LogsPage {
     painted: bool,
     /// 上次刷新设下但可能还没生效的滚动位置(页面不可见时一直挂着)。
     pending_offset: Option<Point<Pixels>>,
+    /// LogBuffer 变了但因页面不可见跳过了刷新;下次渲染时补上。
+    stale: bool,
+    /// AppState 的 LogBuffer(固定不变)。
+    logs: Entity<LogBuffer>,
 }
 
 impl LogsPage {
@@ -66,9 +74,14 @@ impl LogsPage {
         let badges = viewer.update(cx, |s, cx| s.create_decorations_collection(Vec::new(), cx));
 
         // LogBuffer 变化(新日志 / 清空 / 切换级别)→ 把最新文本灌进 viewer,
-        // 并重渲染标题计数。
+        // 并重渲染标题计数。页面自上次刷新后没渲染过(不可见)就只标记
+        // `stale`,留到下次渲染。
         cx.observe_in(&logs, window, |this, logs, window, cx| {
-            this.refresh(&logs, window, cx);
+            if this.painted {
+                this.refresh(&logs, window, cx);
+            } else {
+                this.stale = true;
+            }
             cx.notify();
         })
         .detach();
@@ -81,6 +94,8 @@ impl LogsPage {
             follow: true,
             painted: false,
             pending_offset: None,
+            stale: false,
+            logs: logs.clone(),
         };
         page.refresh(&logs, window, cx);
         page
@@ -223,11 +238,16 @@ fn level_pill(
 }
 
 impl Render for LogsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Catch up on what arrived while hidden — before `painted` flips,
+        // so the refresh still treats the layout as not current.
+        if std::mem::take(&mut self.stale) {
+            let logs = self.logs.clone();
+            self.refresh(&logs, window, cx);
+        }
         self.painted = true;
         let app_state_entity = self.app_state.clone();
-        let app_state = self.app_state.read(cx);
-        let logs_entity = app_state.logs.clone();
+        let logs_entity = self.logs.clone();
         let logs = logs_entity.read(cx);
         let theme = cx.theme();
 

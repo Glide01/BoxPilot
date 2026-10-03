@@ -15,18 +15,20 @@ use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{
     SingBoxApi, TaildropInbox, TailscaleCertificate, TailscaleEndpointStatus, TailscalePing,
 };
+use crate::state::drain::next_batch;
+use futures_channel::mpsc::{self, UnboundedSender};
 use futures_channel::oneshot;
 use gpui::{Context, EventEmitter, Task};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// How often the UI-thread task applies queued stream updates.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Once an update arrives, how long the UI-thread task lets more queue up
+/// before applying them as one render. Nothing runs between updates.
+const COALESCE: Duration = Duration::from_millis(100);
 /// Delay before a reader thread re-subscribes after its stream ended while
 /// still running (API not up yet, or the routine idle read timeout).
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -153,7 +155,7 @@ impl TailscaleState {
         let running = Arc::new(AtomicBool::new(true));
         self.running = running.clone();
 
-        let (tx, rx) = mpsc::channel::<StreamEvent>();
+        let (tx, mut rx) = mpsc::unbounded::<StreamEvent>();
         let api = self.api;
         {
             let running = running.clone();
@@ -162,7 +164,7 @@ impl TailscaleState {
                 while running.load(Ordering::SeqCst) {
                     let _ = api.stream_tailscale_status(|endpoints| {
                         running.load(Ordering::SeqCst)
-                            && tx.send(StreamEvent::Status(endpoints)).is_ok()
+                            && tx.unbounded_send(StreamEvent::Status(endpoints)).is_ok()
                     });
                     if !running.load(Ordering::SeqCst) {
                         break;
@@ -173,18 +175,17 @@ impl TailscaleState {
         }
 
         let task = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
             let mut inbox_readers: HashSet<String> = HashSet::new();
-            loop {
-                cx.background_executor().timer(DRAIN_INTERVAL).await;
+            // `tx` lives in this task, so the channel can't close while it
+            // runs; `None` is only a formality.
+            while let Some(events) = next_batch(&mut rx, || executor.timer(COALESCE)).await {
                 let mut status = None;
                 let mut inboxes = Vec::new();
-                loop {
-                    match rx.try_recv() {
-                        Ok(StreamEvent::Status(endpoints)) => status = Some(endpoints),
-                        Ok(StreamEvent::Inbox(inbox)) => inboxes.push(inbox),
-                        // `tx` lives in this task, so the channel can't
-                        // disconnect while it runs.
-                        Err(_) => break,
+                for event in events {
+                    match event {
+                        StreamEvent::Status(endpoints) => status = Some(endpoints),
+                        StreamEvent::Inbox(inbox) => inboxes.push(inbox),
                     }
                 }
                 if let Some(endpoints) = &status {
@@ -198,9 +199,6 @@ impl TailscaleState {
                             );
                         }
                     }
-                }
-                if status.is_none() && inboxes.is_empty() {
-                    continue;
                 }
                 let alive = this.update(cx, |state, cx| {
                     if let Some(endpoints) = status {
@@ -249,7 +247,7 @@ impl TailscaleState {
     ) {
         self.stop_ping(cx);
         let running = Arc::new(AtomicBool::new(true));
-        let (tx, rx) = mpsc::channel::<PingEvent>();
+        let (tx, mut rx) = mpsc::unbounded::<PingEvent>();
         let api = self.api;
         {
             let running = running.clone();
@@ -257,56 +255,49 @@ impl TailscaleState {
             let ip = peer_ip.clone();
             thread::spawn(move || {
                 let result = api.start_tailscale_ping(&tag, &ip, |ping| {
-                    running.load(Ordering::SeqCst) && tx.send(PingEvent::Result(ping)).is_ok()
+                    running.load(Ordering::SeqCst)
+                        && tx.unbounded_send(PingEvent::Result(ping)).is_ok()
                 });
-                let _ = tx.send(PingEvent::Ended(result.err().map(|e| e.to_string())));
+                let _ = tx.unbounded_send(PingEvent::Ended(result.err().map(|e| e.to_string())));
             });
         }
-        let task = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(DRAIN_INTERVAL).await;
-            // Drained per tick; `Disconnected` = the ping thread is done.
-            let mut events = Vec::new();
-            let mut gone = false;
+        let task = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
             loop {
-                match rx.try_recv() {
-                    Ok(event) => events.push(event),
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        gone = true;
-                        break;
-                    }
-                }
-            }
-            if events.is_empty() && !gone {
-                continue;
-            }
-            let alive = this.update(cx, |state, cx| {
-                let Some(ping) = state.ping.as_mut() else {
-                    return;
+                // `None` = the ping thread is done.
+                let (events, gone) = match next_batch(&mut rx, || executor.timer(COALESCE)).await {
+                    Some(events) => (events, false),
+                    None => (Vec::new(), true),
                 };
-                for event in events {
-                    match event {
-                        PingEvent::Result(result) => {
-                            ping.results.push_front(result);
-                            ping.results.truncate(PING_HISTORY);
-                        }
-                        PingEvent::Ended(error) => {
-                            // A user stop ends the stream with `Ok`; only a
-                            // failure while still wanted is worth showing.
-                            if ping.active {
-                                ping.error = error;
+                let alive = this.update(cx, |state, cx| {
+                    let Some(ping) = state.ping.as_mut() else {
+                        return;
+                    };
+                    for event in events {
+                        match event {
+                            PingEvent::Result(result) => {
+                                ping.results.push_front(result);
+                                ping.results.truncate(PING_HISTORY);
                             }
-                            ping.active = false;
+                            PingEvent::Ended(error) => {
+                                // A user stop ends the stream with `Ok`; only
+                                // a failure while still wanted is worth
+                                // showing.
+                                if ping.active {
+                                    ping.error = error;
+                                }
+                                ping.active = false;
+                            }
                         }
                     }
+                    if gone {
+                        ping.active = false;
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() || gone {
+                    return;
                 }
-                if gone {
-                    ping.active = false;
-                }
-                cx.notify();
-            });
-            if alive.is_err() || gone {
-                return;
             }
         });
         self.ping = Some(PingSession {
@@ -523,14 +514,15 @@ fn spawn_inbox_reader(
     api: SingBoxApi,
     tag: String,
     running: Arc<AtomicBool>,
-    tx: mpsc::Sender<StreamEvent>,
+    tx: UnboundedSender<StreamEvent>,
 ) {
     thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             // Idle timeouts are routine; a hard failure would repeat on
             // every attempt, and the delay keeps that from spinning.
             let _ = api.stream_taildrop_inbox(&tag, |inbox| {
-                running.load(Ordering::SeqCst) && tx.send(StreamEvent::Inbox(inbox)).is_ok()
+                running.load(Ordering::SeqCst)
+                    && tx.unbounded_send(StreamEvent::Inbox(inbox)).is_ok()
             });
             if !running.load(Ordering::SeqCst) {
                 break;

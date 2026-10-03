@@ -23,19 +23,22 @@ use crate::core::vpn::{
     failed_endpoints, newly_seen, pending_challenges, should_report_stream_error,
     stream_error_is_permanent, ChallengeKey, EndpointFailure, VpnPresence, VpnProtocol,
 };
+use crate::state::drain::next_batch;
 use crate::state::process_session::ProcessSession;
+use futures_channel::mpsc::{self, UnboundedSender};
 use gpui::{Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// How often the UI-thread task applies the newest queued snapshots.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Once a snapshot arrives, how long the UI-thread task lets more queue up
+/// before applying the newest of each as one render. Nothing runs between
+/// snapshots.
+const COALESCE: Duration = Duration::from_millis(100);
 /// Delay before a reader re-subscribes after its stream failed while still
 /// running (API not listening yet, transient drop). An idle timeout
 /// re-subscribes at once instead.
@@ -212,7 +215,7 @@ impl VpnStatus {
                 })
                 .await;
 
-            let (tx, rx) = mpsc::channel::<StreamEvent>();
+            let (tx, mut rx) = mpsc::unbounded::<StreamEvent>();
             let mut streams = Vec::new();
             if !presence.openconnect.is_empty() {
                 streams.push(VpnStream::OpenConnect);
@@ -227,7 +230,7 @@ impl VpnStatus {
                 spawn_reader(stream, api, running.clone(), tx.clone());
             }
             // Only the readers hold senders now: when they all exit, the
-            // drain below sees `Disconnected` and ends.
+            // drain below sees the channel close and ends.
             drop(tx);
 
             if this
@@ -240,44 +243,30 @@ impl VpnStatus {
                 return;
             }
 
-            loop {
-                cx.background_executor().timer(DRAIN_INTERVAL).await;
+            let executor = cx.background_executor().clone();
+            while let Some(events) = next_batch(&mut rx, || executor.timer(COALESCE)).await {
                 let mut openconnect = None;
                 let mut openvpn = None;
                 let mut usbip = None;
                 let mut failures = Vec::new();
-                let mut disconnected = false;
-                loop {
-                    match rx.try_recv() {
-                        Ok(StreamEvent::OpenConnect(update)) => openconnect = Some(update),
-                        Ok(StreamEvent::OpenVpn(update)) => openvpn = Some(update),
-                        Ok(StreamEvent::Usbip(update)) => usbip = Some(update),
-                        Ok(StreamEvent::Failed {
+                for event in events {
+                    match event {
+                        StreamEvent::OpenConnect(update) => openconnect = Some(update),
+                        StreamEvent::OpenVpn(update) => openvpn = Some(update),
+                        StreamEvent::Usbip(update) => usbip = Some(update),
+                        StreamEvent::Failed {
                             stream,
                             error,
                             permanent,
-                        }) => failures.push((stream, error, permanent)),
-                        Err(mpsc::TryRecvError::Empty) => break,
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            disconnected = true;
-                            break;
-                        }
+                        } => failures.push((stream, error, permanent)),
                     }
                 }
-                let changed = openconnect.is_some()
-                    || openvpn.is_some()
-                    || usbip.is_some()
-                    || !failures.is_empty();
-                if changed
-                    && this
-                        .update(cx, |state, cx| {
-                            state.apply(openconnect, openvpn, usbip, failures, cx);
-                        })
-                        .is_err()
+                if this
+                    .update(cx, |state, cx| {
+                        state.apply(openconnect, openvpn, usbip, failures, cx);
+                    })
+                    .is_err()
                 {
-                    return;
-                }
-                if disconnected {
                     return;
                 }
             }
@@ -477,12 +466,13 @@ fn spawn_reader(
     stream: VpnStream,
     api: SingBoxApi,
     running: Arc<AtomicBool>,
-    tx: mpsc::Sender<StreamEvent>,
+    tx: UnboundedSender<StreamEvent>,
 ) {
     thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
-            let forward =
-                |event: StreamEvent| running.load(Ordering::SeqCst) && tx.send(event).is_ok();
+            let forward = |event: StreamEvent| {
+                running.load(Ordering::SeqCst) && tx.unbounded_send(event).is_ok()
+            };
             let result = match stream {
                 VpnStream::OpenConnect => api
                     .stream_openconnect_status(|update| forward(StreamEvent::OpenConnect(update))),
@@ -505,7 +495,7 @@ fn spawn_reader(
                         error: error.to_string(),
                         permanent,
                     };
-                    if tx.send(failed).is_err() || permanent {
+                    if tx.unbounded_send(failed).is_err() || permanent {
                         break;
                     }
                 }

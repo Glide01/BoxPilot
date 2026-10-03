@@ -6,14 +6,16 @@ use crate::core::process::{
 use crate::core::privilege::{forget_sing_box_pid, record_sing_box_pid, stop_stale_sing_box};
 use crate::core::settings::{StatusEvent, StatusLevel, SING_EXECUTABLE};
 use crate::core::subscription::is_api_bind_failure;
+use crate::state::drain::next_batch;
 use crate::state::log_buffer::LogBuffer;
 use gpui::{Context, Entity, EventEmitter, Task};
 use std::path::PathBuf;
 use std::process::Child;
-use std::sync::mpsc;
 use std::time::Duration;
 
-const LOG_DRAIN_INTERVAL: Duration = Duration::from_millis(50);
+/// Once a pipe line arrives, how long the drain waits for the rest of the
+/// burst before handing it to `LogBuffer` in one go.
+const LOG_COALESCE: Duration = Duration::from_millis(50);
 const CHILD_WAIT_INTERVAL: Duration = Duration::from_millis(200);
 /// How long a stop waits for sing-box to exit on SIGTERM before killing it
 /// (Linux; Windows kills right away).
@@ -50,8 +52,8 @@ pub enum ProcessState {
     /// start sets `abandoned` instead and the task, once prepped, goes back
     /// to `Stopped` without spawning sing-box.
     Preparing { _prep: Task<()>, abandoned: bool },
-    /// Child process is alive. `drain` reads from the pipe channel into
-    /// `LogBuffer`; `stop()` detaches it rather than cancelling it, so
+    /// Child process is alive. `drain` awaits the pipe channel and feeds
+    /// `LogBuffer` (no wakeups while sing-box is quiet); `stop()` detaches it rather than cancelling it, so
     /// whatever sing-box wrote on its way out (a fatal error, a panic) still
     /// lands — it ends on its own when both pipes close. `_wait` polls
     /// `child.try_wait()` and transitions back to `Stopped` on exit. Both
@@ -161,21 +163,13 @@ impl ProcessSession {
                 let weak_logs = self.logs.downgrade();
                 let api_port = pending.api_port;
                 let drain = cx.spawn(async move |this, cx| {
+                    let mut log_rx = log_rx;
                     let mut api_port_lost = false;
-                    loop {
-                        cx.background_executor().timer(LOG_DRAIN_INTERVAL).await;
-                        let mut batch = Vec::new();
-                        let mut disconnected = false;
-                        loop {
-                            match log_rx.try_recv() {
-                                Ok(entry) => batch.push(entry),
-                                Err(mpsc::TryRecvError::Empty) => break,
-                                Err(mpsc::TryRecvError::Disconnected) => {
-                                    disconnected = true;
-                                    break;
-                                }
-                            }
-                        }
+                    let executor = cx.background_executor().clone();
+                    // `None`: both pipes closed — sing-box is gone.
+                    while let Some(batch) =
+                        next_batch(&mut log_rx, || executor.timer(LOG_COALESCE)).await
+                    {
                         if !api_port_lost
                             && batch.iter().any(|line| is_api_bind_failure(line, api_port))
                         {
@@ -183,14 +177,10 @@ impl ProcessSession {
                             let _ =
                                 this.update(cx, |_, cx| cx.emit(ApiPortLost { port: api_port }));
                         }
-                        if !batch.is_empty()
-                            && weak_logs
-                                .update(cx, |logs, cx| logs.push_pipe(batch, cx))
-                                .is_err()
+                        if weak_logs
+                            .update(cx, |logs, cx| logs.push_pipe(batch, cx))
+                            .is_err()
                         {
-                            return;
-                        }
-                        if disconnected {
                             return;
                         }
                     }

@@ -41,6 +41,9 @@ pub struct RootView {
     /// config has Tailscale endpoints).
     tailscale_visible: bool,
     vpn: Entity<VpnPage>,
+    /// Whether the sidebar currently offers the VPN page (the running config
+    /// has OpenConnect / OpenVPN endpoints or USB/IP servers).
+    vpn_visible: bool,
     toasts: Entity<Toasts>,
 }
 
@@ -85,8 +88,21 @@ impl RootView {
         .detach();
         let vpn_status = app_state.read(cx).vpn.clone();
         Self::route_status_toasts(&vpn_status, window, cx);
-        // The VPN sidebar entry comes and goes with the running config.
-        cx.observe(&vpn_status, |_, _, cx| cx.notify()).detach();
+        // The VPN sidebar entry comes and goes with the running config;
+        // leave the page if it goes away under the user. Only visibility
+        // changes re-render, like Tailscale above.
+        let vpn_visible = vpn_status.read(cx).is_visible();
+        cx.observe(&vpn_status, |this: &mut Self, state, cx| {
+            let visible = state.read(cx).is_visible();
+            if visible != this.vpn_visible {
+                this.vpn_visible = visible;
+                if !visible && this.active_page == ActivePage::Vpn {
+                    this.active_page = ActivePage::Home;
+                }
+                cx.notify();
+            }
+        })
+        .detach();
 
         // Sidebar footer 的状态点跟随进程状态。
         cx.observe(&process_session, |_, _, cx| cx.notify()).detach();
@@ -173,6 +189,7 @@ impl RootView {
             tailscale,
             tailscale_visible: false,
             vpn,
+            vpn_visible,
             toasts,
         }
     }
@@ -289,12 +306,6 @@ impl Render for RootView {
             (format_speed(traffic.down), format_speed(traffic.up))
         });
 
-        let show_vpn = self.app_state.read(cx).vpn.read(cx).is_visible();
-        if self.active_page == ActivePage::Vpn && !show_vpn {
-            // Its entry just disappeared (sing-box stopped): fall back.
-            self.active_page = ActivePage::Home;
-        }
-
         let view = cx.entity().downgrade();
         let on_nav = move |page: ActivePage, _: &mut Window, cx: &mut App| {
             view.update(cx, |this, cx| {
@@ -338,11 +349,22 @@ impl Render for RootView {
                 speed_color,
                 OptionalPages {
                     tailscale: self.tailscale_visible,
-                    vpn: show_vpn,
+                    vpn: self.vpn_visible,
                 },
                 on_nav,
             ))
-            .child(div().flex_1().min_w_0().v_flex().p_6().child(page))
+            // Cached: the page re-renders only when it notifies (each page
+            // observes the entities it reads), not on every root re-render —
+            // the sidebar's speed line alone re-renders the root once a
+            // second while connected.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .v_flex()
+                    .p_6()
+                    .child(page.cached(StyleRefinement::default().size_full())),
+            )
             .child(self.toasts.clone())
     }
 }

@@ -4,21 +4,27 @@ use crate::core::singbox_api::{
     parse_node_types_from_config, url_test_done, GroupKind, GroupsSnapshot, ProxyGroup, SingBoxApi,
     UrlTestHistory,
 };
+use crate::state::drain::{next_batch_or, Wake};
+use futures_channel::mpsc::{self, UnboundedSender};
 use gpui::{Context, EventEmitter, Task};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use crate::core::singbox_api::DelayState;
 
-/// How often the UI-thread drain task applies the newest queued snapshot.
-/// sing-box throttles group pushes to one per 250ms, so this matches it.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Once a snapshot arrives, how long the drain task waits for a newer one
+/// before applying. sing-box already throttles group pushes to one per
+/// 250ms, so this is short: it only folds a backlog into one render.
+const COALESCE: Duration = Duration::from_millis(50);
+/// While a user-started URL test is in flight, how often the drain task
+/// checks whether it is over (`url_test_done`) — tests can end without a
+/// snapshot. No clock runs otherwise.
+const SETTLE_TICK: Duration = Duration::from_millis(250);
 /// Delay before the reader thread re-subscribes after the stream ends while
 /// still running — covers the window before the sing-box API is listening, and
 /// the routine idle read timeout. Bounded by the `running` flag.
@@ -42,6 +48,9 @@ enum StreamEvent {
     /// Why the last subscription attempt ended; surfaced only if no snapshot
     /// ever arrives.
     Error(String),
+    /// From `test_delay`: a test started, so the drain task must run its
+    /// settle clock.
+    TestStarted,
 }
 
 /// A user-started URL test still in flight.
@@ -87,7 +96,11 @@ pub struct ProxyGroups {
     /// Liveness flag for the current streaming session. Cleared by `clear()`
     /// and `Drop` so the detached reader thread self-terminates.
     running: Arc<AtomicBool>,
-    /// UI-thread task draining snapshots — dropped (= cancelled) by `clear()`.
+    /// Sender into the drain task's channel, for `StreamEvent::TestStarted`.
+    /// Dropped with the task.
+    wake: Option<UnboundedSender<StreamEvent>>,
+    /// UI-thread task applying snapshots as they arrive — dropped
+    /// (= cancelled) by `clear()`.
     /// `select`/`test_delay` are the other lifetime policy on purpose:
     /// fire-and-forget `.detach()`, bounded by their own timeouts.
     _task: Option<Task<()>>,
@@ -113,6 +126,7 @@ impl ProxyGroups {
             expand_overrides: HashMap::new(),
             last_snapshot: None,
             running: Arc::new(AtomicBool::new(false)),
+            wake: None,
             _task: None,
         }
     }
@@ -141,6 +155,7 @@ impl ProxyGroups {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.running.store(false, Ordering::SeqCst);
         self._task = None;
+        self.wake = None;
         self.groups.clear();
         self.source = GroupSource::Inactive;
         self.node_types.clear();
@@ -167,19 +182,23 @@ impl ProxyGroups {
         let running = Arc::new(AtomicBool::new(true));
         self.running = running.clone();
 
-        let (tx, rx) = mpsc::channel::<StreamEvent>();
+        let (tx, mut rx) = mpsc::unbounded::<StreamEvent>();
+        self.wake = Some(tx.clone());
         let api = self.api;
         thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
                 let result = api.stream_groups(|snapshot| {
                     running.load(Ordering::SeqCst)
-                        && tx.send(StreamEvent::Snapshot(snapshot)).is_ok()
+                        && tx.unbounded_send(StreamEvent::Snapshot(snapshot)).is_ok()
                 });
                 if !running.load(Ordering::SeqCst) {
                     break;
                 }
                 if let Err(e) = result {
-                    if tx.send(StreamEvent::Error(e.to_string())).is_err() {
+                    if tx
+                        .unbounded_send(StreamEvent::Error(e.to_string()))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -203,24 +222,36 @@ impl ProxyGroups {
                 })
                 .await;
 
+            let executor = cx.background_executor().clone();
             let started = Instant::now();
             let mut received = false;
             let mut warned = false;
             let mut last_error = String::new();
+            // A user-started test is in flight.
+            let mut testing = false;
             loop {
-                cx.background_executor().timer(DRAIN_INTERVAL).await;
+                // A clock only while there is time-based work: settling
+                // tests, and the first-snapshot deadline.
+                let deadline = (!received && !warned)
+                    .then(|| FIRST_SNAPSHOT_DEADLINE.saturating_sub(started.elapsed()));
+                let wait = match (testing.then_some(SETTLE_TICK), deadline) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+                let clock = wait.map(|wait| executor.timer(wait));
+                let events = match next_batch_or(&mut rx, clock, || executor.timer(COALESCE)).await
+                {
+                    Wake::Batch(events) => events,
+                    Wake::Timer => Vec::new(),
+                    Wake::Closed => return,
+                };
 
                 let mut latest = None;
-                let mut disconnected = false;
-                loop {
-                    match rx.try_recv() {
-                        Ok(StreamEvent::Snapshot(snapshot)) => latest = Some(snapshot),
-                        Ok(StreamEvent::Error(e)) => last_error = e,
-                        Err(mpsc::TryRecvError::Empty) => break,
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            disconnected = true;
-                            break;
-                        }
+                for event in events {
+                    match event {
+                        StreamEvent::Snapshot(snapshot) => latest = Some(snapshot),
+                        StreamEvent::Error(e) => last_error = e,
+                        StreamEvent::TestStarted => {}
                     }
                 }
                 received |= latest.is_some();
@@ -231,13 +262,15 @@ impl ProxyGroups {
                         cx.notify();
                     }
                     // Tests can end without a snapshot (quiet stream / cap),
-                    // so check every tick, not just on arrival.
+                    // so check on every wake, not just on arrival.
                     if state.settle_tests() {
                         cx.notify();
                     }
+                    !state.pending_tests.is_empty()
                 });
-                if alive.is_err() {
-                    return;
+                match alive {
+                    Ok(pending) => testing = pending,
+                    Err(_) => return,
                 }
 
                 if !received && !warned && started.elapsed() >= FIRST_SNAPSHOT_DEADLINE {
@@ -253,10 +286,6 @@ impl ProxyGroups {
                             message: format!("Failed to load proxy groups: {}", reason),
                         });
                     });
-                }
-
-                if disconnected {
-                    return;
                 }
             }
         });
@@ -412,8 +441,8 @@ impl ProxyGroups {
     }
 
     /// 整组延迟测速(Test 按钮)。`URLTest` 只是让 sing-box 在后台开测,结果
-    /// 随组快照推送回来;何时算测完由 drain 任务每拍 `settle_tests` 判定
-    /// (见 `url_test_done`),此时仍无结果的节点标 `Timeout`。请求失败:
+    /// 随组快照推送回来;何时算测完由 drain 任务 `settle_tests` 判定(测速期间
+    /// 每 `SETTLE_TICK` 一次,见 `url_test_done`),此时仍无结果的节点标 `Timeout`。请求失败:
     /// Warning toast。detach 不存句柄:请求自带 2s 超时,不会泄漏。
     pub fn test_delay(&mut self, group: String, cx: &mut Context<Self>) {
         if self.source != GroupSource::Api || self.testing.contains(&group) {
@@ -436,6 +465,10 @@ impl ProxyGroups {
         }
         self.delays = delay_states(&self.history, &self.tested);
         cx.notify();
+        // The drain task may be asleep on the stream: start its settle clock.
+        if let Some(wake) = &self.wake {
+            let _ = wake.unbounded_send(StreamEvent::TestStarted);
+        }
 
         let api = self.api;
         cx.spawn(async move |this, cx| {

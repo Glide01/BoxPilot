@@ -16,17 +16,19 @@ use crate::core::network_tools::{
 use crate::core::singbox_api::{
     ApiError, NetworkQualityProgress, NetworkQualityRequest, SingBoxApi, StunProgress, StunRequest,
 };
+use crate::state::drain::next_batch;
+use futures_channel::mpsc::{self, UnboundedReceiver};
 use futures_channel::oneshot;
 use gpui::{Context, Task};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// How often the UI-thread drain task applies queued progress. sing-box
-/// reports every 500ms while measuring.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Once progress arrives, how long the UI-thread task lets more queue up
+/// before applying it. sing-box reports every 500ms while measuring, so this
+/// is a batch of one in practice.
+const COALESCE: Duration = Duration::from_millis(50);
 /// Delay between attempts to load the outbound list while the sing-box API
 /// isn't answering yet. Bounded by the session flag.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -252,16 +254,17 @@ fn effective_max_runtime(seconds: u32) -> u32 {
 fn spawn_test<P: Send + 'static>(
     session: Arc<AtomicBool>,
     run: impl FnOnce(&mut dyn FnMut(P) -> bool) -> Result<(), ApiError> + Send + 'static,
-) -> mpsc::Receiver<TestEvent<P>> {
-    let (tx, rx) = mpsc::channel();
+) -> UnboundedReceiver<TestEvent<P>> {
+    let (tx, rx) = mpsc::unbounded();
     thread::spawn(move || {
         let result = run(&mut |progress| {
-            session.load(Ordering::SeqCst) && tx.send(TestEvent::Progress(progress)).is_ok()
+            session.load(Ordering::SeqCst)
+                && tx.unbounded_send(TestEvent::Progress(progress)).is_ok()
         });
         if let Err(error) = result {
-            let _ = tx.send(TestEvent::Failed(test_error_message(&error)));
+            let _ = tx.unbounded_send(TestEvent::Failed(test_error_message(&error)));
         }
-        // `tx` drops here → the drain task sees `Disconnected`.
+        // `tx` drops here → the drain task sees the channel close.
     });
     rx
 }
@@ -269,28 +272,17 @@ fn spawn_test<P: Send + 'static>(
 /// UI-thread task folding a test thread's events into the run that `slot`
 /// selects. Returns once the run has ended or the thread is gone.
 fn drain<R: TestRun>(
-    rx: mpsc::Receiver<TestEvent<R::Progress>>,
+    mut rx: UnboundedReceiver<TestEvent<R::Progress>>,
     slot: fn(&mut NetworkTools) -> &mut Option<R>,
     cx: &mut Context<NetworkTools>,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| loop {
-        cx.background_executor().timer(DRAIN_INTERVAL).await;
-
-        let mut events = Vec::new();
-        let mut disconnected = false;
-        loop {
-            match rx.try_recv() {
-                Ok(event) => events.push(event),
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
-        }
-        if events.is_empty() && !disconnected {
-            continue;
-        }
+        let executor = cx.background_executor().clone();
+        // `None`: the test thread is done.
+        let (events, disconnected) = match next_batch(&mut rx, || executor.timer(COALESCE)).await {
+            Some(events) => (events, false),
+            None => (Vec::new(), true),
+        };
 
         let ended = this.update(cx, |tools, cx| {
             let Some(run) = slot(tools).as_mut() else {

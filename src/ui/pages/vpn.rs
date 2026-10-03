@@ -49,6 +49,15 @@ impl VpnPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let vpn = app_state.read(cx).vpn.clone();
         cx.observe(&vpn, |_, _, cx| cx.notify()).detach();
+        // The page is a cached view: the tunnels' "Uptime" rows tick with
+        // the status samples (once a second while connected).
+        let traffic = app_state.read(cx).traffic.clone();
+        cx.observe(&traffic, |this: &mut Self, _, cx| {
+            if this.vpn.read(cx).is_visible() {
+                cx.notify();
+            }
+        })
+        .detach();
         cx.subscribe_in(
             &vpn,
             window,

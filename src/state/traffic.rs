@@ -7,17 +7,18 @@
 //! same way `ProxyGroups` is driven.
 
 use crate::core::singbox_api::{ApiError, RuntimeStatus, SingBoxApi};
+use crate::state::drain::next_batch;
+use futures_channel::mpsc;
 use gpui::{Context, Task};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// How often the UI-thread drain task coalesces queued samples into the
-/// displayed rate. Samples arrive ~1/sec; a sub-second tick keeps the readout
-/// responsive without per-sample render churn (mirrors the log-drain pattern).
-const DRAIN_INTERVAL: Duration = Duration::from_millis(500);
+/// Once a sample arrives, how long the drain task waits for stragglers
+/// before applying. Samples come ~1/sec, so this is almost always a batch of
+/// one; it only folds a backlog (e.g. after a stall) into a single render.
+const COALESCE: Duration = Duration::from_millis(50);
 /// Delay before the reader thread reconnects after a stream ends while still
 /// running — covers the brief window before the sing-box API is listening
 /// and any transient drop. Bounded by the `running` flag so it never spins.
@@ -51,8 +52,8 @@ pub struct Traffic {
     /// and `Drop` so the detached reader thread self-terminates instead of
     /// outliving the session.
     running: Arc<AtomicBool>,
-    /// UI-thread task draining samples into `up`/`down`. Dropping it cancels
-    /// the task; the spawn closure's `WeakEntity` also stops it on entity drop.
+    /// UI-thread task applying samples as they arrive (no wakeups between
+    /// them). Dropping it cancels the task; the spawn closure's `WeakEntity` also stops it on entity drop.
     _drain: Option<Task<()>>,
     /// Fetches `started_at` + `version` once per run; dropped with the
     /// session like `_drain`.
@@ -93,7 +94,7 @@ impl Traffic {
         self.running = running.clone();
         self.reset();
 
-        let (tx, rx) = mpsc::channel::<RuntimeStatus>();
+        let (tx, mut rx) = mpsc::unbounded::<RuntimeStatus>();
         let api = self.api;
 
         // Dedicated blocking reader thread: gpui's executor is not built for
@@ -106,61 +107,38 @@ impl Traffic {
                 // Why a stream ended doesn't matter here: either sing-box is
                 // going away (the edge observer stops us) or it isn't up yet.
                 let _ = api.stream_status(|status| {
-                    running.load(Ordering::SeqCst) && tx.send(status).is_ok()
+                    running.load(Ordering::SeqCst) && tx.unbounded_send(status).is_ok()
                 });
                 if !running.load(Ordering::SeqCst) {
                     break;
                 }
                 thread::sleep(RECONNECT_DELAY);
             }
-            // `tx` drops here → the drain task sees `Disconnected` and zeroes.
+            // `tx` drops here → the drain task sees the close and zeroes.
         });
 
         let drain = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(DRAIN_INTERVAL).await;
-
-                // Coalesce everything queued since the last tick; only the
-                // newest sample is current (totals are cumulative, rates are
-                // per-second, so nothing is lost by skipping one).
-                let mut latest = None;
-                let mut disconnected = false;
-                loop {
-                    match rx.try_recv() {
-                        Ok(sample) => latest = Some(sample),
-                        Err(mpsc::TryRecvError::Empty) => break,
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            disconnected = true;
-                            break;
-                        }
-                    }
-                }
-
-                if let Some(sample) = latest {
-                    if this
-                        .update(cx, |traffic, cx| {
-                            traffic.apply(sample);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-
-                if disconnected {
-                    // Reader thread ended (process stopped or API gone). Zero
-                    // the readout so it doesn't freeze on a stale value, then
-                    // exit — a new session spawns a fresh drain task.
-                    let _ = this.update(cx, |traffic, cx| {
-                        if traffic.status != RuntimeStatus::default() {
-                            traffic.apply(RuntimeStatus::default());
-                            cx.notify();
-                        }
-                    });
+            let executor = cx.background_executor().clone();
+            while let Some(samples) = next_batch(&mut rx, || executor.timer(COALESCE)).await {
+                if this
+                    .update(cx, |traffic, cx| {
+                        traffic.ingest(samples);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }
+            // Reader thread ended (process stopped or API gone). Zero the
+            // readout so it doesn't freeze on a stale value, then exit — a
+            // new session spawns a fresh drain task.
+            let _ = this.update(cx, |traffic, cx| {
+                if traffic.status != RuntimeStatus::default() {
+                    traffic.apply(RuntimeStatus::default());
+                    cx.notify();
+                }
+            });
         });
         self._drain = Some(drain);
 
@@ -188,6 +166,15 @@ impl Traffic {
         });
         self._info = Some(info);
         cx.notify();
+    }
+
+    /// Every sample of a batch, oldest first. The readout shows the newest
+    /// (totals are cumulative, rates per-second, so nothing is lost by
+    /// skipping one); each one still passes through here.
+    fn ingest(&mut self, samples: Vec<RuntimeStatus>) {
+        for sample in samples {
+            self.apply(sample);
+        }
     }
 
     fn apply(&mut self, status: RuntimeStatus) {

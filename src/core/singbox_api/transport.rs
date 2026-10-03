@@ -7,10 +7,12 @@
 
 use super::SingBoxApi;
 use prost::Message;
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, ErrorKind, Read};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Fully qualified gRPC service name; every method path is
@@ -128,10 +130,14 @@ impl SingBoxApi {
         request: &impl Message,
         timeout: Duration,
     ) -> Result<R, ApiError> {
-        let client = build_client(Client::builder().timeout(timeout))?;
+        // The bound is per request (a total deadline, which suits a short
+        // unary exchange), so every unary call shares one client.
+        let request_builder = unary_client()?
+            .post(self.method_url(method))
+            .timeout(timeout);
         let mut response = None;
         // Read on to the trailer frame: its status, not the message, decides.
-        self.exchange(&client, method, request, |message: R| {
+        self.exchange(request_builder, request, |message: R| {
             response.get_or_insert(message);
             true
         })?;
@@ -150,15 +156,8 @@ impl SingBoxApi {
         read_timeout: Duration,
         on_message: impl FnMut(M) -> bool,
     ) -> Result<(), ApiError> {
-        // Set explicitly because the blocking client's 30s default would
-        // otherwise govern each read. (A per-request timeout would not do:
-        // reqwest turns that into a total deadline for the whole body.)
-        let client = build_client(
-            Client::builder()
-                .connect_timeout(STREAM_CONNECT_TIMEOUT)
-                .timeout(read_timeout),
-        )?;
-        self.exchange(&client, method, request, on_message)
+        let client = stream_client(read_timeout)?;
+        self.exchange(client.post(self.method_url(method)), request, on_message)
     }
 
     /// This run's bearer token, marked sensitive so reqwest keeps it out of
@@ -170,15 +169,17 @@ impl SingBoxApi {
         Ok(value)
     }
 
+    /// Send `request` on `builder` (a POST to the method URL from one of the
+    /// shared clients) and read the response frames. Everything specific to
+    /// this run — the bearer token — goes on the request here, never on a
+    /// shared client.
     fn exchange<M: Message + Default>(
         &self,
-        client: &Client,
-        method: &str,
+        builder: RequestBuilder,
         request: &impl Message,
         mut on_message: impl FnMut(M) -> bool,
     ) -> Result<(), ApiError> {
-        let response = client
-            .post(self.method_url(method))
+        let response = builder
             .header(AUTHORIZATION, self.authorization_header()?)
             .header("Content-Type", "application/grpc-web+proto")
             .header("X-Grpc-Web", "1")
@@ -246,6 +247,53 @@ fn build_client(builder: reqwest::blocking::ClientBuilder) -> Result<Client, Api
         .no_proxy()
         .build()
         .map_err(|e| ApiError::Unreachable(format!("failed to create HTTP client: {}", e)))
+}
+
+// A blocking reqwest `Client` owns a runtime thread, so building one per call
+// (every node switch, delay test, stream re-subscribe) is costly. They are
+// built once and shared; clones are cheap handles to the same client. They
+// carry nothing run-specific — not the port (in the URL) and not the secret
+// (a header on each request) — so a new sing-box run reuses them as is.
+
+/// Idle keep-alive connections of the unary client are dropped after this,
+/// so a call rarely lands on one sing-box has since closed (it restarts on
+/// every profile or mode change).
+const UNARY_POOL_IDLE: Duration = Duration::from_secs(15);
+
+/// The client every unary call uses. No client-level timeout: each request
+/// sets its own (`unary_with_timeout`).
+fn unary_client() -> Result<Client, ApiError> {
+    static UNARY: OnceLock<Client> = OnceLock::new();
+    if let Some(client) = UNARY.get() {
+        return Ok(client.clone());
+    }
+    let client = build_client(
+        Client::builder()
+            .timeout(None::<Duration>)
+            .pool_idle_timeout(UNARY_POOL_IDLE),
+    )?;
+    Ok(UNARY.get_or_init(|| client).clone())
+}
+
+/// The client for streams with this per-read bound. Set on the client
+/// because the blocking client's 30s default would otherwise govern each
+/// read (a per-request timeout would not do: reqwest turns that into a total
+/// deadline for the whole body). Only a handful of distinct bounds exist, so
+/// the map stays tiny.
+fn stream_client(read_timeout: Duration) -> Result<Client, ApiError> {
+    static STREAM_CLIENTS: OnceLock<Mutex<HashMap<Duration, Client>>> = OnceLock::new();
+    let clients = STREAM_CLIENTS.get_or_init(Default::default);
+    let mut clients = clients.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(client) = clients.get(&read_timeout) {
+        return Ok(client.clone());
+    }
+    let client = build_client(
+        Client::builder()
+            .connect_timeout(STREAM_CONNECT_TIMEOUT)
+            .timeout(read_timeout),
+    )?;
+    clients.insert(read_timeout, client.clone());
+    Ok(client)
 }
 
 // ---------------------------------------------------------------------------
@@ -618,6 +666,32 @@ mod tests {
             .unwrap();
         let head = server.join().unwrap();
         assert_eq!(authorization_of(&head), Some(api.authorization().as_str()));
+    }
+
+    /// The HTTP clients are shared across calls and runs; the secret must
+    /// still be each run's own, request by request.
+    #[test]
+    fn shared_clients_send_each_runs_own_secret() {
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let (port, server) = serve_once();
+            let api = SingBoxApi::new(port);
+            api.unary::<()>("GetVersion", &()).unwrap();
+            let head = server.join().unwrap();
+            assert_eq!(authorization_of(&head), Some(api.authorization().as_str()));
+            seen.push(api.authorization());
+
+            let (port, server) = serve_once();
+            let api = SingBoxApi::new(port);
+            api.stream::<()>("SubscribeStatus", &(), Duration::from_secs(5), |_| false)
+                .unwrap();
+            let head = server.join().unwrap();
+            assert_eq!(authorization_of(&head), Some(api.authorization().as_str()));
+            seen.push(api.authorization());
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "every run has its own secret");
     }
 
     #[test]

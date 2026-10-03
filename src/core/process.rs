@@ -1,7 +1,7 @@
+use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -11,7 +11,9 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 /// Forward each line of a sing-box pipe, raw, until EOF. Parsing (level,
 /// ANSI colours) and dedup against the API stream happen in
 /// `core::log_merge`. Lossy UTF-8, so one bad byte can't end the reader.
-pub fn spawn_pipe_reader<R: Read + Send + 'static>(pipe: R, sender: mpsc::Sender<String>) {
+/// The channel wakes the UI-thread drain (`state::drain`); it closes once
+/// every reader has hit EOF.
+pub fn spawn_pipe_reader<R: Read + Send + 'static>(pipe: R, sender: UnboundedSender<String>) {
     thread::spawn(move || {
         let mut reader = BufReader::new(pipe);
         let mut buf = Vec::new();
@@ -22,7 +24,7 @@ pub fn spawn_pipe_reader<R: Read + Send + 'static>(pipe: R, sender: mpsc::Sender
                 Ok(_) => {
                     let line = String::from_utf8_lossy(&buf);
                     let line = line.trim_end_matches(['\n', '\r']);
-                    if sender.send(line.to_string()).is_err() {
+                    if sender.unbounded_send(line.to_string()).is_err() {
                         break;
                     }
                 }
@@ -470,7 +472,7 @@ pub fn start_sing_box(
     sing_path: &Path,
     config_path: &Path,
     working_dir: &Path,
-) -> std::io::Result<(Child, mpsc::Receiver<String>)> {
+) -> std::io::Result<(Child, UnboundedReceiver<String>)> {
     let mut cmd = Command::new(sing_path);
     cmd.arg("run")
         .arg("-D")
@@ -513,7 +515,7 @@ pub fn start_sing_box(
     }
 
     let mut child = cmd.spawn()?;
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::unbounded();
 
     if let Some(stdout) = child.stdout.take() {
         spawn_pipe_reader(stdout, sender.clone());
@@ -729,16 +731,29 @@ mod tests {
 
     #[test]
     fn pipe_reader_forwards_raw_lines() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::unbounded();
         let input: &[u8] = b"\x1b[36mINFO\x1b[0m[0000] started\r\nbad \xff byte\nlast";
         spawn_pipe_reader(input, sender);
 
-        let recv = || receiver.recv_timeout(std::time::Duration::from_secs(5));
+        // `Some(line)`, or `None` once the channel has closed.
+        let mut recv = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match receiver.try_recv() {
+                    Ok(line) => return Some(line),
+                    Err(mpsc::TryRecvError::Closed) => return None,
+                    Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                        thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => panic!("pipe reader stalled"),
+                }
+            }
+        };
         assert_eq!(recv().unwrap(), "\x1b[36mINFO\x1b[0m[0000] started");
         assert_eq!(recv().unwrap(), "bad \u{fffd} byte");
         assert_eq!(recv().unwrap(), "last", "an unterminated last line still arrives");
 
         // Pipe exhausted -> reader thread exits -> channel disconnects.
-        assert!(recv().is_err());
+        assert!(recv().is_none());
     }
 }
