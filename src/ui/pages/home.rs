@@ -21,6 +21,14 @@ use std::time::SystemTime;
 const POWER_BUTTON_DIAMETER: f32 = 96.;
 const POWER_ICON_SIZE: f32 = 36.;
 
+/// `color` raised `amount` in lightness (HSL), for the top of a gradient.
+fn lighter(color: Hsla, amount: f32) -> Hsla {
+    Hsla {
+        l: (color.l + amount).min(1.),
+        ..color
+    }
+}
+
 pub struct HomePage {
     app_state: Entity<AppState>,
     /// Re-renders once a minute: the subscription card's "updated N min
@@ -197,9 +205,11 @@ impl Render for HomePage {
 
         let power_button = match status {
             ConnectionStatus::Starting => power_base
-                .bg(rgb(0xEFF6FF)) // blue-50
+                // A faint accent wash: blue-50 / blue-200 on white, a dim
+                // navy on the dark background.
+                .bg(theme.primary.opacity(0.08))
                 .border_2()
-                .border_color(rgb(0xBFDBFE)) // blue-200
+                .border_color(theme.primary.opacity(0.35))
                 .child(
                     Spinner::new()
                         .with_size(px(POWER_ICON_SIZE))
@@ -208,7 +218,8 @@ impl Render for HomePage {
             ConnectionStatus::Connected => power_base
                 .bg(linear_gradient(
                     180.,
-                    linear_color_stop(rgb(0x3B82F6), 0.), // blue-500,上浅下深
+                    // 上浅下深:顶部比 primary 亮一档(浅色下约 blue-500)。
+                    linear_color_stop(lighter(theme.primary, 0.08), 0.),
                     linear_color_stop(theme.primary, 1.),
                 ))
                 .shadow(vec![BoxShadow {
@@ -222,7 +233,7 @@ impl Render for HomePage {
                     Icon::default()
                         .path("icons/power.svg")
                         .with_size(px(POWER_ICON_SIZE))
-                        .text_color(gpui::white()),
+                        .text_color(theme.primary_foreground),
                 ),
             ConnectionStatus::Disconnected => power_base
                 .bg(theme.background)

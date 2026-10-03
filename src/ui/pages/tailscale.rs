@@ -497,7 +497,7 @@ fn taildrop_card(
             .px_2()
             .rounded_full()
             .bg(theme.primary)
-            .text_color(gpui::white())
+            .text_color(theme.primary_foreground)
             .child(format!("{} new", unread))
     });
     let header = div()

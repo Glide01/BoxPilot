@@ -349,7 +349,8 @@ impl ProfilesPage {
             .border_color(theme.border)
             .bg(theme.background)
             .when(is_active, |this| {
-                this.border_color(theme.primary).bg(rgb(0xF5F8FF))
+                this.border_color(theme.primary)
+                    .bg(theme.primary.opacity(0.06))
             })
             .h_flex()
             .items_center()
