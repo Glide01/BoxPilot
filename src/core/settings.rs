@@ -183,6 +183,12 @@ pub struct AppSettings {
     pub profiles: Vec<Profile>,
     #[serde(default)]
     pub active_profile_id: String,
+    /// The highest `p<N>` number ever handed out (`next_profile_id`), so a
+    /// deleted profile's id is never reused. Absent in files from releases
+    /// that predate it; the first allocation then starts above the highest
+    /// existing id.
+    #[serde(default)]
+    pub profile_id_counter: u64,
 }
 
 pub fn default_auto_update_interval() -> u64 {
@@ -207,6 +213,7 @@ impl Default for AppSettings {
             tun_ipv6: false,
             profiles: Vec::new(),
             active_profile_id: String::new(),
+            profile_id_counter: 0,
         };
         settings.normalize_profiles();
         settings
@@ -306,17 +313,20 @@ impl AppSettings {
         !self.profiles.is_empty()
     }
 
-    /// Next "p<n>" id above the current maximum. A deleted maximum gets
-    /// reused — safe only because profile deletion also removes its
-    /// `configs/<id>.json`, so a reused id can't pick up stale config data.
-    pub fn next_profile_id(&self) -> String {
-        let max = self
+    /// Allocate a fresh "p<n>" id: above every id handed out before, deleted
+    /// ones included, so a new profile can never inherit a deleted one's
+    /// `configs/<id>.json` (or a fetch still landing for it). Bumps
+    /// `profile_id_counter`; the caller persists it with the new profile.
+    pub fn next_profile_id(&mut self) -> String {
+        let max_existing = self
             .profiles
             .iter()
             .filter_map(|p| p.id.strip_prefix('p').and_then(|n| n.parse::<u64>().ok()))
             .max()
             .unwrap_or(0);
-        format!("p{}", max + 1)
+        let next = self.profile_id_counter.max(max_existing) + 1;
+        self.profile_id_counter = next;
+        format!("p{}", next)
     }
 
     pub fn save(&self, app_dir: &Path) {
@@ -514,31 +524,70 @@ mod tests {
         assert_eq!(settings.active_profile_id, "p3");
     }
 
+    fn remote(id: &str) -> Profile {
+        Profile {
+            id: id.into(),
+            name: id.into(),
+            source: ProfileSource::Remote {
+                url: String::new(),
+                auto_update_interval_minutes: 60,
+            },
+            last_updated_secs: None,
+        }
+    }
+
     #[test]
     fn next_profile_id_increments_past_max() {
         let mut settings = AppSettings::default(); // now empty
         assert_eq!(settings.next_profile_id(), "p1");
-        settings.profiles.push(Profile {
-            id: "p7".into(),
-            name: "X".into(),
-            source: ProfileSource::Remote {
-                url: String::new(),
-                auto_update_interval_minutes: 60,
-            },
-            last_updated_secs: None,
-        });
+        settings.profiles.push(remote("p7"));
         assert_eq!(settings.next_profile_id(), "p8");
         // Non-numeric ids are ignored rather than crashing.
-        settings.profiles.push(Profile {
-            id: "imported".into(),
-            name: "Y".into(),
-            source: ProfileSource::Remote {
-                url: String::new(),
-                auto_update_interval_minutes: 60,
-            },
-            last_updated_secs: None,
-        });
-        assert_eq!(settings.next_profile_id(), "p8");
+        settings.profiles.push(remote("imported"));
+        assert_eq!(settings.next_profile_id(), "p9");
+    }
+
+    /// Deleting the newest profile must not free its id: a new profile
+    /// would inherit its `configs/<id>.json`, or a fetch still landing for it.
+    #[test]
+    fn next_profile_id_never_reuses_a_deleted_id() {
+        let mut settings = AppSettings::default();
+        let first = settings.next_profile_id();
+        settings.profiles.push(remote(&first));
+        let second = settings.next_profile_id();
+        settings.profiles.push(remote(&second));
+        assert_eq!((first.as_str(), second.as_str()), ("p1", "p2"));
+
+        settings.profiles.retain(|p| p.id != "p2");
+        assert_eq!(settings.next_profile_id(), "p3");
+        settings.profiles.clear();
+        assert_eq!(settings.next_profile_id(), "p4");
+    }
+
+    /// Settings from releases without the counter start it above the
+    /// highest existing id, and the counter survives a save/load.
+    #[test]
+    fn profile_id_counter_migrates_and_persists() {
+        let legacy = r#"{
+            "proxy_mode": false,
+            "profiles": [
+                {"id":"p4","name":"A","url":"https://a/s"},
+                {"id":"p2","name":"B","url":"https://b/s"}
+            ],
+            "active_profile_id":"p4"
+        }"#;
+        let mut settings: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(settings.profile_id_counter, 0);
+        assert_eq!(settings.next_profile_id(), "p5");
+        assert_eq!(settings.profile_id_counter, 5);
+
+        let dir = temp_dir("id_counter");
+        settings.profiles.retain(|p| p.id != "p4");
+        settings.save(&dir);
+        let mut loaded = AppSettings::load(&dir).settings;
+        assert_eq!(loaded.profile_id_counter, 5);
+        assert_eq!(loaded.next_profile_id(), "p6");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -682,6 +731,7 @@ mod tests {
                 },
             ],
             active_profile_id: "p2".to_string(),
+            profile_id_counter: 9,
         };
         original.save(&dir);
         let loaded = AppSettings::load(&dir).settings;
@@ -692,6 +742,7 @@ mod tests {
         assert!(loaded.tun_ipv6);
         assert_eq!(loaded.profiles, original.profiles);
         assert_eq!(loaded.active_profile_id, "p2");
+        assert_eq!(loaded.profile_id_counter, 9);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -35,8 +35,11 @@ pub enum ProcessState {
     /// old instance's cleanup.
     Stopped { cleanup: Option<Task<()>> },
     /// Background task running `prepare_process_start` (TUN cleanup + DNS
-    /// flush). Dropping `_prep` cancels the task.
-    Preparing { _prep: Task<()> },
+    /// flush), after awaiting the previous run's cleanup, which it owns:
+    /// dropping `_prep` would cancel that too, so a stop or a superseded
+    /// start sets `abandoned` instead and the task, once prepped, goes back
+    /// to `Stopped` without spawning sing-box.
+    Preparing { _prep: Task<()>, abandoned: bool },
     /// Child process is alive. `drain` reads from the pipe channel into
     /// `LogBuffer`; `stop()` detaches it rather than cancelling it, so
     /// whatever sing-box wrote on its way out (a fatal error, a panic) still
@@ -120,11 +123,19 @@ impl ProcessSession {
                 .await;
 
             let _ = this.update(cx, |session, cx| {
-                session.spawn_child(after_prep, cx);
+                if session.start_abandoned() {
+                    session.state = ProcessState::Stopped { cleanup: None };
+                    cx.notify();
+                } else {
+                    session.spawn_child(after_prep, cx);
+                }
             });
         });
 
-        self.state = ProcessState::Preparing { _prep: prep_task };
+        self.state = ProcessState::Preparing {
+            _prep: prep_task,
+            abandoned: false,
+        };
         cx.notify();
     }
 
@@ -220,6 +231,22 @@ impl ProcessSession {
         cx.notify();
     }
 
+    /// Drop the start in progress: its prep runs to the end (see
+    /// `ProcessState::Preparing`), then the session returns to `Stopped`
+    /// without spawning sing-box. No-op unless `Preparing`.
+    pub fn abandon_start(&mut self) {
+        if let ProcessState::Preparing { abandoned, .. } = &mut self.state {
+            *abandoned = true;
+        }
+    }
+
+    fn start_abandoned(&self) -> bool {
+        match self.state {
+            ProcessState::Preparing { abandoned, .. } => abandoned,
+            _ => false,
+        }
+    }
+
     /// Stop the running child. `signal_stop` only sends the signal (SIGTERM
     /// on Linux, kill on Windows), so it stays on the UI thread; the
     /// potentially slow reap (up to `STOP_GRACE` before a SIGKILL on Linux)
@@ -257,8 +284,14 @@ impl ProcessSession {
             ProcessState::Stopped { cleanup } => {
                 self.state = ProcessState::Stopped { cleanup };
             }
-            // Preparing: dropping `_prep` cancels the pending start.
-            ProcessState::Preparing { .. } => {}
+            // Preparing: don't spawn once prepped; it stays `Preparing`
+            // (starting) until then.
+            ProcessState::Preparing { _prep, .. } => {
+                self.state = ProcessState::Preparing {
+                    _prep,
+                    abandoned: true,
+                };
+            }
         }
         cx.notify();
     }

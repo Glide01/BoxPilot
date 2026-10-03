@@ -1,5 +1,8 @@
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
-use crate::core::orchestration::{process_edge_effects, ProcessEdgeEffect};
+use crate::core::orchestration::{
+    config_change_action, fetch_result_applies, process_edge_effects, ConfigChangeAction,
+    ProcessEdgeEffect, StartPhase,
+};
 #[cfg(target_os = "linux")]
 use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
 use crate::core::process::query_sing_box_version;
@@ -29,7 +32,7 @@ use futures_channel::mpsc::UnboundedReceiver;
 use futures_channel::oneshot;
 use futures_util::StreamExt;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -40,23 +43,32 @@ use std::time::{Duration, Instant, SystemTime};
 /// takes effect at the next tick without restarting the task.
 const AUTO_UPDATE_TICK: Duration = Duration::from_secs(60);
 
+/// The one profile fetch in flight, if any. `fetch` numbers it (see
+/// `AppState::begin_fetch`); a result lands only while it is still its
+/// profile's newest fetch and the profile exists (`fetch_result_applies`).
 pub enum UpdateStatus {
     Idle,
-    /// Subscription fetch in flight for one profile. Dropping the `Task`
-    /// cancels the future (and `cx.update` from inside it returns Err, so
-    /// the result is ignored).
+    /// Subscription fetch / local import in flight for one profile.
+    /// Dropping the `Task` drops its UI-thread continuation, so the result
+    /// is never applied — but the blocking fetch itself, one synchronous
+    /// job on the background executor, still runs to the end. It only
+    /// stages its config (`UpdateOutcome::Changed`), and dropping that
+    /// unapplied result deletes the staged file, so nothing is written.
     Updating {
         profile_id: String,
+        fetch: u64,
         origin: FetchOrigin,
         _task: Task<()>,
     },
     /// The auto-update loop is fetching this profile. The loop's own future
     /// does the work, so there is no task to hold; it claims this state
     /// before a fetch and releases it after, only if it still holds it (an
-    /// import may have taken over meanwhile). Counts as in flight like
-    /// `Updating`, so manual and import fetches don't run alongside it.
+    /// import or a profile delete may have replaced it meanwhile). Counts
+    /// as in flight like `Updating`, so manual and import fetches don't run
+    /// alongside it.
     AutoUpdating {
         profile_id: String,
+        fetch: u64,
     },
 }
 
@@ -170,6 +182,20 @@ pub struct AppState {
     /// start meanwhile; `stop_process` drops (cancels) it.
     #[cfg(target_os = "linux")]
     tun_gate: Option<Task<()>>,
+    /// A config change arrived while sing-box was `Preparing` with the old
+    /// one: that start was abandoned (`ConfigChangeAction::RedoStart`), and
+    /// the process observer starts again once it is back to `Stopped`.
+    /// Cleared by `stop_process`.
+    restart_pending: bool,
+    /// Numbers every profile fetch; the last one handed out.
+    fetch_seq: u64,
+    /// The newest fetch started per profile id. A finished fetch whose
+    /// number isn't here any more (newer fetch, profile deleted) is stale.
+    latest_fetch: HashMap<String, u64>,
+    /// Manual fetches asked for while another was in flight, run in order
+    /// as each one finishes (`run_queued_fetches`) — e.g. the Add dialog's
+    /// first fetch during an auto-update.
+    queued_fetches: VecDeque<String>,
 }
 
 impl EventEmitter<StatusEvent> for AppState {}
@@ -288,12 +314,14 @@ impl AppState {
             // this observer just executes the returned effects and stores the
             // acted-on state, which is what makes each transition fire once.
             cx.observe(&process, |this: &mut AppState, process, cx| {
-                let running = process.read(cx).is_running();
+                let (running, stopped) = {
+                    let process = process.read(cx);
+                    (process.is_running(), process.is_stopped())
+                };
                 let effects = process_edge_effects(this.groups_saw_running, running);
-                if effects.is_empty() {
-                    return;
+                if !effects.is_empty() {
+                    this.groups_saw_running = running;
                 }
-                this.groups_saw_running = running;
                 for effect in effects {
                     match effect {
                         ProcessEdgeEffect::StartGroups => this
@@ -339,6 +367,12 @@ impl AppState {
                             this.logs.update(cx, |logs, cx| logs.stop_api(cx))
                         }
                     }
+                }
+                // The start abandoned for a config change has finished its
+                // prep: start again, with the new config.
+                if this.restart_pending && stopped {
+                    this.restart_pending = false;
+                    this.start_process(cx);
                 }
             })
             .detach();
@@ -405,19 +439,21 @@ impl AppState {
                         // for the next tick; their clocks stay due.
                         let claimed = this.update(cx, |state: &mut AppState, cx| {
                             if state.is_updating() || state.process.read(cx).is_starting() {
-                                return false;
+                                return None;
                             }
+                            let fetch = state.begin_fetch(&profile.id);
                             state.update_status = UpdateStatus::AutoUpdating {
                                 profile_id: profile.id.clone(),
+                                fetch,
                             };
                             cx.notify();
-                            true
+                            Some(fetch)
                         });
-                        match claimed {
-                            Ok(true) => {}
-                            Ok(false) => break,
+                        let fetch = match claimed {
+                            Ok(Some(fetch)) => fetch,
+                            Ok(None) => break,
                             Err(_) => return,
-                        }
+                        };
                         last_attempt.insert(profile.id.clone(), Instant::now());
 
                         let url = url.trim().to_string();
@@ -441,9 +477,18 @@ impl AppState {
                         let profile_id = profile.id;
                         let exited = this
                             .update(cx, |state, cx| {
-                                state.release_auto_update(&profile_id, cx);
-                                match result {
-                                    Ok(UpdateOutcome::Changed) => {
+                                // Deleted meanwhile, or an import of it took
+                                // over: drop the result, and with it the
+                                // staged config.
+                                if !state.fetch_applies(&profile_id, fetch) {
+                                    state.release_auto_update(fetch, cx);
+                                    state.run_queued_fetches(cx);
+                                    return;
+                                }
+                                let landed = result.and_then(UpdateOutcome::commit);
+                                state.release_auto_update(fetch, cx);
+                                match landed {
+                                    Ok(true) => {
                                         state.stamp_profile_updated(&profile_id);
                                         state.save_settings();
                                         // Restart/toast only matter for the
@@ -457,7 +502,7 @@ impl AppState {
                                             state.restart_if_running(cx);
                                         }
                                     }
-                                    Ok(UpdateOutcome::Unchanged) => {
+                                    Ok(false) => {
                                         // Silent: nothing was written.
                                     }
                                     Err(err) => {
@@ -467,6 +512,7 @@ impl AppState {
                                         eprintln!("Auto-update failed: {}", err);
                                     }
                                 }
+                                state.run_queued_fetches(cx);
                             })
                             .is_err();
                         if exited {
@@ -549,6 +595,10 @@ impl AppState {
                 _deeplink_task: deeplink_task,
                 #[cfg(target_os = "linux")]
                 tun_gate: None,
+                restart_pending: false,
+                fetch_seq: 0,
+                latest_fetch: HashMap::new(),
+                queued_fetches: VecDeque::new(),
             }
         })
     }
@@ -561,20 +611,50 @@ impl AppState {
     pub fn updating_profile_id(&self) -> Option<&str> {
         match &self.update_status {
             UpdateStatus::Updating { profile_id, .. }
-            | UpdateStatus::AutoUpdating { profile_id } => Some(profile_id),
+            | UpdateStatus::AutoUpdating { profile_id, .. } => Some(profile_id),
             UpdateStatus::Idle => None,
         }
     }
 
-    /// End the auto-update loop's claim on `profile_id`'s fetch — unless an
-    /// import has replaced it meanwhile, whose state (and task) must stay.
-    fn release_auto_update(&mut self, profile_id: &str, cx: &mut Context<Self>) {
+    /// Number a new fetch of `profile_id` and make it that profile's newest:
+    /// any older fetch of it still running becomes stale.
+    fn begin_fetch(&mut self, profile_id: &str) -> u64 {
+        self.fetch_seq += 1;
+        self.latest_fetch.insert(profile_id.to_string(), self.fetch_seq);
+        self.fetch_seq
+    }
+
+    /// Whether `fetch` of `profile_id` may still land its config; see
+    /// `fetch_result_applies`.
+    fn fetch_applies(&self, profile_id: &str, fetch: u64) -> bool {
+        fetch_result_applies(
+            self.latest_fetch.get(profile_id).copied(),
+            fetch,
+            self.settings.profiles.iter().any(|p| p.id == profile_id),
+        )
+    }
+
+    /// End the auto-update loop's claim on its `fetch` — unless an import or
+    /// a delete has replaced it meanwhile, whose state (and task) must stay.
+    fn release_auto_update(&mut self, fetch: u64, cx: &mut Context<Self>) {
         if matches!(
             &self.update_status,
-            UpdateStatus::AutoUpdating { profile_id: id } if id == profile_id
+            UpdateStatus::AutoUpdating { fetch: held, .. } if *held == fetch
         ) {
             self.update_status = UpdateStatus::Idle;
             cx.notify();
+        }
+    }
+
+    /// Start the queued manual fetches, oldest first, until one is in
+    /// flight. Called whenever a fetch ends. Entries whose profile is gone
+    /// or has nothing to fetch fall through `update_profile`'s guards.
+    fn run_queued_fetches(&mut self, cx: &mut Context<Self>) {
+        while !self.is_updating() {
+            let Some(id) = self.queued_fetches.pop_front() else {
+                return;
+            };
+            self.update_profile(id, FetchOrigin::Manual, cx);
         }
     }
 
@@ -750,8 +830,10 @@ impl AppState {
                 state.tun_gate = None;
                 match plan {
                     TunPlan::UseBundled(path) | TunPlan::UsePrivilegedCopy(path) => {
-                        state.launch(path, cx)
+                        state.launch_after_gate(path, cx)
                     }
+                    // Switched to Proxy mode meanwhile: no grant needed.
+                    TunPlan::NeedsGrant if state.settings.proxy_mode => state.start_process(cx),
                     TunPlan::NeedsGrant => cx.emit(TunGrantRequested),
                 }
             });
@@ -776,7 +858,7 @@ impl AppState {
             let _ = this.update(cx, |state, cx| {
                 state.tun_gate = None;
                 match result {
-                    Ok(()) => state.launch(PathBuf::from(PRIVILEGED_COPY_PATH), cx),
+                    Ok(()) => state.launch_after_gate(PathBuf::from(PRIVILEGED_COPY_PATH), cx),
                     Err(message) => cx.emit(StatusEvent {
                         level: StatusLevel::Error,
                         message,
@@ -786,7 +868,23 @@ impl AppState {
         }));
     }
 
+    /// Launch the sing-box a resolved TUN gate picked. Settings changed
+    /// while the gate was pending need nothing here — `launch` writes the
+    /// runtime config from the current ones — except a switch to Proxy
+    /// mode, which runs the bundled sing-box through the usual start.
+    #[cfg(target_os = "linux")]
+    fn launch_after_gate(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.settings.proxy_mode {
+            self.start_process(cx);
+        } else {
+            self.launch(path, cx);
+        }
+    }
+
+    /// Stop sing-box, or the start in progress: a pending TUN gate is
+    /// dropped, a `Preparing` start is abandoned (`ProcessSession::stop`).
     pub fn stop_process(&mut self, cx: &mut Context<Self>) {
+        self.restart_pending = false;
         #[cfg(target_os = "linux")]
         {
             self.tun_gate = None;
@@ -831,10 +929,36 @@ impl AppState {
         .detach();
     }
 
+    /// How far a start has got; see `StartPhase`.
+    fn start_phase(&self, cx: &App) -> StartPhase {
+        let process = self.process.read(cx);
+        if process.is_running() {
+            return StartPhase::Running;
+        }
+        if process.is_starting() {
+            return StartPhase::Preparing;
+        }
+        #[cfg(target_os = "linux")]
+        if self.tun_gate.is_some() {
+            return StartPhase::Gated;
+        }
+        StartPhase::Idle
+    }
+
+    /// Make a change to the runtime config's inputs take effect: restart a
+    /// running sing-box, and redo a start that is still preparing with the
+    /// old runtime config (it would otherwise come up with stale values).
     fn restart_if_running(&mut self, cx: &mut Context<Self>) {
-        if self.process.read(cx).is_running() {
-            self.stop_process(cx);
-            self.start_process(cx);
+        match config_change_action(self.start_phase(cx)) {
+            ConfigChangeAction::Nothing => {}
+            ConfigChangeAction::Restart => {
+                self.stop_process(cx);
+                self.start_process(cx);
+            }
+            ConfigChangeAction::RedoStart => {
+                self.process.update(cx, |p, _| p.abandon_start());
+                self.restart_pending = true;
+            }
         }
     }
 
@@ -849,7 +973,7 @@ impl AppState {
     }
 
     /// Settings 页改本地代理端口:同 `set_proxy_mode`——持久化并在
-    /// 运行中立即重启生效(注册表系统代理由 sing-box 按入站端口自写)。
+    /// 运行中(或启动中)立即重启生效(注册表系统代理由 sing-box 按入站端口自写)。
     pub fn set_proxy_port(&mut self, value: u16, cx: &mut Context<Self>) {
         if self.settings.proxy_port == value {
             return;
@@ -860,9 +984,9 @@ impl AppState {
         cx.notify();
     }
 
-    /// Settings 页改 sing-box API 端口:持久化 + 运行中重启 sing-box 让新的
-    /// api 服务端口生效。各实体的 `SingBoxApi` 句柄由下次 `launch` 统一换新
-    /// (连同新 secret)。
+    /// Settings 页改 sing-box API 端口:持久化 + 运行中(或启动中)重启
+    /// sing-box 让新的 api 服务端口生效。各实体的 `SingBoxApi` 句柄由下次
+    /// `launch` 统一换新(连同新 secret)。
     pub fn set_api_port(&mut self, value: u16, cx: &mut Context<Self>) {
         if self.settings.api_port == value {
             return;
@@ -874,7 +998,7 @@ impl AppState {
     }
 
     /// Settings 页的 TUN IPv6 开关:同 `set_proxy_mode`——持久化并在运行中
-    /// 重启生效。Proxy 模式下改它同样合法,只是要等切回 TUN 才看得出区别。
+    /// (或启动中)重启生效。Proxy 模式下改它同样合法,只是要等切回 TUN 才看得出区别。
     pub fn set_tun_ipv6(&mut self, value: bool, cx: &mut Context<Self>) {
         if self.settings.tun_ipv6 == value {
             return;
@@ -962,24 +1086,22 @@ impl AppState {
     }
 
     /// Kick off a subscription fetch / local re-import for `profile_id` on
-    /// the background executor, writing `configs/<id>.json`. Fetching does
+    /// the background executor, landing in `configs/<id>.json`. Fetching does
     /// NOT activate the profile and never touches a running process — except
     /// for `FetchOrigin::UriImport`, which activates once the config landed
     /// on disk, because activating before the fetch would point a running
     /// sing-box at a config that doesn't exist yet; on failure it rolls the
     /// profile back if this import created it (see [`FetchOrigin`]). The
     /// `Task<()>` is stored in `update_status`(连同 profile id,供行级
-    /// spinner)so dropping it (e.g. by overwriting with another update)
-    /// cancels the in-flight fetch.
+    /// spinner);dropping it (an import taking over, the profile deleted)
+    /// discards the result, see [`UpdateStatus::Updating`]. A manual fetch
+    /// asked for while another is in flight is queued behind it.
     pub fn update_profile(
         &mut self,
         profile_id: String,
         origin: FetchOrigin,
         cx: &mut Context<Self>,
     ) {
-        if self.is_updating() {
-            return;
-        }
         let Some(profile) = self.settings.profiles.iter().find(|p| p.id == profile_id) else {
             return;
         };
@@ -1004,11 +1126,33 @@ impl AppState {
             _ => {}
         }
 
+        if self.is_updating() {
+            // Only one fetch at a time (manual, import or auto-update). A
+            // manual one waits its turn instead of vanishing — e.g. the Add
+            // dialog's first fetch while an auto-update runs. Already being
+            // fetched or queued → nothing to add. Imports never get here
+            // busy: `import_profile` takes over first.
+            let already = self.updating_profile_id() == Some(profile_id.as_str())
+                || self.queued_fetches.contains(&profile_id);
+            if origin == FetchOrigin::Manual && !already {
+                self.queued_fetches.push_back(profile_id);
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Info,
+                    message: format!(
+                        "\"{}\" will update when the current update finishes.",
+                        profile_name
+                    ),
+                });
+            }
+            return;
+        }
+
         let app_dir = self.app_dir.clone();
         let config_path = profile_config_path(&self.app_dir, &profile_id);
         let sing_box = self.sing_box_path();
         let sing_box_version = self.sing_box_version.clone();
         let status_id = profile_id.clone();
+        let fetch = self.begin_fetch(&profile_id);
 
         let task = cx.spawn(async move |this, cx| {
             let result = cx
@@ -1034,8 +1178,16 @@ impl AppState {
 
             let _ = this.update(cx, |state, cx| {
                 state.update_status = UpdateStatus::Idle;
-                let (level, message) = match result {
-                    Ok(UpdateOutcome::Changed) => {
+                // Defensive: whatever deletes the profile or supersedes this
+                // fetch also drops this task, so this continuation shouldn't
+                // run. If it does, the result (and its staged config) goes.
+                if !state.fetch_applies(&profile_id, fetch) {
+                    cx.notify();
+                    state.run_queued_fetches(cx);
+                    return;
+                }
+                let (level, message) = match result.and_then(UpdateOutcome::commit) {
+                    Ok(true) => {
                         // Content changed → stamp the "last updated" time, then
                         // persist the URL just used (and any other settings).
                         // Manual update intentionally does NOT auto-restart
@@ -1048,7 +1200,7 @@ impl AppState {
                             format!("\"{}\" updated.", profile_name),
                         )
                     }
-                    Ok(UpdateOutcome::Unchanged) => {
+                    Ok(false) => {
                         state.save_settings();
                         (
                             StatusLevel::Info,
@@ -1072,11 +1224,13 @@ impl AppState {
                 }
                 cx.emit(StatusEvent { level, message });
                 cx.notify();
+                state.run_queued_fetches(cx);
             });
         });
 
         self.update_status = UpdateStatus::Updating {
             profile_id: status_id,
+            fetch,
             origin,
             _task: task,
         };
@@ -1111,7 +1265,7 @@ impl AppState {
         source: ProfileSource,
         cx: &mut Context<Self>,
     ) -> String {
-        let id = self.settings.next_profile_id();
+        let id = self.new_profile_id();
         let number = id.strip_prefix('p').unwrap_or(&id).to_string();
         let name = {
             let trimmed = name.trim();
@@ -1139,8 +1293,8 @@ impl AppState {
     }
 
     /// Switch the active profile: persist, point `ProxyGroups` at the new
-    /// config, and restart sing-box if it's running (same pattern as
-    /// `set_proxy_mode`). If the new profile has no fetched config yet, the
+    /// config, and restart sing-box if it's running or starting (same
+    /// pattern as `set_proxy_mode`). If the new profile has no fetched config yet, the
     /// restart's `start_process` fails with the usual "Config not found"
     /// toast — honest, and the user is one Update click away from fixing it.
     pub fn set_active_profile(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1158,14 +1312,37 @@ impl AppState {
         cx.notify();
     }
 
-    /// Delete a profile and its fetched config file. Deleting the active
-    /// profile activates the first remaining one; deleting the *last* profile
-    /// stops sing-box and drops to the empty state.
+    /// A fresh id for a new profile (never a deleted one's, see
+    /// `AppSettings::next_profile_id`). A config already at its path was
+    /// left by an older release, which reused ids and could land a fetch for
+    /// a deleted profile; it belongs to no profile, so it goes.
+    fn new_profile_id(&mut self) -> String {
+        let id = self.settings.next_profile_id();
+        let _ = fs::remove_file(profile_config_path(&self.app_dir, &id));
+        id
+    }
+
+    /// Forget a removed profile's fetches: one in flight is dropped (its
+    /// result is discarded, see [`UpdateStatus`]), a queued one never runs,
+    /// and `fetch_applies` turns stale for any still finishing.
+    fn forget_profile_fetches(&mut self, id: &str) {
+        if self.updating_profile_id() == Some(id) {
+            self.update_status = UpdateStatus::Idle;
+        }
+        self.queued_fetches.retain(|queued| queued != id);
+        self.latest_fetch.remove(id);
+    }
+
+    /// Delete a profile and its fetched config file, and drop any fetch of
+    /// it. Deleting the active profile activates the first remaining one;
+    /// deleting the *last* profile stops sing-box (or the start in
+    /// progress) and drops to the empty state.
     pub fn delete_profile(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(index) = self.settings.profiles.iter().position(|p| p.id == id) else {
             return;
         };
         self.settings.profiles.remove(index);
+        self.forget_profile_fetches(&id);
         let _ = fs::remove_file(profile_config_path(&self.app_dir, &id));
 
         if self.settings.active_profile_id == id {
@@ -1183,7 +1360,7 @@ impl AppState {
                 }
                 None => {
                     // Deleted the last profile — drop to the empty state.
-                    if self.process.read(cx).is_running() {
+                    if self.start_phase(cx) != StartPhase::Idle {
                         self.stop_process(cx);
                     }
                     self.settings.active_profile_id = String::new();
@@ -1195,6 +1372,8 @@ impl AppState {
         }
         self.save_settings();
         cx.notify();
+        // The deleted profile's fetch may have been the one in flight.
+        self.run_queued_fetches(cx);
     }
 
     /// Called by `RootView::new` once its subscribers are wired: opens the
@@ -1230,10 +1409,14 @@ impl AppState {
     /// for. Keeping it would dismiss Home's "Add subscription" empty card
     /// and make the failed import read as a success. The profile is never
     /// active at this point (imports only activate on success), so
-    /// `normalize_profiles` is just a safety net.
+    /// `normalize_profiles` is just a safety net, as is removing its config
+    /// file: a superseded import's result is discarded, never written.
     fn rollback_import_created(&mut self, profile_id: &str) {
         self.settings.profiles.retain(|p| p.id != profile_id);
         self.settings.normalize_profiles();
+        self.latest_fetch.remove(profile_id);
+        self.queued_fetches.retain(|queued| queued != profile_id);
+        let _ = fs::remove_file(profile_config_path(&self.app_dir, profile_id));
         self.save_settings();
     }
 
@@ -1242,13 +1425,16 @@ impl AppState {
     /// profile once its config is on disk.
     pub fn import_profile(&mut self, request: ImportRequest, cx: &mut Context<Self>) {
         // An explicit user action outranks whatever fetch is in flight:
-        // dropping the task cancels it (an auto-update has no task here; its
-        // fetch finishes on its own and leaves this import's state alone,
-        // see `release_auto_update`). If the cancelled fetch was itself an
-        // import that created its profile, roll that phantom back now — its
-        // failure arm will never run, and the URL lookup below must not
-        // resurrect it (re-clicking the same link mid-fetch would otherwise
-        // "reuse" the phantom and lose the created-by-import marker).
+        // dropping the task drops its continuation, so its result is never
+        // applied (an auto-update has no task here; its fetch finishes on
+        // its own, lands only if this import isn't for the same profile —
+        // `fetch_applies` — and leaves this import's state alone, see
+        // `release_auto_update`). Queued manual fetches still run after the
+        // import. If the superseded fetch was itself an import that created
+        // its profile, roll that phantom back now — its failure arm will
+        // never run, and the URL lookup below must not resurrect it
+        // (re-clicking the same link mid-fetch would otherwise "reuse" the
+        // phantom and lose the created-by-import marker).
         if let UpdateStatus::Updating {
             profile_id,
             origin: FetchOrigin::UriImport {
@@ -1273,7 +1459,7 @@ impl AppState {
         {
             Some(existing) => (existing.id.clone(), false),
             None => {
-                let id = self.settings.next_profile_id();
+                let id = self.new_profile_id();
                 let name = request
                     .name
                     .clone()

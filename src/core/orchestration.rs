@@ -71,6 +71,57 @@ pub fn process_edge_effects(prev_running: bool, now_running: bool) -> &'static [
     }
 }
 
+/// How far a sing-box start has got, as far as a settings or profile change
+/// is concerned. `AppState::start_phase` reads it off `ProcessSession` and
+/// the Linux TUN gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartPhase {
+    /// Nothing running or starting; the next start reads the settings.
+    Idle,
+    /// A Linux TUN-mode start waiting on its plan probe or the pkexec grant.
+    /// The runtime config isn't written yet: `launch` reads the settings
+    /// when the gate resolves.
+    Gated,
+    /// `ProcessSession::Preparing`: the runtime config is already written,
+    /// sing-box not yet spawned.
+    Preparing,
+    Running,
+}
+
+/// What a change that ends up in the runtime config (proxy mode, ports,
+/// TUN IPv6, system proxy, the active profile or its content) must do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigChangeAction {
+    /// Nothing runs with the old values (or will): the next start, or the
+    /// gated one, reads the new ones.
+    Nothing,
+    /// Stop sing-box and start it again.
+    Restart,
+    /// The start in progress was written with the old values: let its prep
+    /// finish, but don't spawn sing-box from it, then start again. The prep
+    /// isn't cancelled because it owns the previous run's cleanup (reap,
+    /// system-proxy reset), which must not be cut short.
+    RedoStart,
+}
+
+pub fn config_change_action(phase: StartPhase) -> ConfigChangeAction {
+    match phase {
+        StartPhase::Idle | StartPhase::Gated => ConfigChangeAction::Nothing,
+        StartPhase::Preparing => ConfigChangeAction::RedoStart,
+        StartPhase::Running => ConfigChangeAction::Restart,
+    }
+}
+
+/// Whether a finished profile fetch may land its config. The fetch runs on
+/// the background executor, so meanwhile its profile may have been deleted
+/// (or rolled back), or a newer fetch of the same profile started: an
+/// import taking over, or a refresh queued behind it. `latest_fetch` is the
+/// newest fetch started for this profile; anything older is stale, and its
+/// staged config is discarded instead of written.
+pub fn fetch_result_applies(latest_fetch: Option<u64>, fetch: u64, profile_exists: bool) -> bool {
+    profile_exists && latest_fetch == Some(fetch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +176,52 @@ mod tests {
         assert!(!first.is_empty());
         prev = true;
         assert!(process_edge_effects(prev, true).is_empty());
+    }
+
+    #[test]
+    fn config_change_restarts_running_and_redoes_preparing() {
+        assert_eq!(
+            config_change_action(StartPhase::Running),
+            ConfigChangeAction::Restart
+        );
+        assert_eq!(
+            config_change_action(StartPhase::Preparing),
+            ConfigChangeAction::RedoStart
+        );
+    }
+
+    /// A gated start hasn't written its runtime config yet, and an idle app
+    /// has none to fix: neither needs anything beyond the saved setting.
+    #[test]
+    fn config_change_leaves_idle_and_gated_alone() {
+        assert_eq!(
+            config_change_action(StartPhase::Idle),
+            ConfigChangeAction::Nothing
+        );
+        assert_eq!(
+            config_change_action(StartPhase::Gated),
+            ConfigChangeAction::Nothing
+        );
+    }
+
+    #[test]
+    fn current_fetch_of_an_existing_profile_applies() {
+        assert!(fetch_result_applies(Some(7), 7, true));
+    }
+
+    /// The profile was deleted while its fetch ran: the result must not
+    /// recreate `configs/<id>.json`.
+    #[test]
+    fn fetch_for_a_deleted_profile_is_discarded() {
+        assert!(!fetch_result_applies(Some(7), 7, false));
+        assert!(!fetch_result_applies(None, 7, false));
+    }
+
+    /// A newer fetch of the same profile started (an import took over): the
+    /// older result must not land over or after it.
+    #[test]
+    fn superseded_fetch_is_discarded() {
+        assert!(!fetch_result_applies(Some(8), 7, true));
+        assert!(!fetch_result_applies(None, 7, true));
     }
 }

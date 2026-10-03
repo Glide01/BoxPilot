@@ -7,13 +7,22 @@
 //! path end to end. Home keys its "Add subscription" empty card on
 //! `settings.has_profiles()`, so a failed import must not leave a profile
 //! behind — otherwise the card disappears and the failure reads as success.
+//! Then, against a local HTTP server that holds its answer: a fetch asked
+//! for while another is in flight is queued, not dropped, and a fetch whose
+//! profile is deleted mid-flight writes nothing.
 //!
 //! Exit codes: 0 = expected behavior, 1 = regression, 2 = inconclusive.
 
 use box_pilot_gui::core::deeplink::{ImportRequest, LaunchAttempt};
+use box_pilot_gui::core::paths::profile_config_path;
 use box_pilot_gui::core::settings::ProfileSource;
+use box_pilot_gui::state::app_state::FetchOrigin;
 use box_pilot_gui::state::AppState;
 use gpui::{AsyncApp, Entity};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::Path;
+use std::sync::mpsc;
 use std::time::Duration;
 
 /// Discard port: connection refused within milliseconds — the same
@@ -60,6 +69,98 @@ fn check(app_state: &Entity<AppState>, cx: &mut AsyncApp, want_profiles: usize, 
         std::process::exit(1);
     }
     eprintln!("[harness] ok {}: profiles={} active={:?}", label, n, active);
+}
+
+/// The smallest config `strip_inbounds` accepts. No sing-box binary sits
+/// next to the harness, so `sing-box check` is skipped.
+const CONFIG_BODY: &str = r#"{"outbounds":[{"type":"direct","tag":"direct"}]}"#;
+
+/// Local HTTP server answering one request at a time with `CONFIG_BODY`,
+/// but only once `release` is sent: a fetch is reliably in flight meanwhile.
+struct HeldServer {
+    url: String,
+    accepted: mpsc::Receiver<()>,
+    release: mpsc::Sender<()>,
+    answered: mpsc::Receiver<()>,
+}
+
+fn held_server() -> HeldServer {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind harness server");
+    let url = format!("http://{}/sub.json", listener.local_addr().unwrap());
+    let (accepted_tx, accepted) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let (answered_tx, answered) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = accepted_tx.send(());
+            if release_rx.recv().is_err() {
+                return;
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                CONFIG_BODY.len(),
+                CONFIG_BODY
+            );
+            let _ = stream.write_all(response.as_bytes());
+            drop(stream);
+            let _ = answered_tx.send(());
+        }
+    });
+    HeldServer {
+        url,
+        accepted,
+        release,
+        answered,
+    }
+}
+
+/// Poll `rx` on the executor's timer (blocking would stall the very fetch
+/// being waited for). Exits 2 after 15s.
+async fn wait_for(rx: &mpsc::Receiver<()>, what: &str, cx: &mut AsyncApp) {
+    for _ in 0..300 {
+        if rx.try_recv().is_ok() {
+            return;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    eprintln!("[harness] INCONCLUSIVE: {} never happened", what);
+    std::process::exit(2);
+}
+
+fn remote(url: &str) -> ProfileSource {
+    ProfileSource::Remote {
+        url: url.to_string(),
+        auto_update_interval_minutes: 0,
+    }
+}
+
+fn fail(label: &str, detail: String) -> ! {
+    eprintln!("[harness] FAIL {}: {}", label, detail);
+    std::process::exit(1);
+}
+
+/// Temp files left in `configs/` (staged configs that were never cleaned up).
+fn temp_files(configs: &Path) -> Vec<String> {
+    std::fs::read_dir(configs)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(".tmp"))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn main() {
@@ -119,6 +220,87 @@ fn main() {
             });
             wait_idle(&app_state, cx).await;
             check(&app_state, cx, 1, "C reuse-import failure keeps the profile");
+
+            let app_dir = cx.update(|cx| app_state.read(cx).app_dir.clone());
+            let server = held_server();
+
+            // D — the Add dialog's first fetch while another fetch is in
+            // flight is queued and runs after it, instead of being dropped.
+            let source_file = app_dir.join("local-source.json");
+            std::fs::write(&source_file, CONFIG_BODY).expect("write local source");
+            let held_id = cx.update(|cx| {
+                app_state.update(cx, |s, cx| {
+                    let id = s.create_profile("Held".to_string(), remote(&server.url), cx);
+                    s.update_profile(id.clone(), FetchOrigin::Manual, cx);
+                    id
+                })
+            });
+            wait_for(&server.accepted, "D: held fetch reached the server", cx).await;
+            let queued_id = cx.update(|cx| {
+                app_state.update(cx, |s, cx| {
+                    let id = s.create_profile(
+                        "Queued".to_string(),
+                        ProfileSource::Local {
+                            path: source_file.display().to_string(),
+                        },
+                        cx,
+                    );
+                    s.update_profile(id.clone(), FetchOrigin::Manual, cx);
+                    id
+                })
+            });
+            let _ = server.release.send(());
+            wait_idle(&app_state, cx).await;
+            for id in [&held_id, &queued_id] {
+                if !profile_config_path(&app_dir, id).exists() {
+                    fail("D queued fetch runs", format!("no config for {}", id));
+                }
+            }
+            eprintln!("[harness] ok D queued fetch runs after the held one");
+
+            // E — deleting a profile mid-fetch: the fetch still completes in
+            // the background, but must neither write its config nor leave
+            // its staged temp file; and the id is not handed out again.
+            let doomed_id = cx.update(|cx| {
+                app_state.update(cx, |s, cx| {
+                    let id = s.create_profile("Doomed".to_string(), remote(&server.url), cx);
+                    s.update_profile(id.clone(), FetchOrigin::Manual, cx);
+                    id
+                })
+            });
+            wait_for(&server.accepted, "E: doomed fetch reached the server", cx).await;
+            cx.update(|cx| {
+                app_state.update(cx, |s, cx| s.delete_profile(doomed_id.clone(), cx));
+            });
+            let _ = server.release.send(());
+            wait_for(&server.answered, "E: server answered", cx).await;
+            // The background job reads, strips and stages after the answer.
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let doomed_config = profile_config_path(&app_dir, &doomed_id);
+            if doomed_config.exists() {
+                fail(
+                    "E deleted profile's fetch",
+                    format!("{} was written", doomed_config.display()),
+                );
+            }
+            let leftovers = temp_files(&app_dir.join("configs"));
+            if !leftovers.is_empty() {
+                fail(
+                    "E deleted profile's fetch",
+                    format!("temp files left: {:?}", leftovers),
+                );
+            }
+            let next_id = cx.update(|cx| {
+                app_state.update(cx, |s, cx| {
+                    s.create_profile("Next".to_string(), remote(&server.url), cx)
+                })
+            });
+            if next_id == doomed_id {
+                fail("E id reuse", format!("{} handed out again", next_id));
+            }
+            eprintln!("[harness] ok E deleted profile's fetch writes nothing");
 
             eprintln!("[harness] all scenarios passed");
             std::process::exit(0);

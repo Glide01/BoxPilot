@@ -1,4 +1,6 @@
-use crate::core::atomic_write::{unique_suffix, write_atomic, FileAccess};
+use crate::core::atomic_write::{
+    stage_atomic, unique_suffix, write_atomic, FileAccess, StagedFile,
+};
 use crate::core::singbox_api::SingBoxApi;
 use crate::core::settings::{AppSettings, API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use reqwest::blocking::Client;
@@ -22,16 +24,35 @@ pub fn user_agent(sing_box_version: Option<&str>) -> String {
     )
 }
 
-/// Result of a subscription fetch + write.
+/// Result of a subscription fetch / local import.
 ///
-/// `Changed` means we wrote a new `config.json` to disk; the caller should
-/// persist settings and (for auto-update) restart sing-box if running.
-/// `Unchanged` means the fetched config was byte-identical to what's already
-/// on disk; nothing was written and no further action is needed.
+/// `Changed` carries the new, validated config staged next to the profile's
+/// `configs/<id>.json` but not yet in place: the fetch runs on the
+/// background executor and can't know whether its profile still exists, so
+/// the caller checks that on the UI thread and then `commit`s, or drops the
+/// outcome to discard it. `Unchanged` means the fetched config was
+/// byte-identical to what's already on disk; nothing was written.
 #[derive(Debug)]
 pub enum UpdateOutcome {
-    Changed,
+    Changed(StagedFile),
     Unchanged,
+}
+
+impl UpdateOutcome {
+    /// Land the outcome: move a `Changed` config into place. `Ok(true)` when
+    /// the profile's config changed, `Ok(false)` when it was already current.
+    pub fn commit(self) -> Result<bool, String> {
+        match self {
+            UpdateOutcome::Changed(staged) => {
+                let target = staged.target().to_path_buf();
+                staged
+                    .commit()
+                    .map_err(|e| format!("Failed to write config ({}): {}", target.display(), e))?;
+                Ok(true)
+            }
+            UpdateOutcome::Unchanged => Ok(false),
+        }
+    }
 }
 
 /// Strip BoxPilot-managed sections from config (used when saving subscription
@@ -189,9 +210,9 @@ pub fn save_runtime_config(path: &Path, prepared: &str) -> io::Result<()> {
     write_atomic(path, prepared.as_bytes(), FileAccess::OwnerOnly)
 }
 
-/// Fetch the subscription, strip its inbounds, and write to `config_path`
-/// (the profile's `configs/<id>.json`) — but only if the result differs from
-/// what's already on disk. `app_dir` is still needed separately: it's where
+/// Fetch the subscription, strip its inbounds, and stage it for `config_path`
+/// (the profile's `configs/<id>.json`; see `UpdateOutcome`) — but only if
+/// the result differs from what's already on disk. `app_dir` is still needed separately: it's where
 /// the validation temp file goes so `sing-box check -D` resolves relative
 /// resources exactly like at runtime.
 ///
@@ -240,7 +261,7 @@ pub fn perform_update(
 }
 
 /// Shared tail once the raw config text is in hand: strip → unchanged-detection
-/// → `sing-box check` validation → write. Both the remote (HTTP) and local
+/// → `sing-box check` validation → stage. Both the remote (HTTP) and local
 /// (file) sources funnel through here.
 fn apply_config_text(
     raw: &str,
@@ -280,15 +301,16 @@ fn apply_config_text(
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
-    // Atomic replace: a crash mid-write must not corrupt the profile's
-    // (possibly active) config.
-    write_atomic(config_path, stripped.as_bytes(), FileAccess::Inherit)
+    // Staged beside the target and renamed over it by `UpdateOutcome::commit`:
+    // a crash mid-write must not corrupt the profile's (possibly active)
+    // config, and a result nobody wants any more must not land at all.
+    let staged = stage_atomic(config_path, stripped.as_bytes(), FileAccess::Inherit)
         .map_err(|e| format!("Failed to write config ({}): {}", config_path.display(), e))?;
 
-    Ok(UpdateOutcome::Changed)
+    Ok(UpdateOutcome::Changed(staged))
 }
 
-/// Read a sing-box config from a local file and snapshot it into `config_path`
+/// Read a sing-box config from a local file and stage a snapshot for `config_path`
 /// (a Local profile's create / ⟳). Same strip + validate + unchanged-detection
 /// path as `perform_update`, just sourced from disk instead of HTTP.
 pub fn import_local_config(
@@ -342,7 +364,8 @@ fn validate_downloaded_config(
 }
 
 /// `<app_dir>/config_check-<profile id>-<unique>.tmp`. Fetches can overlap (an
-/// import cancels a fetch whose blocking work still runs to completion), and
+/// import takes over from a fetch whose blocking work still runs to
+/// completion), and
 /// with one shared name a run could check or delete the other's file: a
 /// false pass that lets a broken config replace a good one, or a spurious
 /// failure.
@@ -720,7 +743,9 @@ mod tests {
         fs::write(&src, SUB_CONFIG).unwrap();
         let config_path = dir.join("configs").join("p1.json");
         let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
-        assert!(matches!(outcome, UpdateOutcome::Changed));
+        assert!(matches!(outcome, UpdateOutcome::Changed(_)));
+        assert!(!config_path.exists(), "nothing lands before commit");
+        assert_eq!(outcome.commit(), Ok(true));
         let json = parse(&fs::read_to_string(&config_path).unwrap());
         assert!(json.get("inbounds").is_none(), "inbounds must be stripped");
         assert!(json.get("experimental").is_none(), "experimental must be stripped");
@@ -734,9 +759,27 @@ mod tests {
         let src = dir.join("source.json");
         fs::write(&src, SUB_CONFIG).unwrap();
         let config_path = dir.join("configs").join("p1.json");
-        import_local_config(&src, &dir, &config_path, None).unwrap();
+        import_local_config(&src, &dir, &config_path, None)
+            .unwrap()
+            .commit()
+            .unwrap();
         let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
         assert!(matches!(outcome, UpdateOutcome::Unchanged));
+        assert_eq!(outcome.commit(), Ok(false));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A result that is dropped instead of committed (its profile was
+    /// deleted, or a newer fetch took over) leaves nothing behind.
+    #[test]
+    fn dropped_import_leaves_no_files() {
+        let dir = sub_temp_dir("import_dropped");
+        let src = dir.join("source.json");
+        fs::write(&src, SUB_CONFIG).unwrap();
+        let config_path = dir.join("configs").join("p1.json");
+        let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
+        drop(outcome);
+        assert_eq!(fs::read_dir(dir.join("configs")).unwrap().count(), 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

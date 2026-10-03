@@ -41,6 +41,52 @@ pub fn write_atomic(path: &Path, contents: &[u8], access: FileAccess) -> io::Res
     write_atomic_with(path, access, |file| file.write_all(contents))
 }
 
+/// The first half of `write_atomic`: `contents` is fully written and synced
+/// to a temp file next to `path`, but not yet in place. Lets a background job
+/// do the slow write while the UI thread decides whether it should land at
+/// all (a profile fetch whose profile was deleted meanwhile must not).
+pub fn stage_atomic(path: &Path, contents: &[u8], access: FileAccess) -> io::Result<StagedFile> {
+    stage_with(path, access, |file| file.write_all(contents))
+}
+
+/// New content waiting next to its target; see `stage_atomic`. `commit`
+/// renames it over the target. Dropped uncommitted (discarded, or its task
+/// cancelled), it removes the temp file, so the target is never touched.
+#[derive(Debug)]
+pub struct StagedFile {
+    /// `None` once committed.
+    tmp: Option<PathBuf>,
+    target: PathBuf,
+}
+
+impl StagedFile {
+    /// The file this replaces once committed.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Rename the staged content over the target. On error the temp file is
+    /// removed and the target is left as it was.
+    pub fn commit(mut self) -> io::Result<()> {
+        let Some(tmp) = self.tmp.take() else {
+            return Ok(());
+        };
+        let result = rename_into_place(&tmp, &self.target);
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        result
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if let Some(tmp) = self.tmp.take() {
+            let _ = fs::remove_file(tmp);
+        }
+    }
+}
+
 /// `write_atomic` with the content step supplied by the caller; tests use it
 /// to fail halfway through.
 fn write_atomic_with(
@@ -48,15 +94,25 @@ fn write_atomic_with(
     access: FileAccess,
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
-    let tmp = temp_path_for(path)?;
-    let result = write_then_rename(path, &tmp, access, write);
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
+    stage_with(path, access, write)?.commit()
 }
 
-fn write_then_rename(
+fn stage_with(
+    path: &Path,
+    access: FileAccess,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<StagedFile> {
+    let tmp = temp_path_for(path)?;
+    // Built first, so an error below drops it and removes the temp file.
+    let staged = StagedFile {
+        tmp: Some(tmp.clone()),
+        target: path.to_path_buf(),
+    };
+    write_temp(path, &tmp, access, write)?;
+    Ok(staged)
+}
+
+fn write_temp(
     path: &Path,
     tmp: &Path,
     access: FileAccess,
@@ -79,10 +135,13 @@ fn write_then_rename(
         }
     }
     #[cfg(not(unix))]
-    let _ = access;
+    let _ = (path, access);
     write(&mut file)?;
     file.sync_all()?;
-    drop(file);
+    Ok(())
+}
+
+fn rename_into_place(tmp: &Path, path: &Path) -> io::Result<()> {
     fs::rename(tmp, path)?;
     // Persist the rename itself (the directory entry). Best effort: some
     // filesystems refuse to sync a directory, and the content is already safe.
@@ -159,6 +218,29 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.to_string(), "disk full");
         assert_eq!(fs::read_to_string(&path).unwrap(), "good config");
+        assert_eq!(entries(&dir), vec!["p1.json"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A staged file is invisible until committed, and discarding it (a
+    /// fetch for a deleted profile) leaves the old target and no temp file.
+    #[test]
+    fn staged_file_lands_only_on_commit() {
+        let dir = temp_dir("staged");
+        let path = dir.join("p1.json");
+        fs::write(&path, "old").unwrap();
+
+        let discarded = stage_atomic(&path, b"discarded", FileAccess::Inherit).unwrap();
+        assert_eq!(discarded.target(), path.as_path());
+        assert_eq!(entries(&dir).len(), 2, "temp file beside the target");
+        drop(discarded);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+        assert_eq!(entries(&dir), vec!["p1.json"]);
+
+        let staged = stage_atomic(&path, b"new", FileAccess::Inherit).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+        staged.commit().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
         assert_eq!(entries(&dir), vec!["p1.json"]);
         let _ = fs::remove_dir_all(&dir);
     }
