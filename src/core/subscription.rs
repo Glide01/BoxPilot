@@ -97,8 +97,9 @@ pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize config: {}", e))
 }
 
-/// The TUN interface's IPv4 address — always present in TUN mode.
-const TUN_IPV4_ADDRESS: &str = "172.18.0.1/30";
+/// The TUN interface's IPv4 address — always present in TUN mode. Public so
+/// `core::lan` can leave the TUN's own /30 out of the LAN addresses.
+pub const TUN_IPV4_ADDRESS: &str = "172.18.0.1/30";
 /// Added to the TUN interface only when `RuntimeOptions::tun_ipv6` is on.
 const TUN_IPV6_ADDRESS: &str = "fdfe:dcba:9876::1/126";
 
@@ -121,6 +122,13 @@ pub struct RuntimeOptions {
     /// route at all and IPv6 traffic leaves via the physical interface — this
     /// injects nothing into `dns`/`route`, which stay the subscription's.
     pub tun_ipv6: bool,
+    /// Settings › Network "Allow LAN connections": the mixed inbound
+    /// listens on every IPv4 interface (`0.0.0.0`) instead of loopback, in
+    /// TUN and Proxy mode alike. The system proxy sing-box sets still points
+    /// at `127.0.0.1` — it substitutes loopback for an unspecified listen
+    /// address (`common/listener/listener.go`) — so `set_system_proxy` and
+    /// `process::disable_system_proxy` are unaffected.
+    pub allow_lan: bool,
 }
 
 impl RuntimeOptions {
@@ -133,6 +141,7 @@ impl RuntimeOptions {
             proxy_port: settings.proxy_port,
             api,
             tun_ipv6: settings.tun_ipv6,
+            allow_lan: settings.allow_lan,
         }
     }
 }
@@ -251,6 +260,17 @@ fn object_entry<'a>(parent: &'a mut Value, key: &str) -> &'a mut Value {
     &mut parent[key]
 }
 
+/// Where the mixed inbound listens: every IPv4 interface when LAN
+/// connections are allowed, loopback otherwise. IPv4 only, matching the
+/// addresses the Settings hint lists (`core::lan`).
+fn mixed_listen_address(allow_lan: bool) -> &'static str {
+    if allow_lan {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    }
+}
+
 /// Inject mode-specific inbounds into config (used at process start)
 pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String, String> {
     let mut json: Value = serde_json::from_str(config_data)
@@ -262,7 +282,7 @@ pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String,
     let mut mixed_inbound = serde_json::json!({
         "type": "mixed",
         "tag": "proxy",
-        "listen": "127.0.0.1",
+        "listen": mixed_listen_address(opts.allow_lan),
         "listen_port": opts.proxy_port
     });
     if opts.set_system_proxy {
@@ -745,6 +765,7 @@ mod tests {
             set_system_proxy: true,
             proxy_port: 18888,
             tun_ipv6: true,
+            allow_lan: true,
             ..AppSettings::default()
         };
         let api = SingBoxApi::new(41234);
@@ -757,6 +778,7 @@ mod tests {
                 proxy_port: 18888,
                 api,
                 tun_ipv6: true,
+                allow_lan: true,
             }
         );
     }
@@ -964,6 +986,84 @@ mod tests {
         assert_eq!(prepared["inbounds"][0]["set_system_proxy"], true);
     }
 
+    /// "Allow LAN connections" moves the mixed inbound from loopback to
+    /// every IPv4 interface, in both modes; nothing else about the inbounds
+    /// changes, and the TUN inbound never gets a listen address.
+    #[test]
+    fn allow_lan_sets_the_mixed_listen_address_in_both_modes() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        for proxy_mode in [true, false] {
+            for (allow_lan, listen) in [(false, "127.0.0.1"), (true, "0.0.0.0")] {
+                let prepared = parse(
+                    &prepare_config(
+                        &stripped,
+                        RuntimeOptions {
+                            proxy_mode,
+                            allow_lan,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                );
+                let inbounds = prepared["inbounds"].as_array().unwrap();
+                let mixed = inbounds.last().unwrap();
+                assert_eq!(mixed["type"], "mixed");
+                assert_eq!(
+                    mixed["listen"], listen,
+                    "proxy_mode={proxy_mode}, allow_lan={allow_lan}"
+                );
+                assert_eq!(mixed["listen_port"], PROXY_PORT);
+                if !proxy_mode {
+                    assert_eq!(inbounds[0]["type"], "tun");
+                    assert!(inbounds[0].get("listen").is_none());
+                }
+            }
+        }
+    }
+
+    /// LAN access and the system proxy combine: sing-box still sets the
+    /// system proxy (to 127.0.0.1, its stand-in for an unspecified listen
+    /// address), so the flag is injected exactly as without LAN access.
+    #[test]
+    fn allow_lan_keeps_the_system_proxy_flag() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        for proxy_mode in [true, false] {
+            let prepared = parse(
+                &prepare_config(
+                    &stripped,
+                    RuntimeOptions {
+                        proxy_mode,
+                        set_system_proxy: true,
+                        allow_lan: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            );
+            let mixed = prepared["inbounds"].as_array().unwrap().last().unwrap();
+            assert_eq!(mixed["listen"], "0.0.0.0");
+            assert_eq!(mixed["set_system_proxy"], true);
+        }
+    }
+
+    /// BoxPilot's own sing-box API stays on loopback whatever the LAN
+    /// setting: only the proxy is shared.
+    #[test]
+    fn allow_lan_leaves_the_api_service_on_loopback() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        let prepared = parse(
+            &prepare_config(
+                &stripped,
+                RuntimeOptions {
+                    allow_lan: true,
+                    ..proxy_opts()
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(prepared["services"][0]["listen"], "127.0.0.1");
+    }
+
     #[test]
     fn tun_mode_injects_tun_then_mixed() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
@@ -1066,20 +1166,23 @@ mod tests {
             for proxy_mode in [true, false] {
                 for set_system_proxy in [true, false] {
                     for tun_ipv6 in [true, false] {
-                        let opts = RuntimeOptions {
-                            proxy_mode,
-                            set_system_proxy,
-                            tun_ipv6,
-                            ..Default::default()
-                        };
-                        let on_disk = prepare_config(&canonical, opts).unwrap();
-                        let recovered = strip_inbounds(&on_disk).unwrap();
-                        assert_eq!(
-                            recovered, canonical,
-                            "strip(prepare(x, proxy_mode={}, system_proxy={}, tun_ipv6={})) must equal x",
-                            proxy_mode, set_system_proxy, tun_ipv6
-                        );
-                        assert_eq!(prepare_config(&recovered, opts).unwrap(), on_disk);
+                        for allow_lan in [true, false] {
+                            let opts = RuntimeOptions {
+                                proxy_mode,
+                                set_system_proxy,
+                                tun_ipv6,
+                                allow_lan,
+                                ..Default::default()
+                            };
+                            let on_disk = prepare_config(&canonical, opts).unwrap();
+                            let recovered = strip_inbounds(&on_disk).unwrap();
+                            assert_eq!(
+                                recovered, canonical,
+                                "strip(prepare(x, proxy_mode={}, system_proxy={}, tun_ipv6={}, allow_lan={})) must equal x",
+                                proxy_mode, set_system_proxy, tun_ipv6, allow_lan
+                            );
+                            assert_eq!(prepare_config(&recovered, opts).unwrap(), on_disk);
+                        }
                     }
                 }
             }
