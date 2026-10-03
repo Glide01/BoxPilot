@@ -95,7 +95,7 @@ pub enum PillTone {
 pub fn pill(theme: &Theme, tone: PillTone, text: &'static str) -> Div {
     let base = div().flex_shrink_0().text_xs().px_2().rounded_full();
     match tone {
-        PillTone::Primary => base.bg(theme.primary).text_color(gpui::white()),
+        PillTone::Primary => base.bg(theme.primary).text_color(theme.primary_foreground),
         PillTone::Muted => base.bg(theme.muted).text_color(theme.muted_foreground),
     }
     .child(text)

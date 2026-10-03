@@ -46,6 +46,8 @@ pub struct LogsPage {
     viewer: Entity<EditorState>,
     /// 级别徽标的着色。
     badges: TextDecorationCollection,
+    /// `badges` 按哪种主题(深色?)上的色;切换浅色/深色后渲染时重新上色。
+    badges_dark: bool,
     /// 当前灌进 viewer 的内容(用于判断是否变化,以及映射选区 / 滚动)。
     shown: ViewText,
     /// 是否跟随最新行。仅在 viewer 画过当前内容后按"是否停在底部"重算。
@@ -90,6 +92,7 @@ impl LogsPage {
             app_state,
             viewer,
             badges,
+            badges_dark: cx.theme().is_dark(),
             shown: ViewText::default(),
             follow: true,
             painted: false,
@@ -129,15 +132,11 @@ impl LogsPage {
             self.follow = -offset.y + height >= content - line_height * 1.5;
         }
 
-        let colors = BadgeColors::new(cx);
-        let decorations = view
-            .badges
-            .iter()
-            .map(|(range, level)| TextDecoration::new(range.clone(), colors.style(*level)))
-            .collect();
+        let decorations = badge_decorations(&view, cx);
         self.viewer
             .update(cx, |s, cx| s.set_value(view.text.clone(), window, cx));
         self.badges.set(decorations, cx);
+        self.badges_dark = cx.theme().is_dark();
 
         // Keep a selection on the same characters.
         if selection.start != selection.end {
@@ -181,6 +180,15 @@ impl LogsPage {
         self.shown = view;
         self.painted = false;
     }
+}
+
+/// `view`'s level badges, coloured from the current theme.
+fn badge_decorations(view: &ViewText, cx: &App) -> Vec<TextDecoration> {
+    let colors = BadgeColors::new(cx);
+    view.badges
+        .iter()
+        .map(|(range, level)| TextDecoration::new(range.clone(), colors.style(*level)))
+        .collect()
 }
 
 /// Level-badge styles, from the theme.
@@ -244,6 +252,13 @@ impl Render for LogsPage {
         if std::mem::take(&mut self.stale) {
             let logs = self.logs.clone();
             self.refresh(&logs, window, cx);
+        }
+        // Light/dark switched (which re-renders every page): the text is
+        // unchanged, so recolour the badges in place.
+        if cx.theme().is_dark() != self.badges_dark {
+            let decorations = badge_decorations(&self.shown, cx);
+            self.badges.set(decorations, cx);
+            self.badges_dark = cx.theme().is_dark();
         }
         self.painted = true;
         let app_state_entity = self.app_state.clone();
