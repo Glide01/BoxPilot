@@ -21,8 +21,21 @@ fn locale_tags_pick_the_language() {
             "{zh:?}"
         );
     }
-    for other in ["en-US", "en", "ja-JP", "de_DE.UTF-8", "zha", "", "C", "POSIX"] {
-        assert_eq!(language_for_locale(Some(other)), Language::English, "{other:?}");
+    for other in [
+        "en-US",
+        "en",
+        "ja-JP",
+        "de_DE.UTF-8",
+        "zha",
+        "",
+        "C",
+        "POSIX",
+    ] {
+        assert_eq!(
+            language_for_locale(Some(other)),
+            Language::English,
+            "{other:?}"
+        );
     }
     assert_eq!(language_for_locale(None), Language::English);
 }
@@ -187,15 +200,24 @@ fn formatted_messages_fill_in_their_values() {
     assert_eq!((EN.vpn.cookies)("a, b", 2), "the a, b cookies");
     assert_eq!((ZH_CN.vpn.cookies)("a, b", 2), "Cookie a, b");
 
-    assert_eq!((EN.tray.tooltip)(EN.status.connected), "BoxPilot — Connected");
-    assert_eq!((ZH_CN.tray.tooltip)(ZH_CN.status.connected), "BoxPilot — 已连接");
+    assert_eq!(
+        (EN.tray.tooltip)(EN.status.connected),
+        "BoxPilot — Connected"
+    );
+    assert_eq!(
+        (ZH_CN.tray.tooltip)(ZH_CN.status.connected),
+        "BoxPilot — 已连接"
+    );
 
     assert_eq!(
         (EN.updates.available_toast)("1.14.0"),
         "BoxPilot 1.14.0 is available — see Settings › About."
     );
     assert_eq!((ZH_CN.chart.mins_secs_ago)(1, 5), "1 分 5 秒前");
-    assert_eq!((ZH_CN.settings.copied_command)("fish"), "已复制 fish 代理命令。");
+    assert_eq!(
+        (ZH_CN.settings.copied_command)("fish"),
+        "已复制 fish 代理命令。"
+    );
 }
 
 #[test]

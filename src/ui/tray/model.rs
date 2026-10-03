@@ -5,6 +5,7 @@
 //! render the same menu.
 
 use crate::core::presentation::ConnectionStatus;
+use crate::i18n::Language;
 
 /// Everything a tray click can ask for. Backends never act on a click
 /// themselves: their callbacks run off the gpui thread (ksni's D-Bus
@@ -60,13 +61,15 @@ pub struct TraySnapshot {
     pub clash_current: String,
     /// `(id, name)` of every profile, in the user's order.
     pub profiles: Vec<(String, String)>,
+    /// The UI language: a switch is a change, so the menu is rebuilt in it.
     pub active_profile: String,
+    pub language: Language,
 }
 
 impl TraySnapshot {
     /// Hover text: "BoxPilot — Connected" etc.
     pub fn tooltip(&self) -> String {
-        format!("BoxPilot — {}", self.status.label())
+        (self.language.strings().tray.tooltip)(self.status.label_in(self.language.strings()))
     }
 
     /// Whether the icon is the coloured (connected) one.
@@ -102,35 +105,36 @@ pub enum MenuEntry {
 
 /// The tray menu for `snapshot`, top to bottom.
 pub fn menu_entries(snapshot: &TraySnapshot) -> Vec<MenuEntry> {
+    let t = snapshot.language.strings();
     let mut entries = vec![
         MenuEntry::Item {
-            label: "Show BoxPilot".into(),
+            label: t.tray.show.into(),
             enabled: true,
             command: TrayCommand::ShowWindow,
         },
         MenuEntry::Separator,
         MenuEntry::Item {
-            label: snapshot.status.power_action_label().into(),
+            label: snapshot.status.power_action_label_in(t).into(),
             enabled: snapshot.status.can_toggle(),
             command: TrayCommand::ToggleConnection,
         },
         MenuEntry::Check {
-            label: "System Proxy".into(),
+            label: t.tray.system_proxy.into(),
             checked: snapshot.system_proxy,
             command: TrayCommand::SetSystemProxy(!snapshot.system_proxy),
         },
         MenuEntry::Radio {
-            label: "Proxy Mode".into(),
+            label: t.tray.proxy_mode.into(),
             options: vec![
-                ("TUN".into(), TrayCommand::SetProxyMode(false)),
-                ("Proxy".into(), TrayCommand::SetProxyMode(true)),
+                (t.home.mode_tun.into(), TrayCommand::SetProxyMode(false)),
+                (t.home.mode_proxy.into(), TrayCommand::SetProxyMode(true)),
             ],
             selected: Some(usize::from(snapshot.proxy_mode)),
         },
     ];
     if crate::core::singbox_api::is_switchable(&snapshot.clash_modes) {
         entries.push(MenuEntry::Radio {
-            label: "Clash Mode".into(),
+            label: t.tray.clash_mode.into(),
             options: snapshot
                 .clash_modes
                 .iter()
@@ -144,7 +148,7 @@ pub fn menu_entries(snapshot: &TraySnapshot) -> Vec<MenuEntry> {
     }
     if snapshot.profiles.len() >= 2 {
         entries.push(MenuEntry::Radio {
-            label: "Profile".into(),
+            label: t.tray.profile.into(),
             options: snapshot
                 .profiles
                 .iter()
@@ -158,7 +162,7 @@ pub fn menu_entries(snapshot: &TraySnapshot) -> Vec<MenuEntry> {
     }
     entries.push(MenuEntry::Separator);
     entries.push(MenuEntry::Item {
-        label: "Quit BoxPilot".into(),
+        label: t.tray.quit.into(),
         enabled: true,
         command: TrayCommand::Quit,
     });
@@ -178,6 +182,7 @@ mod tests {
             clash_current: String::new(),
             profiles: vec![("p1".into(), "Home".into())],
             active_profile: "p1".into(),
+            language: Language::English,
         }
     }
 
@@ -350,6 +355,28 @@ mod tests {
         snap.status = ConnectionStatus::Connected;
         assert_eq!(snap.tooltip(), "BoxPilot — Connected");
         assert!(snap.connected());
+    }
+
+    #[test]
+    fn menu_and_tooltip_follow_the_language() {
+        let mut snap = snapshot();
+        snap.language = Language::SimplifiedChinese;
+        snap.status = ConnectionStatus::Connected;
+        assert_eq!(snap.tooltip(), "BoxPilot — 已连接");
+        assert_eq!(
+            labels(&menu_entries(&snap)),
+            [
+                "显示 BoxPilot",
+                "-",
+                "断开",
+                "系统代理",
+                "代理模式",
+                "-",
+                "退出 BoxPilot"
+            ]
+        );
+        let english = snapshot();
+        assert_ne!(english, snap, "a language switch is a snapshot change");
     }
 
     #[test]

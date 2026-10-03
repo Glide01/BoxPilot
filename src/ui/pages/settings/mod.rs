@@ -19,6 +19,7 @@ use crate::core::settings::fish_proxy_command;
 #[cfg(target_os = "windows")]
 use crate::core::settings::powershell_proxy_command;
 use crate::core::settings::{posix_proxy_command, StatusLevel, PROXY_PORT};
+use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::widgets::{page_header, setting_row};
 use crate::ui::{card_frame, toast};
@@ -109,8 +110,9 @@ impl Render for SettingsPage {
         let sing_box_version = state
             .sing_box_version
             .clone()
-            .unwrap_or_else(|| "Unknown".to_string());
+            .unwrap_or_else(|| s().common.unknown.to_string());
         let theme = cx.theme();
+        let t = &s().settings;
 
         let section_label = |text: &'static str| {
             div()
@@ -119,10 +121,8 @@ impl Render for SettingsPage {
                 .child(text)
         };
 
-        let copy_btn = |id: &'static str,
-                        label: &'static str,
-                        cmd: String,
-                        toast_msg: &'static str| {
+        let copy_btn = |id: &'static str, label: &'static str, cmd: String| {
+            let toast_msg = (t.copied_command)(label);
             let tooltip = cmd.clone();
             Button::new(id)
                 .outline()
@@ -132,7 +132,7 @@ impl Render for SettingsPage {
                 .tooltip(tooltip)
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(cmd.clone()));
-                    toast::show(StatusLevel::Success, toast_msg, cx);
+                    toast::show(StatusLevel::Success, toast_msg.clone(), cx);
                 })
         };
 
@@ -143,13 +143,11 @@ impl Render for SettingsPage {
                 "ps-env",
                 "PowerShell",
                 powershell_proxy_command(proxy_port),
-                "Copied PowerShell proxy command.",
             ))
             .child(copy_btn(
                 "wsl-env",
                 "WSL",
                 posix_proxy_command(proxy_port),
-                "Copied WSL proxy command.",
             ));
         #[cfg(not(target_os = "windows"))]
         let shell_buttons = shell_buttons
@@ -157,13 +155,11 @@ impl Render for SettingsPage {
                 "posix-env",
                 "bash/zsh",
                 posix_proxy_command(proxy_port),
-                "Copied bash/zsh proxy command.",
             ))
             .child(copy_btn(
                 "fish-env",
                 "fish",
                 fish_proxy_command(proxy_port),
-                "Copied fish proxy command.",
             ));
 
         let cards = div()
@@ -172,15 +168,15 @@ impl Render for SettingsPage {
             .when(!general_rows.is_empty(), |cards| {
                 cards.child(
                     card_frame(theme)
-                        .child(section_label("GENERAL"))
+                        .child(section_label(t.general))
                         .children(general_rows),
                 )
             })
             .child(
                 card_frame(theme)
-                    .child(section_label("NETWORK"))
+                    .child(section_label(t.network))
                     .child(
-                        setting_row(theme, "Local proxy port", None).child(
+                        setting_row(theme, t.local_proxy_port, None).child(
                             div()
                                 .w(px(96.))
                                 .on_mouse_down_out(|_, window, cx| window.blur(cx))
@@ -190,8 +186,8 @@ impl Render for SettingsPage {
                     .children(lan_rows),
             )
             .child(
-                card_frame(theme).child(section_label("TUN")).child(
-                    setting_row(theme, "IPv6", Some("Proxies IPv6 traffic in TUN mode.")).child(
+                card_frame(theme).child(section_label(t.tun)).child(
+                    setting_row(theme, t.ipv6, Some(t.ipv6_hint)).child(
                         Switch::new("tun-ipv6")
                             .checked(tun_ipv6)
                             .on_click(move |checked: &bool, _, cx| {
@@ -204,21 +200,17 @@ impl Render for SettingsPage {
             )
             .child(
                 card_frame(theme)
-                    .child(section_label("SHELL ENVIRONMENT"))
+                    .child(section_label(t.shell_environment))
                     .child(shell_buttons),
             )
             .child(
                 card_frame(theme).child(
-                    setting_row(
-                        theme,
-                        "Clear Cache",
-                        Some("Resets cache.db — node selections go back to defaults. Available while disconnected."),
-                    )
+                    setting_row(theme, t.clear_cache, Some(t.clear_cache_hint))
                     .child(
                         Button::new("clear-cache")
                             .outline()
                             .small()
-                            .label("Clear Cache")
+                            .label(t.clear_cache)
                             .disabled(!can_clear)
                             .on_click(move |_, _, cx| {
                                 app_state_clear
@@ -230,13 +222,13 @@ impl Render for SettingsPage {
             .when(!diagnostics_rows.is_empty(), |cards| {
                 cards.child(
                     card_frame(theme)
-                        .child(section_label("TROUBLESHOOTING"))
+                        .child(section_label(t.troubleshooting))
                         .children(diagnostics_rows),
                 )
             })
             .child(
                 card_frame(theme)
-                    .child(section_label("ABOUT"))
+                    .child(section_label(t.about))
                     .child(
                         setting_row(theme, "BoxPilot", None).child(
                             div()
@@ -260,7 +252,7 @@ impl Render for SettingsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .child(page_header(theme, "Settings"))
+            .child(page_header(theme, t.title))
             .child(div().flex_1().min_h_0().child(cards.overflow_y_scrollbar()))
     }
 }

@@ -157,7 +157,8 @@ fn mask_url(text: &str) -> Option<String> {
 }
 
 fn pretty(json: &Value) -> Result<String, String> {
-    serde_json::to_string_pretty(json).map_err(|e| (s().config_viewer.format_failed)(&e.to_string()))
+    serde_json::to_string_pretty(json)
+        .map_err(|e| (s().config_viewer.format_failed)(&e.to_string()))
 }
 
 /// What the next start would write for `profile_json` (a profile's
@@ -169,8 +170,8 @@ pub fn preview_config(profile_json: &str, settings: &AppSettings) -> Result<Stri
         profile_json,
         RuntimeOptions::new(settings, SingBoxApi::new(0)),
     )?;
-    let mut json: Value =
-        serde_json::from_str(&prepared).map_err(|e| (s().config_viewer.not_json)(&e.to_string()))?;
+    let mut json: Value = serde_json::from_str(&prepared)
+        .map_err(|e| (s().config_viewer.not_json)(&e.to_string()))?;
     if let Some(services) = json.get_mut("services").and_then(Value::as_array_mut) {
         for service in services.iter_mut().filter(|s| is_boxpilot_api_service(s)) {
             service["listen_port"] = Value::from(PICKED_AT_START);
@@ -268,13 +269,16 @@ pub fn load(request: &ConfigRequest) -> Result<ConfigView, ConfigViewError> {
 }
 
 fn read_failed(path: &Path, e: io::Error) -> ConfigViewError {
-    ConfigViewError::Failed((s().errors.read_failed)(&path.display().to_string(), &e.to_string()))
+    ConfigViewError::Failed((s().errors.read_failed)(
+        &path.display().to_string(),
+        &e.to_string(),
+    ))
 }
 
 fn view(source: ConfigSource, file: PathBuf, text: &str) -> Result<ConfigView, ConfigViewError> {
     let failed = |e: String| ConfigViewError::Failed(format!("{}: {}", file.display(), e));
-    let mut revealed: Value =
-        serde_json::from_str(text).map_err(|e| failed((s().config_viewer.not_json)(&e.to_string())))?;
+    let mut revealed: Value = serde_json::from_str(text)
+        .map_err(|e| failed((s().config_viewer.not_json)(&e.to_string())))?;
     let mut hidden = revealed.clone();
     redact_value(&mut revealed, false);
     redact_value(&mut hidden, true);

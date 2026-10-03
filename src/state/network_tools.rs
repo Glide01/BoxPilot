@@ -11,7 +11,7 @@
 //! `false` and the stream (and sing-box's test) ends.
 
 use crate::core::network_tools::{
-    outbound_choices, test_error_message, OutboundChoice, QualityRun, StunRun, ended_without_result,
+    ended_without_result, outbound_choices, test_error_message, OutboundChoice, QualityRun, StunRun,
 };
 use crate::core::singbox_api::{
     ApiError, NetworkQualityProgress, NetworkQualityRequest, SingBoxApi, StunProgress, StunRequest,

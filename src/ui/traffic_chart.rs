@@ -83,11 +83,12 @@ fn tick_label(value: f64) -> SharedString {
 
 /// "Now", "45 s ago", "1 min 5 s ago".
 fn age_label(seconds: u16) -> SharedString {
+    let t = &crate::i18n::s().chart;
     match seconds {
-        0 => "Now".into(),
-        s if s < 60 => format!("{s} s ago").into(),
-        s if s % 60 == 0 => format!("{} min ago", s / 60).into(),
-        s => format!("{} min {} s ago", s / 60, s % 60).into(),
+        0 => t.now.into(),
+        s if s < 60 => (t.secs_ago)(s).into(),
+        s if s % 60 == 0 => (t.mins_ago)(s / 60).into(),
+        s => (t.mins_secs_ago)(s / 60, s % 60).into(),
     }
 }
 
@@ -180,11 +181,11 @@ impl Render for TrafficChart {
             .y(|p: &ChartPoint| p.down)
             .stroke(colors.download)
             .fill(fill(colors.download))
-            .name("Download")
+            .name(crate::i18n::s().common.download)
             .y(|p: &ChartPoint| p.up)
             .stroke(colors.upload)
             .fill(fill(colors.upload))
-            .name("Upload")
+            .name(crate::i18n::s().common.upload)
             .y_domain(0., top)
             .y_padding(0., 0.)
             .y_axis(true)
@@ -216,14 +217,14 @@ impl Render for TrafficChart {
                         theme,
                         "icons/arrow-down.svg",
                         colors.download,
-                        "Download",
+                        crate::i18n::s().common.download,
                         format_speed(traffic.down),
                     ))
                     .child(legend_item(
                         theme,
                         "icons/arrow-up.svg",
                         colors.upload,
-                        "Upload",
+                        crate::i18n::s().common.upload,
                         format_speed(traffic.up),
                     ))
                     .child(div().flex_1())
@@ -231,7 +232,7 @@ impl Render for TrafficChart {
                         div()
                             .text_color(theme.muted_foreground)
                             .whitespace_nowrap()
-                            .child("Last 2 minutes"),
+                            .child(crate::i18n::s().chart.last_two_minutes),
                     ),
             )
             // Clip at the baseline only: the smoothed curve dips a few pixels

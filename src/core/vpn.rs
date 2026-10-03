@@ -386,14 +386,12 @@ pub fn openconnect_browser_limitation(request: &OpenConnectBrowserRequest) -> Op
     let t = &s().vpn;
     let captured = match request.mode() {
         OpenConnectBrowserMode::Callback => return None,
-        OpenConnectBrowserMode::Cookies => (t.cookies)(
-            &request.cookie_names.join(", "),
-            request.cookie_names.len(),
-        ),
-        OpenConnectBrowserMode::Headers => (t.headers)(
-            &request.header_names.join(", "),
-            request.header_names.len(),
-        ),
+        OpenConnectBrowserMode::Cookies => {
+            (t.cookies)(&request.cookie_names.join(", "), request.cookie_names.len())
+        }
+        OpenConnectBrowserMode::Headers => {
+            (t.headers)(&request.header_names.join(", "), request.header_names.len())
+        }
     };
     Some((t.browser_limitation)(&captured))
 }

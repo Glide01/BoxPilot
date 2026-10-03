@@ -15,7 +15,6 @@
 //! fire-and-forget background calls bounded by their own timeouts.
 
 use crate::core::settings::{StatusEvent, StatusLevel};
-use crate::i18n::s;
 use crate::core::singbox_api::{
     ApiError, OpenConnectBrowserResult, OpenConnectChallenge, OpenConnectEndpointStatus,
     OpenVpnAnswer, OpenVpnChallenge, OpenVpnEndpointStatus, SingBoxApi, UsbipServerStatus,
@@ -24,6 +23,7 @@ use crate::core::vpn::{
     failed_endpoints, newly_seen, pending_challenges, should_report_stream_error,
     stream_error_is_permanent, ChallengeKey, EndpointFailure, VpnPresence, VpnProtocol,
 };
+use crate::i18n::s;
 use crate::state::drain::next_batch;
 use crate::state::process_session::ProcessSession;
 use futures_channel::mpsc::{self, UnboundedSender};
@@ -289,8 +289,10 @@ impl VpnStatus {
             .map_or(Duration::ZERO, |started| started.elapsed());
         for (stream, error, permanent) in failures {
             if should_report_stream_error(permanent, self.loaded.contains(&stream), elapsed) {
-                self.stream_errors
-                    .insert(stream, (s().vpn.stream_status)(stream.label(), &error.to_string()));
+                self.stream_errors.insert(
+                    stream,
+                    (s().vpn.stream_status)(stream.label(), &error.to_string()),
+                );
             }
         }
         let endpoints_changed = openconnect.is_some() || openvpn.is_some();
@@ -404,16 +406,19 @@ impl VpnStatus {
     /// OpenConnect retries later and asks again.
     pub fn cancel_challenge(&mut self, key: ChallengeKey, cx: &mut Context<Self>) {
         let api = self.api;
-        self.run_action(key, s().vpn.cancel_sign_in_failed, cx, move |key| {
-            match key.protocol {
+        self.run_action(
+            key,
+            s().vpn.cancel_sign_in_failed,
+            cx,
+            move |key| match key.protocol {
                 VpnProtocol::OpenConnect => {
                     api.cancel_openconnect_auth(&key.endpoint_tag, &key.challenge_id)
                 }
                 VpnProtocol::OpenVpn => {
                     api.cancel_openvpn_challenge(&key.endpoint_tag, &key.challenge_id)
                 }
-            }
-        });
+            },
+        );
     }
 
     /// One submit/cancel off the UI thread. While in flight the challenge is

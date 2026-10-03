@@ -6,6 +6,7 @@
 
 use super::SettingsPage;
 use crate::core::lan::{cached_lan_addresses, endpoint_list};
+use crate::i18n::s;
 use crate::state::AppState;
 use gpui::{
     div, AnyElement, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
@@ -58,7 +59,7 @@ pub(super) fn rows(
                     div()
                         .text_sm()
                         .text_color(theme.foreground)
-                        .child("Allow LAN connections"),
+                        .child(s().settings.allow_lan),
                 )
                 .child(div().text_xs().text_color(hint_color).child(hint)),
         )
@@ -69,17 +70,12 @@ pub(super) fn rows(
 
 /// The hint under the switch. `endpoints` is `core::lan::endpoint_list`.
 fn hint(allowed: bool, endpoints: Option<String>, port: u16) -> SharedString {
+    let t = &s().settings;
     let text = match (allowed, endpoints) {
-        (true, Some(at)) => format!(
-            "Other devices can use the proxy at {at} — no password; \
-             your firewall may ask to allow sing-box."
-        ),
-        (true, None) => format!(
-            "Other devices can use the proxy on port {port} once this computer \
-             is on a network — no password; your firewall may ask to allow sing-box."
-        ),
-        (false, Some(at)) => format!("Let other devices on your network use the proxy at {at}."),
-        (false, None) => "Let other devices on your network use the proxy.".to_string(),
+        (true, Some(at)) => (t.lan_on_at)(&at),
+        (true, None) => (t.lan_on_port)(port),
+        (false, Some(at)) => (t.lan_off_at)(&at),
+        (false, None) => t.lan_off.to_string(),
     };
     text.into()
 }

@@ -177,6 +177,7 @@ fn snapshot_of(app_state: &Entity<AppState>, cx: &App) -> TraySnapshot {
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect(),
         active_profile: state.settings.active_profile_id.clone(),
+        language: crate::i18n::current(),
     }
 }
 

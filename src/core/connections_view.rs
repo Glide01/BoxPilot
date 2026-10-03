@@ -199,7 +199,14 @@ pub fn format_elapsed(ms: i64) -> String {
     if secs < 60 {
         format!("{}{}", secs, t.second)
     } else if secs < 3600 {
-        format!("{}{}{}{:02}{}", secs / 60, t.minute, t.unit_sep, secs % 60, t.second)
+        format!(
+            "{}{}{}{:02}{}",
+            secs / 60,
+            t.minute,
+            t.unit_sep,
+            secs % 60,
+            t.second
+        )
     } else if secs < 86400 {
         let (hours, mins) = (secs / 3600, (secs % 3600) / 60);
         format!("{}{}{}{:02}{}", hours, t.hour, t.unit_sep, mins, t.minute)

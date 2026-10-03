@@ -4,6 +4,7 @@
 //! observes `AppState`, so a finished check re-renders it.
 
 use super::SettingsPage;
+use crate::i18n::s;
 use crate::state::{app_state::UpdateCheck, AppState};
 use crate::ui::widgets::setting_row;
 use gpui::{
@@ -32,28 +33,25 @@ pub(super) fn rows(
     };
 
     let theme = cx.theme();
+    let t = &s().updates;
     let (status, status_color): (SharedString, Hsla) = match &check {
-        UpdateCheck::Idle => ("Not checked yet".into(), theme.muted_foreground),
-        UpdateCheck::Checking => ("Checking…".into(), theme.muted_foreground),
-        UpdateCheck::UpToDate => ("Up to date".into(), theme.muted_foreground),
-        UpdateCheck::Available(info) if offered => (
-            format!("Version {} available", info.version).into(),
-            theme.primary,
-        ),
+        UpdateCheck::Idle => (t.not_checked.into(), theme.muted_foreground),
+        UpdateCheck::Checking => (t.checking.into(), theme.muted_foreground),
+        UpdateCheck::UpToDate => (t.up_to_date.into(), theme.muted_foreground),
+        UpdateCheck::Available(info) if offered => {
+            ((t.available)(&info.version).into(), theme.primary)
+        }
         UpdateCheck::Available(info) => (
-            format!("Version {} available (skipped)", info.version).into(),
+            (t.available_skipped)(&info.version).into(),
             theme.muted_foreground,
         ),
-        UpdateCheck::Failed(reason) => (
-            format!("Update check failed: {reason}").into(),
-            theme.muted_foreground,
-        ),
+        UpdateCheck::Failed(reason) => ((t.failed)(reason).into(), theme.muted_foreground),
     };
 
     let auto_row = setting_row(
         theme,
-        "Check for updates automatically",
-        Some("Looks for a new BoxPilot release on GitHub once a day."),
+        t.check_automatically,
+        Some(t.check_automatically_hint),
     )
     .child(Switch::new("check-updates").checked(enabled).on_click({
         let app_state = app_state.clone();
@@ -68,7 +66,7 @@ pub(super) fn rows(
         let url = info.url.clone();
         let download = Button::new("update-download")
             .small()
-            .label("Download")
+            .label(t.download)
             .tooltip(url.clone())
             .on_click(move |_, _, cx| cx.open_url(&url));
         // The offered release gets the primary button; a skipped one stays
@@ -85,7 +83,7 @@ pub(super) fn rows(
                 Button::new("update-skip")
                     .outline()
                     .small()
-                    .label("Skip this version")
+                    .label(t.skip)
                     .on_click(move |_, _, cx| {
                         let version = version.clone();
                         app_state
@@ -99,7 +97,7 @@ pub(super) fn rows(
         Button::new("update-check-now")
             .outline()
             .small()
-            .label("Check now")
+            .label(t.check_now)
             // A loading button is inert; the icon carries its spinner.
             .when(checking, |button| button.icon(IconName::Loader))
             .loading(checking)
@@ -128,7 +126,7 @@ pub(super) fn rows(
                     div()
                         .text_sm()
                         .text_color(theme.foreground)
-                        .child("Updates"),
+                        .child(t.updates),
                 )
                 .child(div().text_xs().text_color(status_color).child(status)),
         )

@@ -12,10 +12,10 @@
 //! endpoint the API can't act on.
 
 use crate::core::settings::{StatusEvent, StatusLevel};
-use crate::i18n::s;
 use crate::core::singbox_api::{
     SingBoxApi, TaildropInbox, TailscaleCertificate, TailscaleEndpointStatus, TailscalePing,
 };
+use crate::i18n::s;
 use crate::state::drain::next_batch;
 use futures_channel::mpsc::{self, UnboundedSender};
 use futures_channel::oneshot;

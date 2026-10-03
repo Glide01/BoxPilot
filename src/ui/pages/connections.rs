@@ -16,9 +16,10 @@ use crate::core::connections_view::{
     process_name, rule_label, select_connections, summarize, ConnectionSort, ConnectionView,
 };
 use crate::core::singbox_api::Connection;
+use crate::i18n::s;
 use crate::state::{AppState, Connections};
-use crate::ui::card_frame;
 use crate::ui::widgets::{empty_card, page_header};
+use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -60,9 +61,14 @@ impl ConnectionsPage {
         let connections = app_state.read(cx).connections.clone();
         cx.observe(&connections, |_, _, cx| cx.notify()).detach();
 
-        let filter_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Filter by host, rule, chain, process…")
-        });
+        let filter_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(s().connections.filter_placeholder));
+        locale::observe(window, cx, |this: &mut Self, window, cx| {
+            this.filter_input.update(cx, |input, cx| {
+                input.set_placeholder(s().connections.filter_placeholder, window, cx)
+            });
+        })
+        .detach();
         cx.subscribe_in(&filter_input, window, |_, _, ev: &InputEvent, _, cx| {
             if matches!(ev, InputEvent::Change) {
                 cx.notify();
@@ -205,7 +211,7 @@ fn connection_row(
         .child(clipped(details).flex_1().text_color(theme.muted_foreground));
 
     let rate = if closed {
-        "closed".to_string()
+        s().connections.closed.to_string()
     } else {
         format!(
             "↑ {}  ↓ {}",
@@ -244,7 +250,7 @@ fn connection_row(
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)
-                .tooltip("Close connection")
+                .tooltip(s().connections.close_connection)
                 .on_click(move |_, _, cx| {
                     connections.update(cx, |state, cx| state.close(id.clone(), cx));
                 }),
@@ -288,12 +294,14 @@ impl Render for ConnectionsPage {
             .as_ref()
             .is_none_or(|k| k.query.trim().is_empty());
         let theme = cx.theme();
+        let t = &s().connections;
 
         let summary_label = format!(
-            "{} open · ↑ {}  ↓ {} · total ↑ {}  ↓ {}",
-            summary.open,
+            "{} · ↑ {}  ↓ {} · {} ↑ {}  ↓ {}",
+            (t.open_count)(summary.open as u64),
             format_speed(summary.up_rate),
             format_speed(summary.down_rate),
+            t.total,
             format_bytes(summary.up_total),
             format_bytes(summary.down_total),
         );
@@ -302,7 +310,7 @@ impl Render for ConnectionsPage {
             .items_center()
             .gap_2()
             .min_w_0()
-            .child(page_header(theme, "Connections"))
+            .child(page_header(theme, t.title))
             .when(live, |this| {
                 this.child(
                     clipped(summary_label)
@@ -315,7 +323,7 @@ impl Render for ConnectionsPage {
             Button::new("connections-close-all")
                 .outline()
                 .small()
-                .label("Close all")
+                .label(t.close_all)
                 .disabled(!live || summary.open == 0)
                 .on_click(move |_, _, cx| {
                     connections.update(cx, |state, cx| state.close_all(cx));
@@ -352,12 +360,12 @@ impl Render for ConnectionsPage {
         for (id, label, view) in [
             (
                 "connections-active",
-                format!("Active ({})", summary.open),
+                (t.active_tab)(summary.open as u64),
                 ConnectionView::Active,
             ),
             (
                 "connections-closed",
-                format!("Closed ({})", summary.closed),
+                (t.closed_tab)(summary.closed as u64),
                 ConnectionView::Closed,
             ),
         ] {
@@ -368,8 +376,8 @@ impl Render for ConnectionsPage {
         }
         controls = controls.child(div().w_px().h_4().bg(theme.border).mx_1());
         for (id, label, sort) in [
-            ("connections-newest", "Newest", ConnectionSort::Newest),
-            ("connections-traffic", "Traffic", ConnectionSort::Traffic),
+            ("connections-newest", t.newest, ConnectionSort::Newest),
+            ("connections-traffic", t.traffic, ConnectionSort::Traffic),
         ] {
             let page = page.clone();
             controls = controls.child(toggle_pill(id, label, self.sort == sort, move |_, cx| {
@@ -378,24 +386,12 @@ impl Render for ConnectionsPage {
         }
 
         let body = if !live {
-            empty_card(
-                theme,
-                IconName::Network,
-                "No connections",
-                "Connect to see live connections here.",
-            )
-            .into_any_element()
+            empty_card(theme, IconName::Network, t.empty_title, t.empty_hint).into_any_element()
         } else if self.rows.is_empty() {
             let (title, hint) = match (query_empty, self.view) {
-                (false, _) => ("No matching connections", "Try a different filter."),
-                (true, ConnectionView::Active) => (
-                    "No active connections",
-                    "Connections appear here as apps use the proxy.",
-                ),
-                (true, ConnectionView::Closed) => (
-                    "No closed connections",
-                    "Recently closed connections are kept here.",
-                ),
+                (false, _) => (t.no_match_title, t.no_match_hint),
+                (true, ConnectionView::Active) => (t.no_active_title, t.no_active_hint),
+                (true, ConnectionView::Closed) => (t.no_closed_title, t.no_closed_hint),
             };
             empty_card(theme, IconName::Network, title, hint).into_any_element()
         } else {

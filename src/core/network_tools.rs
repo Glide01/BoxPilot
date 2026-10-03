@@ -3,11 +3,11 @@
 //! the formatting and NAT wording. No gpui dependency — the `NetworkTools`
 //! entity (`state/network_tools.rs`) owns the threads and calls into here.
 
-use crate::i18n::s;
 use crate::core::singbox_api::{
     Accuracy, ApiError, NatFiltering, NatMapping, NetworkQualityPhase, NetworkQualityProgress,
     OutboundItem, StunPhase, StunProgress,
 };
+use crate::i18n::s;
 
 /// Max-runtime choices offered for a network quality test, in seconds.
 /// 20 is sing-box's own default.
@@ -477,9 +477,10 @@ pub fn nat_summary(mapping: NatMapping, filtering: NatFiltering) -> Option<NatSu
         (M::EndpointIndependent, F::AddressDependent) => {
             (Some(t.nat_restricted_cone), t.nat_restricted_cone_hint)
         }
-        (M::EndpointIndependent, F::AddressAndPortDependent) => {
-            (Some(t.nat_port_restricted_cone), t.nat_port_restricted_cone_hint)
-        }
+        (M::EndpointIndependent, F::AddressAndPortDependent) => (
+            Some(t.nat_port_restricted_cone),
+            t.nat_port_restricted_cone_hint,
+        ),
         (M::EndpointIndependent, F::Unknown) => (None, t.nat_independent_unknown_hint),
         (M::AddressAndPortDependent, F::AddressAndPortDependent) => {
             (Some(t.nat_symmetric), t.nat_symmetric_hint)

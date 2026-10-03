@@ -501,7 +501,9 @@ pub fn openconnect_callback_result(
         .any(|prefix| url.starts_with(prefix.as_str()))
     {
         let t = &crate::i18n::s().vpn;
-        return Err((t.address_mismatch)(&request.callback_url_prefixes.join(t.or)));
+        return Err((t.address_mismatch)(
+            &request.callback_url_prefixes.join(t.or),
+        ));
     }
     Ok(OpenConnectBrowserResult {
         final_url: url.to_string(),

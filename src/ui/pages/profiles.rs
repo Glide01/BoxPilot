@@ -6,6 +6,7 @@
 use crate::core::presentation::{profile_row_info, updated_label};
 use crate::core::profile_draft::{is_json_config, DraftKind, ProfileDraft};
 use crate::core::settings::{Profile, StatusLevel};
+use crate::i18n::s;
 use crate::state::app_state::FetchOrigin;
 use crate::state::AppState;
 use crate::ui::widgets::{minute_ticker, page_header, pill, usage_meter, PillTone};
@@ -57,20 +58,21 @@ impl ProfilesPage {
             .unwrap_or_default();
         // 草稿模型(core/profile_draft)播种字段;Add 默认 Remote,Edit 锁定原类型。
         let draft = ProfileDraft::from_profile(profile.as_ref());
+        let t = s();
         let title: &'static str = if editing_id.is_some() {
-            "Edit Profile"
+            t.profiles.edit_title
         } else {
-            "Add Profile"
+            t.profiles.add_title
         };
 
         let name_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Profile name…")
+                .placeholder(t.profiles.name_placeholder)
                 .default_value(draft.name.clone())
         });
         let url_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Enter subscription URL…")
+                .placeholder(t.profiles.url_placeholder)
                 .default_value(draft.url.clone())
         });
         let interval_input = cx.new(|cx| {
@@ -80,12 +82,13 @@ impl ProfilesPage {
         });
         let path_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("No file selected")
+                .placeholder(t.profiles.no_file_selected)
                 .default_value(draft.path.clone())
         });
         let kind_cell = cx.new(|_| draft.kind.index());
 
         window.open_dialog(cx, move |dialog, _, cx| {
+            let t = s();
             let theme = cx.theme();
             let kind = *kind_cell.read(cx);
             let is_edit = editing_id.is_some();
@@ -109,7 +112,7 @@ impl ProfilesPage {
                 let name = delete_name.clone();
                 Button::new("profile-dialog-delete")
                     .outline()
-                    .label("Delete")
+                    .label(t.common.delete)
                     .text_color(theme.danger)
                     .border_color(theme.danger.opacity(0.5))
                     .disabled(!can_delete)
@@ -121,11 +124,8 @@ impl ProfilesPage {
                             let app_state = app_state.clone();
                             let id = id.clone();
                             alert
-                                .title(format!("Delete profile \"{}\"?", name))
-                                .description(
-                                    "Its downloaded config is removed too. \
-                                     This cannot be undone.",
-                                )
+                                .title((s().profiles.delete_title)(&name))
+                                .description(s().profiles.delete_body)
                                 .confirm()
                                 .on_ok(move |_, window, cx| {
                                     app_state.update(cx, |state, cx| {
@@ -155,12 +155,12 @@ impl ProfilesPage {
                             // builder 每帧重跑,refresh 强制重渲以切换下方字段。
                             window.refresh();
                         })
-                        .children(vec!["Subscription", "Local file"]),
+                        .children(vec![t.profiles.kind_subscription, t.profiles.kind_local]),
                 )
             });
 
             let name_field = field(
-                "Name",
+                t.profiles.name,
                 Input::new(&name_input).cleanable(false).into_any_element(),
             );
 
@@ -169,11 +169,11 @@ impl ProfilesPage {
                 .v_flex()
                 .gap_3()
                 .child(field(
-                    "Subscription URL",
+                    t.profiles.subscription_url,
                     Input::new(&url_input).cleanable(true).into_any_element(),
                 ))
                 .child(field(
-                    "Auto-update interval (minutes, 0 = off)",
+                    t.profiles.interval,
                     div()
                         .w(px(120.))
                         .child(Input::new(&interval_input).cleanable(false))
@@ -185,7 +185,7 @@ impl ProfilesPage {
                 let name_input = name_input.clone();
                 Button::new("profile-choose-file")
                     .outline()
-                    .label("Browse…")
+                    .label(t.profiles.browse)
                     .on_click(move |_, window, cx| {
                         let rx = cx.prompt_for_paths(PathPromptOptions {
                             files: true,
@@ -204,7 +204,7 @@ impl ProfilesPage {
                                             let _ = cx.update(|_, cx| {
                                                 toast::show(
                                                     StatusLevel::Warning,
-                                                    "Please choose a .json config file.",
+                                                    s().profiles.choose_json,
                                                     cx,
                                                 );
                                             });
@@ -240,7 +240,7 @@ impl ProfilesPage {
                     })
             };
             let local_field = field(
-                "Config file",
+                t.profiles.config_file,
                 div()
                     .h_flex()
                     .gap_2()
@@ -273,12 +273,12 @@ impl ProfilesPage {
                                 .child(DialogClose::new().child(
                                     Button::new("profile-dialog-cancel")
                                         .outline()
-                                        .label("Cancel"),
+                                        .label(t.common.cancel),
                                 ))
                                 .child(DialogAction::new().child(
                                     Button::new("profile-dialog-save")
                                         .primary()
-                                        .label("Save"),
+                                        .label(t.common.save),
                                 )),
                         ),
                 )
@@ -333,7 +333,8 @@ impl ProfilesPage {
         let any_updating = updating_id.is_some();
         let row_info = profile_row_info(&profile.source);
         let now = SystemTime::now();
-        let time_label = updated_label(profile.last_updated_secs, now, "never updated");
+        let t = s();
+        let time_label = updated_label(profile.last_updated_secs, now, t.profiles.never_updated);
 
         let app_state_refresh = self.app_state.clone();
         let app_state_edit = self.app_state.clone();
@@ -378,7 +379,7 @@ impl ProfilesPage {
                                     .child(profile.name.clone()),
                             )
                             .when(is_active, |this| {
-                                this.child(pill(theme, PillTone::Primary, "Active"))
+                                this.child(pill(theme, PillTone::Primary, t.profiles.active))
                             }),
                     )
                     .child(
@@ -443,7 +444,7 @@ impl ProfilesPage {
                             Button::new(("profile-use", ix))
                                 .outline()
                                 .small()
-                                .label("Use")
+                                .label(t.profiles.use_profile)
                                 .on_click(move |_, _, cx| {
                                     app_state_use.update(cx, |state, cx| {
                                         state.set_active_profile(use_id.clone(), cx);
@@ -490,13 +491,13 @@ impl Render for ProfilesPage {
                     .h_flex()
                     .items_center()
                     .justify_between()
-                    .child(page_header(theme, "Profiles"))
+                    .child(page_header(theme, s().profiles.title))
                     .child(
                         Button::new("profile-add")
                             .outline()
                             .small()
                             .icon(Icon::new(IconName::Plus))
-                            .label("Add")
+                            .label(s().profiles.add)
                             .on_click(move |_, window, cx| {
                                 Self::open_profile_dialog(
                                     app_state_add.clone(),
@@ -519,7 +520,7 @@ impl Render for ProfilesPage {
                         div()
                             .text_sm()
                             .text_color(theme.muted_foreground)
-                            .child("No profiles yet"),
+                            .child(s().profiles.empty),
                     )
                     .into_any_element()
             } else {

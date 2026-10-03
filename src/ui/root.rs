@@ -2,6 +2,7 @@ use crate::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use crate::core::bytefmt::format_speed;
 use crate::core::presentation::{redact_url, ConnectionStatus};
 use crate::core::settings::StatusEvent;
+use crate::i18n::s;
 use crate::state::{AppState, ImportRequested};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
@@ -244,7 +245,7 @@ impl RootView {
             let request = request.clone();
             let name = request.name.clone().unwrap_or_default();
             alert
-                .title("Import subscription profile?")
+                .title(s().dialogs.import_title)
                 .description(
                     div()
                         .v_flex()
@@ -277,15 +278,10 @@ impl RootView {
         window.open_alert_dialog(cx, move |alert, _, _| {
             let app_state = app_state.clone();
             alert
-                .title("Grant TUN permission")
-                .description(
-                    "TUN mode needs network-admin permission for sing-box. BoxPilot \
-                     installs a copy of sing-box to /usr/local/lib/boxpilot/ and grants \
-                     it once, through the system password prompt. You'll be asked \
-                     again after a sing-box update.",
-                )
+                .title(s().dialogs.tun_grant_title)
+                .description(s().dialogs.tun_grant_body)
                 .confirm()
-                .ok_text("Grant")
+                .ok_text(s().dialogs.grant)
                 .on_ok(move |_, _, cx| {
                     app_state.update(cx, |state, cx| state.grant_tun_permission(cx));
                     true

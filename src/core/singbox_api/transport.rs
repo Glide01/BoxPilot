@@ -98,9 +98,7 @@ impl fmt::Display for ApiError {
                 f.write_str(&(t.api_error)(&grpc_code_name(*code)))
             }
             ApiError::Status { message, .. } => f.write_str(&(t.api_error)(message)),
-            ApiError::InvalidResponse(reason) => {
-                f.write_str(&(t.api_invalid_response)(reason))
-            }
+            ApiError::InvalidResponse(reason) => f.write_str(&(t.api_invalid_response)(reason)),
         }
     }
 }

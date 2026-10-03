@@ -16,6 +16,7 @@ use crate::core::tailscale::{
     traffic_label, user_label, BACKEND_RUNNING,
 };
 use crate::core::timefmt::{format_relative_time, from_unix_secs};
+use crate::i18n::s;
 use crate::state::tailscale::{CertificateFetched, PingSession, TailscaleAction};
 use crate::state::{AppState, TailscaleState};
 use crate::ui::card_frame;
@@ -94,8 +95,8 @@ impl Render for TailscalePage {
             empty_card(
                 theme,
                 IconName::Frame,
-                "No Tailscale endpoints",
-                "Connect with a profile that has a Tailscale endpoint.",
+                s().tailscale.empty_title,
+                s().tailscale.empty_hint,
             )
             .into_any_element()
         } else {
@@ -123,7 +124,7 @@ impl Render for TailscalePage {
             .v_flex()
             .size_full()
             .gap_4()
-            .child(page_header(theme, "Tailscale"))
+            .child(page_header(theme, s().tailscale.title))
             .child(body)
     }
 }
@@ -235,8 +236,8 @@ fn overview_card(
         Button::new(id(ei, "login"))
             .primary()
             .small()
-            .label("Log in")
-            .tooltip("Opens the Tailscale login page in your browser")
+            .label(s().tailscale.log_in)
+            .tooltip(s().tailscale.log_in_tooltip)
             .on_click(move |_, _, cx| cx.open_url(&url))
     });
     let can_logout = !matches!(status.backend_state.as_str(), "NeedsLogin" | "NoState" | "");
@@ -248,7 +249,7 @@ fn overview_card(
         Button::new(id(ei, "logout"))
             .outline()
             .small()
-            .label("Log out")
+            .label(s().tailscale.log_out)
             .loading(busy)
             .disabled(busy)
             .on_click(move |_, window, cx| {
@@ -257,11 +258,9 @@ fn overview_card(
     });
 
     let hint = match status.backend_state.as_str() {
-        "NeedsLogin" if status.auth_url.is_empty() => {
-            Some("Waiting for a login link from Tailscale…")
-        }
-        "NeedsLogin" => Some("Log in to add this device to your tailnet."),
-        "NeedsMachineAuth" => Some("Waiting for a tailnet admin to approve this device."),
+        "NeedsLogin" if status.auth_url.is_empty() => Some(s().tailscale.waiting_login_link),
+        "NeedsLogin" => Some(s().tailscale.log_in_hint),
+        "NeedsMachineAuth" => Some(s().tailscale.waiting_approval),
         _ => None,
     };
 
@@ -280,19 +279,27 @@ fn overview_card(
         .child(header)
         .children(hint.map(|h| muted(theme, h)));
     if !status.network_name.is_empty() {
-        card = card.child(info_row(theme, "Tailnet", status.network_name.clone()));
+        card = card.child(info_row(
+            theme,
+            s().tailscale.tailnet,
+            status.network_name.clone(),
+        ));
     }
     if let Some(me) = &status.self_peer {
-        card = card.child(info_row(theme, "This device", peer_name(me)));
+        card = card.child(info_row(theme, s().tailscale.this_device, peer_name(me)));
         if !me.dns_name.is_empty() {
             card = card.child(info_row(
                 theme,
-                "DNS name",
+                s().tailscale.dns_name,
                 dns_name_display(&me.dns_name).to_string(),
             ));
         }
         if !me.tailscale_ips.is_empty() {
-            card = card.child(info_row(theme, "Addresses", me.tailscale_ips.join(", ")));
+            card = card.child(info_row(
+                theme,
+                s().tailscale.addresses,
+                me.tailscale_ips.join(", "),
+            ));
         }
     }
     card
@@ -308,15 +315,12 @@ fn confirm_logout(
     window.open_alert_dialog(cx, move |alert, _, _| {
         let entity = entity.clone();
         let tag = tag.clone();
-        let mut description = format!("\"{}\" leaves the tailnet until it logs in again.", tag);
+        let mut description = (s().tailscale.logout_body)(&tag);
         if key_auth {
-            description.push_str(
-                " It logged in with an auth key, so getting back in needs a browser \
-                 login or a new key.",
-            );
+            description.push_str(s().tailscale.logout_key_auth);
         }
         alert
-            .title("Log out of Tailscale?")
+            .title(s().tailscale.logout_title)
             .description(description)
             .confirm()
             .on_ok(move |_, _, cx| {
@@ -344,29 +348,32 @@ fn exit_node_card(
             .flex_1()
             .min_w_0()
             .gap_1()
-            .child(card_title(theme, "Exit node"))
+            .child(card_title(theme, s().tailscale.exit_node))
             .child(muted(
                 theme,
                 if current.is_some() {
-                    "All traffic through this endpoint leaves via the exit node."
+                    s().tailscale.exit_node_on
                 } else {
-                    "Traffic leaves from this device."
+                    s().tailscale.exit_node_off
                 },
             )),
     );
 
     if choices.is_empty() && current.is_none() {
-        return card_frame(theme).child(header).child(muted(
-            theme,
-            "No device in the tailnet offers an exit node.",
-        ));
+        return card_frame(theme)
+            .child(header)
+            .child(muted(theme, s().tailscale.no_exit_nodes));
     }
 
     let has_current = current.is_some();
     let picker = Button::new(id(ei, "exit-node"))
         .outline()
         .small()
-        .label(current.clone().unwrap_or_else(|| "None".to_string()))
+        .label(
+            current
+                .clone()
+                .unwrap_or_else(|| s().tailscale.exit_node_none.to_string()),
+        )
         .loading(busy)
         .disabled(busy)
         .dropdown_menu({
@@ -375,7 +382,7 @@ fn exit_node_card(
                 let none = {
                     let entity = entity.clone();
                     let tag = tag.clone();
-                    PopupMenuItem::new("None")
+                    PopupMenuItem::new(s().tailscale.exit_node_none)
                         .checked(!has_current)
                         .on_click(move |_, _, cx| {
                             entity.update(cx, |state, cx| {
@@ -390,7 +397,7 @@ fn exit_node_card(
                     let label = if choice.online {
                         choice.label.clone()
                     } else {
-                        format!("{} (offline)", choice.label)
+                        (s().tailscale.offline_choice)(&choice.label)
                     };
                     menu.item(PopupMenuItem::new(label).checked(choice.selected).on_click(
                         move |_, _, cx| {
@@ -412,14 +419,14 @@ fn ping_card(ei: usize, ping: &PingSession, entity: &Entity<TailscaleState>, the
         Button::new(id(ei, "ping-stop"))
             .outline()
             .small()
-            .label("Stop")
+            .label(s().common.stop)
             .on_click(move |_, _, cx| entity.update(cx, |state, cx| state.stop_ping(cx)))
     } else {
         let entity = entity.clone();
         Button::new(id(ei, "ping-close"))
             .ghost()
             .small()
-            .label("Close")
+            .label(s().common.close)
             .on_click(move |_, _, cx| entity.update(cx, |state, cx| state.dismiss_ping(cx)))
     };
     let header = div()
@@ -428,17 +435,17 @@ fn ping_card(ei: usize, ping: &PingSession, entity: &Entity<TailscaleState>, the
         .gap_2()
         .child(card_title(
             theme,
-            format!("Ping {} ({})", ping.peer_name, ping.peer_ip),
+            (s().tailscale.ping_title)(&ping.peer_name, &ping.peer_ip),
         ))
         .when(ping.active, |this| {
-            this.child(pill(theme, PillTone::Muted, "running"))
+            this.child(pill(theme, PillTone::Muted, s().tailscale.running))
         })
         .child(div().flex_1())
         .child(action);
 
     let mut card = card_frame(theme).child(header);
     if ping.results.is_empty() && ping.active {
-        card = card.child(muted(theme, "Waiting for the first reply…"));
+        card = card.child(muted(theme, s().tailscale.waiting_reply));
     }
     card = card.children(ping.results.iter().enumerate().map(|(i, result)| {
         let color = if result.error.is_some() {
@@ -483,7 +490,7 @@ fn taildrop_card(
         Button::new(id(ei, "mark-read"))
             .ghost()
             .small()
-            .label("Mark as read")
+            .label(s().tailscale.mark_read)
             .loading(busy)
             .disabled(busy)
             .on_click(move |_, _, cx| {
@@ -498,13 +505,13 @@ fn taildrop_card(
             .rounded_full()
             .bg(theme.primary)
             .text_color(theme.primary_foreground)
-            .child(format!("{} new", unread))
+            .child((s().tailscale.new_files)(unread as u64))
     });
     let header = div()
         .h_flex()
         .items_center()
         .gap_2()
-        .child(card_title(theme, "Taildrop"))
+        .child(card_title(theme, s().tailscale.taildrop))
         .children(unread_badge)
         .child(div().flex_1())
         .children(mark_read);
@@ -516,9 +523,9 @@ fn taildrop_card(
         card = card.child(muted(
             theme,
             if status.can_share_files {
-                "No files received. Files other devices send here appear in this list."
+                s().tailscale.no_files_share
             } else {
-                "No files received."
+                s().tailscale.no_files
             },
         ));
     }
@@ -542,7 +549,7 @@ fn sender_suffix(sender: &str) -> String {
     if sender.is_empty() {
         String::new()
     } else {
-        format!(" · from {}", sender)
+        (s().tailscale.from_sender)(sender)
     }
 }
 
@@ -567,7 +574,7 @@ fn receiving_row(
         Button::new(id(ei, format!("recv-cancel-{}", i)))
             .ghost()
             .small()
-            .label("Cancel")
+            .label(s().common.cancel)
             .loading(busy)
             .disabled(busy)
             .on_click(move |_, _, cx| {
@@ -603,10 +610,9 @@ fn receiving_row(
         .child(progress)
         .child(muted(
             theme,
-            format!(
-                "Receiving {}{}",
-                receiving_progress_label(file),
-                sender_suffix(&file.sender_name)
+            (s().tailscale.receiving)(
+                &receiving_progress_label(file),
+                &sender_suffix(&file.sender_name),
             ),
         ))
 }
@@ -636,7 +642,7 @@ fn file_row(
         Button::new(id(ei, format!("file-save-{}", i)))
             .outline()
             .small()
-            .label("Save…")
+            .label(s().common.save_as)
             .loading(downloading)
             .disabled(downloading)
             .on_click(move |_, window, cx| {
@@ -649,7 +655,7 @@ fn file_row(
         Button::new(id(ei, format!("file-delete-{}", i)))
             .ghost()
             .small()
-            .label("Delete")
+            .label(s().common.delete)
             .loading(deleting)
             .disabled(deleting || downloading)
             .on_click(move |_, window, cx| {
@@ -719,7 +725,7 @@ fn save_file(
                 let _ = cx.update(|_, cx| {
                     toast::show(
                         StatusLevel::Error,
-                        format!("Couldn't open the save dialog: {}", e),
+                        (s().tailscale.save_dialog_failed)(&e.to_string()),
                         cx,
                     )
                 });
@@ -741,10 +747,8 @@ fn confirm_delete(
         let tag = tag.clone();
         let name = name.clone();
         alert
-            .title(format!("Delete \"{}\"?", name))
-            .description(
-                "The received file is removed from the Taildrop inbox. Saved copies are kept.",
-            )
+            .title((s().tailscale.delete_title)(&name))
+            .description(s().tailscale.delete_body)
             .confirm()
             .on_ok(move |_, _, cx| {
                 entity.update(cx, |state, cx| {
@@ -768,11 +772,8 @@ fn certificate_card(
             div()
                 .v_flex()
                 .gap_1()
-                .child(card_title(theme, "HTTPS certificates"))
-                .child(muted(
-                    theme,
-                    "Issued for this device's tailnet name. Needs HTTPS enabled for the tailnet.",
-                )),
+                .child(card_title(theme, s().tailscale.https_certs))
+                .child(muted(theme, s().tailscale.https_hint)),
         )
         .children(status.cert_domains.iter().enumerate().map(|(i, domain)| {
             let busy = state.is_busy(&TailscaleAction::Certificate {
@@ -800,7 +801,7 @@ fn certificate_card(
                     Button::new(id(ei, format!("cert-{}", i)))
                         .outline()
                         .small()
-                        .label("Get certificate")
+                        .label(s().tailscale.get_certificate)
                         .loading(busy)
                         .disabled(busy)
                         .on_click(move |_, _, cx| {
@@ -829,10 +830,10 @@ fn show_certificate(
             let pem = pem.clone();
             Button::new("ts-cert-copy")
                 .outline()
-                .label("Copy certificate")
+                .label(s().tailscale.copy_certificate)
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(pem.to_string()));
-                    toast::show(StatusLevel::Info, "Certificate copied.", cx);
+                    toast::show(StatusLevel::Info, s().tailscale.certificate_copied, cx);
                 })
         };
         let save = {
@@ -840,13 +841,13 @@ fn show_certificate(
             let certificate = certificate.clone();
             Button::new("ts-cert-save")
                 .primary()
-                .label("Save…")
+                .label(s().common.save_as)
                 .on_click(move |_, window, cx| {
                     save_certificate(domain.clone(), certificate.clone(), window, cx)
                 })
         };
         dialog
-            .title(format!("Certificate for {}", domain))
+            .title((s().tailscale.certificate_title)(&domain))
             .w(px(560.))
             .child(
                 div()
@@ -854,11 +855,7 @@ fn show_certificate(
                     .gap_2()
                     .child(muted(
                         theme,
-                        format!(
-                            "Save writes {} and {} (the private key, not shown here) to a \
-                             folder you choose, replacing older copies.",
-                            cert_name, key_name
-                        ),
+                        (s().tailscale.certificate_body)(&cert_name, &key_name),
                     ))
                     .child(
                         div()
@@ -880,8 +877,11 @@ fn show_certificate(
                 DialogFooter::new()
                     .child(copy)
                     .child(
-                        DialogClose::new()
-                            .child(Button::new("ts-cert-close").outline().label("Close")),
+                        DialogClose::new().child(
+                            Button::new("ts-cert-close")
+                                .outline()
+                                .label(s().common.close),
+                        ),
                     )
                     .child(save),
             )
@@ -898,7 +898,7 @@ fn save_certificate(
         files: false,
         directories: true,
         multiple: false,
-        prompt: Some("Save here".into()),
+        prompt: Some(s().tailscale.save_here.into()),
     });
     window
         .spawn(cx, async move |cx| {
@@ -911,7 +911,7 @@ fn save_certificate(
                     let _ = cx.update(|_, cx| {
                         toast::show(
                             StatusLevel::Error,
-                            format!("Couldn't open the folder dialog: {}", e),
+                            (s().tailscale.folder_dialog_failed)(&e.to_string()),
                             cx,
                         )
                     });
@@ -925,14 +925,17 @@ fn save_certificate(
                         Ok((cert, key)) => {
                             toast::show(
                                 StatusLevel::Success,
-                                format!("Saved {} and {}", cert.display(), key.display()),
+                                (s().tailscale.saved_pair)(
+                                    &cert.display().to_string(),
+                                    &key.display().to_string(),
+                                ),
                                 cx,
                             );
                             window.close_dialog(cx);
                         }
                         Err(e) => toast::show(
                             StatusLevel::Error,
-                            format!("Failed to save the certificate: {}", e),
+                            (s().tailscale.save_certificate_failed)(&e.to_string()),
                             cx,
                         ),
                     },
@@ -955,11 +958,11 @@ fn devices_card(
             .h_flex()
             .items_center()
             .gap_2()
-            .child(card_title(theme, "Devices"))
+            .child(card_title(theme, s().tailscale.devices))
             .child(muted(theme, count.to_string())),
     );
     if groups.is_empty() {
-        return card.child(muted(theme, "No other devices in the tailnet."));
+        return card.child(muted(theme, s().tailscale.no_devices));
     }
     for (gi, group) in groups.iter().enumerate() {
         let heading = div()
@@ -1022,7 +1025,7 @@ fn peer_row(
         Button::new(id(ei, format!("peer-ping-{}", key)))
             .ghost()
             .small()
-            .label("Ping")
+            .label(s().tailscale.ping)
             .on_click(move |_, _, cx| {
                 entity.update(cx, |state, cx| {
                     state.start_ping(tag.clone(), ip.clone(), name.clone(), cx)
@@ -1074,16 +1077,28 @@ fn peer_row(
                                 .child(name),
                         )
                         .when(peer.exit_node, |this| {
-                            this.child(pill(theme, PillTone::Primary, "Exit node"))
+                            this.child(pill(
+                                theme,
+                                PillTone::Primary,
+                                s().tailscale.badge_exit_node,
+                            ))
                         })
                         .when(!peer.exit_node && peer.exit_node_option, |this| {
-                            this.child(pill(theme, PillTone::Muted, "exit node"))
+                            this.child(pill(
+                                theme,
+                                PillTone::Muted,
+                                s().tailscale.badge_exit_option,
+                            ))
                         })
                         .when(peer.sharee_node, |this| {
-                            this.child(pill(theme, PillTone::Muted, "shared"))
+                            this.child(pill(theme, PillTone::Muted, s().tailscale.badge_shared))
                         })
                         .when(peer.expired, |this| {
-                            this.child(pill(theme, PillTone::Muted, "key expired"))
+                            this.child(pill(
+                                theme,
+                                PillTone::Muted,
+                                s().tailscale.badge_key_expired,
+                            ))
                         }),
                 )
                 .child(

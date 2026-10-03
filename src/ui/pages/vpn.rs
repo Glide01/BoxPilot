@@ -20,6 +20,7 @@ use crate::core::vpn::{
     deadline_label, openconnect_browser_limitation, openconnect_tunnel_rows, openvpn_tunnel_rows,
     vpn_state_label, vpn_state_tone, ChallengeKey, InfoRow, VpnProtocol, VpnTone,
 };
+use crate::i18n::s;
 use crate::state::vpn::VpnStream;
 use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
@@ -121,11 +122,7 @@ impl DialogHandle {
     }
 
     fn title(&self) -> String {
-        format!(
-            "Sign in to {} \"{}\"",
-            self.key.protocol.label(),
-            self.key.endpoint_tag
-        )
+        (s().vpn.sign_in_title)(self.key.protocol.label(), &self.key.endpoint_tag)
     }
 
     /// Refuse the challenge and close the dialog. `label` says what that
@@ -160,9 +157,9 @@ impl DialogHandle {
             .child(
                 DialogClose::new().child(Button::new("vpn-dialog-close").outline().label(
                     if pending && submit_label.is_some() {
-                        "Later"
+                        s().vpn.later
                     } else {
-                        "Close"
+                        s().common.close
                     },
                 )),
             )
@@ -269,14 +266,14 @@ fn ended_notice(theme: &Theme) -> Div {
     div()
         .text_sm()
         .text_color(theme.muted_foreground)
-        .child("This sign-in request has ended.")
+        .child(s().vpn.ended)
 }
 
 fn open_browser_button(id: &'static str, url: String) -> Button {
     Button::new(id)
         .outline()
         .icon(IconName::ExternalLink)
-        .label("Open sign-in page")
+        .label(s().vpn.open_sign_in_page)
         .on_click(move |_, _, cx| cx.open_url(&url))
 }
 
@@ -342,11 +339,11 @@ fn open_openconnect_dialog(
                     // A form without fields is a "click to continue" step.
                     .footer(handle.footer(
                         pending,
-                        "Cancel sign-in",
+                        s().vpn.cancel_sign_in,
                         Some(if fields.is_empty() {
-                            "Continue"
+                            s().vpn.continue_
                         } else {
-                            "Sign in"
+                            s().vpn.sign_in
                         }),
                     ))
                     .on_ok({
@@ -418,7 +415,7 @@ fn open_openconnect_dialog(
                             )))
                             .child(labeled(
                                 theme,
-                                "Address your browser ended on".to_string(),
+                                s().vpn.callback_address.to_string(),
                                 Input::new(&pasted).cleanable(true).into_any_element(),
                             )),
                     );
@@ -430,8 +427,8 @@ fn open_openconnect_dialog(
                     .child(body)
                     .footer(handle.footer(
                         pending,
-                        "Cancel sign-in",
-                        can_submit.then_some("Sign in"),
+                        s().vpn.cancel_sign_in,
+                        can_submit.then_some(s().vpn.sign_in),
                     ))
                     .on_ok({
                         let handle = handle.clone();
@@ -477,10 +474,7 @@ fn open_openconnect_dialog(
                         &challenge.error,
                     ))
                     .child(if pending {
-                        div().text_sm().child(
-                            "This sign-in step is newer than BoxPilot understands. \
-                             Update BoxPilot, or cancel it.",
-                        )
+                        div().text_sm().child(s().vpn.step_too_new)
                     } else {
                         ended_notice(theme)
                     });
@@ -488,7 +482,7 @@ fn open_openconnect_dialog(
                     .title(handle.title())
                     .w(px(DIALOG_WIDTH))
                     .child(body)
-                    .footer(handle.footer(pending, "Cancel sign-in", None))
+                    .footer(handle.footer(pending, s().vpn.cancel_sign_in, None))
                     .on_close({
                         let handle = handle.clone();
                         move |_, _, cx| handle.forget(cx)
@@ -501,18 +495,13 @@ fn open_openconnect_dialog(
 /// How to finish a callback-mode sign-in from the system browser.
 fn callback_instructions(theme: &Theme, request: &OpenConnectBrowserRequest) -> Div {
     debug_assert_eq!(request.mode(), OpenConnectBrowserMode::Callback);
-    let prefixes = request.callback_url_prefixes.join(" or ");
+    let prefixes = request.callback_url_prefixes.join(s().vpn.or);
     div()
         .v_flex()
         .gap_1()
         .text_sm()
-        .child("Sign in on the server's page in your browser.")
-        .child(format!(
-            "When you're done, the browser is sent to an address starting with {} — \
-             that page may fail to load, which is expected. Copy the full address \
-             from the address bar and paste it below.",
-            prefixes
-        ))
+        .child(s().vpn.callback_intro)
+        .child((s().vpn.callback_body)(&prefixes))
         .child(
             div()
                 .text_xs()
@@ -538,10 +527,9 @@ fn open_openvpn_dialog(
         let theme = cx.theme();
         let mut body = div().v_flex().gap_3();
         if !challenge.previous_error.trim().is_empty() {
-            body = body.child(div().text_sm().text_color(theme.danger).child(format!(
-                "The last attempt failed: {}",
-                challenge.previous_error.trim()
-            )));
+            body = body.child(div().text_sm().text_color(theme.danger).child(
+                (s().vpn.last_attempt_failed)(challenge.previous_error.trim()),
+            ));
         }
         if !pending {
             body = body.child(ended_notice(theme));
@@ -552,11 +540,7 @@ fn open_openvpn_dialog(
                 }
                 OpenVpnChallengeKind::OpenUrl => {
                     body = body
-                        .child(div().text_sm().child(
-                            "The server wants you to sign in on a web page. Open it, \
-                             finish signing in there, and the connection continues on \
-                             its own.",
-                        ))
+                        .child(div().text_sm().child(s().vpn.open_url_body))
                         .children(prompt.open_url.clone().map(|url| {
                             div()
                                 .v_flex()
@@ -575,11 +559,7 @@ fn open_openvpn_dialog(
                         }));
                 }
                 OpenVpnChallengeKind::Other(kind) => {
-                    body = body.child(div().text_sm().child(format!(
-                        "sing-box asks for a \"{}\" sign-in step, which this version of \
-                         BoxPilot doesn't understand.",
-                        kind
-                    )));
+                    body = body.child(div().text_sm().child((s().vpn.unknown_step)(kind)));
                 }
                 OpenVpnChallengeKind::Credentials | OpenVpnChallengeKind::Secret => {}
             }
@@ -587,12 +567,12 @@ fn open_openvpn_dialog(
                 body = body
                     .child(labeled(
                         theme,
-                        "Username".to_string(),
+                        s().vpn.username.to_string(),
                         Input::new(&username).cleanable(false).into_any_element(),
                     ))
                     .child(labeled(
                         theme,
-                        "Password".to_string(),
+                        s().vpn.password.to_string(),
                         Input::new(&password)
                             .cleanable(false)
                             .mask_toggle()
@@ -603,7 +583,7 @@ fn open_openvpn_dialog(
                     div()
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .child(format!("Account: {}", challenge.username)),
+                        .child((s().vpn.account)(&challenge.username)),
                 );
             }
             if let Some(secret_prompt) = &prompt.secret {
@@ -614,7 +594,7 @@ fn open_openvpn_dialog(
                     input.mask_toggle()
                 };
                 let label = if secret_prompt.label.is_empty() {
-                    "Response".to_string()
+                    s().vpn.response.to_string()
                 } else {
                     secret_prompt.label.clone()
                 };
@@ -635,8 +615,8 @@ fn open_openvpn_dialog(
             .child(body)
             .footer(handle.footer(
                 pending,
-                "Disconnect",
-                prompt.answerable().then_some("Sign in"),
+                s().vpn.disconnect,
+                prompt.answerable().then_some(s().vpn.sign_in),
             ))
             .on_ok({
                 let handle = handle.clone();
@@ -742,7 +722,10 @@ impl VpnPage {
                 vpn_state_label(state, text),
                 tone_color(vpn_state_tone(state), theme),
             ),
-            None => ("Waiting for sing-box…".to_string(), theme.muted_foreground),
+            None => (
+                s().vpn.waiting_for_sing_box.to_string(),
+                theme.muted_foreground,
+            ),
         };
         let sign_in = card.challenge_id.clone().map(|challenge_id| {
             let key = ChallengeKey {
@@ -756,7 +739,7 @@ impl VpnPage {
             )))
             .primary()
             .small()
-            .label("Sign in")
+            .label(s().vpn.sign_in)
             .loading(busy)
             .disabled(busy)
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -801,12 +784,12 @@ impl VpnPage {
 }
 
 fn device_row(theme: &Theme, device: &UsbSharedDevice) -> Div {
-    let mut details = vec![device.usb_id(), format!("bus {}", device.bus_id)];
+    let mut details = vec![device.usb_id(), (s().vpn.bus)(&device.bus_id.to_string())];
     if let Some(speed) = usb_speed_label(device.speed) {
         details.push(speed.to_string());
     }
     if !device.serial.is_empty() {
-        details.push(format!("serial {}", device.serial));
+        details.push((s().vpn.serial)(&device.serial));
     }
     div()
         .h_flex()
@@ -852,7 +835,7 @@ fn usbip_card(theme: &Theme, tag: &str, body: Div) -> Div {
                         .text_color(theme.foreground)
                         .child(tag.to_string()),
                 )
-                .child(pill(theme, PillTone::Muted, "USB/IP server")),
+                .child(pill(theme, PillTone::Muted, s().vpn.usbip_server)),
         )
         .child(body)
 }
@@ -878,7 +861,7 @@ impl Render for VpnPage {
         let theme = cx.theme().clone();
         let theme = &theme;
 
-        let title = page_header(theme, "VPN");
+        let title = page_header(theme, s().vpn.title);
         if presence.is_empty() {
             return div()
                 .v_flex()
@@ -888,8 +871,8 @@ impl Render for VpnPage {
                 .child(empty_card(
                     theme,
                     IconName::Globe,
-                    "No VPN endpoints",
-                    "Connect with a profile that has OpenConnect, OpenVPN or USB/IP to see them here.",
+                    s().vpn.empty_title,
+                    s().vpn.empty_hint,
                 ))
                 .into_any_element();
         }
@@ -1006,13 +989,9 @@ impl Render for VpnPage {
                         .iter()
                         .map(|device| device_row(theme, device)),
                 ),
-                Some(_) => muted_note(
-                    theme,
-                    "No devices shared. A dynamic server shares the devices a client \
-                     app lends it; BoxPilot doesn't lend this computer's devices.",
-                ),
-                None if usbip_loaded => muted_note(theme, "sing-box reports no status for it."),
-                None => muted_note(theme, "Waiting for sing-box…"),
+                Some(_) => muted_note(theme, s().vpn.no_devices_shared),
+                None if usbip_loaded => muted_note(theme, s().vpn.no_status),
+                None => muted_note(theme, s().vpn.waiting_for_sing_box),
             };
             cards.push(usbip_card(theme, tag, body));
         }
@@ -1020,11 +999,7 @@ impl Render for VpnPage {
             cards.push(usbip_card(
                 theme,
                 tag,
-                muted_note(
-                    theme,
-                    "Shares this computer's matching USB devices. sing-box doesn't \
-                     report their status for this kind of server.",
-                ),
+                muted_note(theme, s().vpn.default_server_hint),
             ));
         }
 

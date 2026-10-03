@@ -1,11 +1,11 @@
 use crate::core::groups_view::test_cover;
 use crate::core::settings::{StatusEvent, StatusLevel};
-use crate::i18n::s;
 use crate::core::singbox_api::{
     apply_expand_overrides, delay_states, merge_groups, parse_groups_from_config,
     parse_node_types_from_config, url_test_done, GroupKind, GroupsSnapshot, ProxyGroup, SingBoxApi,
     UrlTestHistory,
 };
+use crate::i18n::s;
 use crate::state::drain::{next_batch_or, Wake};
 use futures_channel::mpsc::{self, UnboundedSender};
 use gpui::{Context, EventEmitter, Task};

@@ -7,6 +7,7 @@
 pub mod app_window;
 pub mod assets;
 pub mod config_viewer;
+pub mod locale;
 pub mod pages;
 pub mod root;
 pub mod sidebar;

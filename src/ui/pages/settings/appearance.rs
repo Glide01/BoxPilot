@@ -3,6 +3,7 @@
 
 use super::SettingsPage;
 use crate::core::settings::ThemePreference;
+use crate::i18n::{s, Strings};
 use crate::state::AppState;
 use crate::ui::{theme, widgets::setting_row};
 use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
@@ -13,11 +14,19 @@ use gpui_component::{
 
 /// The options, in display order (never rely on `ThemePreference`'s variant
 /// order: serde's `other` fallback forces `System` last).
-const OPTIONS: [(ThemePreference, &str); 3] = [
-    (ThemePreference::System, "System"),
-    (ThemePreference::Light, "Light"),
-    (ThemePreference::Dark, "Dark"),
+const OPTIONS: [ThemePreference; 3] = [
+    ThemePreference::System,
+    ThemePreference::Light,
+    ThemePreference::Dark,
 ];
+
+fn label(pref: ThemePreference, t: &'static Strings) -> &'static str {
+    match pref {
+        ThemePreference::System => t.settings.follow_system,
+        ThemePreference::Light => t.settings.theme_light,
+        ThemePreference::Dark => t.settings.theme_dark,
+    }
+}
 
 /// This slot's rows, in display order; empty = nothing to show.
 pub(super) fn rows(
@@ -28,7 +37,7 @@ pub(super) fn rows(
     let current = app_state.read(cx).settings.theme;
     let selected = OPTIONS
         .iter()
-        .position(|(pref, _)| *pref == current)
+        .position(|pref| *pref == current)
         .unwrap_or(0);
 
     let app_state = app_state.clone();
@@ -36,18 +45,22 @@ pub(super) fn rows(
         .segmented()
         .selected_index(selected)
         .on_click(move |ix: &usize, window, cx| {
-            if let Some((pref, _)) = OPTIONS.get(*ix) {
+            if let Some(pref) = OPTIONS.get(*ix) {
                 let pref = *pref;
                 app_state.update(cx, |state, cx| state.set_theme(pref, cx));
                 theme::apply(pref, Some(window), cx);
             }
         })
-        .children(OPTIONS.iter().map(|(_, label)| Tab::new().label(*label)));
+        .children(
+            OPTIONS
+                .iter()
+                .map(|pref| Tab::new().label(label(*pref, s()))),
+        );
 
     vec![setting_row(
         cx.theme(),
-        "Appearance",
-        Some("System follows your desktop's light or dark setting."),
+        s().settings.appearance,
+        Some(s().settings.appearance_hint),
     )
     .child(control)
     .into_any_element()]

@@ -235,7 +235,8 @@ pub static EN: Strings = Strings {
         latency: "Latency",
         nat_mapping: "NAT mapping",
         nat_filtering: "NAT filtering",
-        nat_unsupported: "This server doesn't support NAT type detection (RFC 5780 OTHER-ADDRESS). \
+        nat_unsupported:
+            "This server doesn't support NAT type detection (RFC 5780 OTHER-ADDRESS). \
                           Try another STUN server to see mapping and filtering behaviour.",
         nat_endpoint_independent: "Endpoint Independent",
         nat_address_dependent: "Address Dependent",
@@ -246,11 +247,14 @@ pub static EN: Strings = Strings {
         nat_symmetric: "Symmetric (NAT4)",
         nat_full_cone_hint: "Your external address is the same for every destination, and any \
                              host can reach it. The most open NAT: best for P2P, games and calls.",
-        nat_restricted_cone_hint: "Your external address is the same for every destination, but only \
+        nat_restricted_cone_hint:
+            "Your external address is the same for every destination, but only \
                                    hosts you have sent to can reach it (from any of their ports).",
-        nat_port_restricted_cone_hint: "Your external address is the same for every destination, but only \
+        nat_port_restricted_cone_hint:
+            "Your external address is the same for every destination, but only \
                                         the exact address and port you have sent to can reach it.",
-        nat_independent_unknown_hint: "Your external address is the same for every destination. Filtering \
+        nat_independent_unknown_hint:
+            "Your external address is the same for every destination. Filtering \
                                        behaviour could not be determined.",
         nat_symmetric_hint: "Every destination gets a different external port, so peers cannot \
                              reuse your address. P2P connections usually need a relay.",
@@ -347,7 +351,8 @@ pub static EN: Strings = Strings {
     vpn: Vpn {
         title: "VPN",
         empty_title: "No VPN endpoints",
-        empty_hint: "Connect with a profile that has OpenConnect, OpenVPN or USB/IP to see them here.",
+        empty_hint:
+            "Connect with a profile that has OpenConnect, OpenVPN or USB/IP to see them here.",
         sign_in_title: |protocol, tag| format!("Sign in to {protocol} \"{tag}\""),
         sign_in: "Sign in",
         later: "Later",
@@ -405,11 +410,12 @@ pub static EN: Strings = Strings {
         deadline_passed: "The server's time limit for this request has passed.",
         deadline_secs: |n| format!("The server waits {n} more seconds."),
         deadline_mins: |n| format!("The server waits about {n} more min."),
-        cookies: |names, count| {
-            format!("the {names} cookie{}", if count == 1 { "" } else { "s" })
-        },
+        cookies: |names, count| format!("the {names} cookie{}", if count == 1 { "" } else { "s" }),
         headers: |names, count| {
-            format!("the {names} response header{}", if count == 1 { "" } else { "s" })
+            format!(
+                "the {names} response header{}",
+                if count == 1 { "" } else { "s" }
+            )
         },
         browser_limitation: |captured| {
             format!(
@@ -480,7 +486,8 @@ pub static EN: Strings = Strings {
         ipv6: "IPv6",
         ipv6_hint: "Proxies IPv6 traffic in TUN mode.",
         clear_cache: "Clear Cache",
-        clear_cache_hint: "Resets cache.db — node selections go back to defaults. Available while disconnected.",
+        clear_cache_hint:
+            "Resets cache.db — node selections go back to defaults. Available while disconnected.",
         copied_command: |shell| format!("Copied {shell} proxy command."),
         running_config: "Running config",
         running_config_hint: "The exact config sing-box runs with.",
@@ -498,7 +505,9 @@ pub static EN: Strings = Strings {
         download: "Download",
         skip: "Skip this version",
         check_now: "Check now",
-        available_toast: |version| format!("BoxPilot {version} is available — see Settings › About."),
+        available_toast: |version| {
+            format!("BoxPilot {version} is available — see Settings › About.")
+        },
         unexpected_response: "unexpected response from GitHub",
         prerelease: "latest release is a prerelease",
         bad_tag: |tag| format!("unrecognised release tag \"{tag}\""),
@@ -523,7 +532,8 @@ pub static EN: Strings = Strings {
         hide_credentials_tooltip: "Masks passwords, keys, UUIDs and URL tokens. \
                                    BoxPilot's own API secret is always masked.",
         no_profile_title: "No profile yet",
-        no_profile_hint: "Add a subscription or a local config on the Profiles page, and its config \
+        no_profile_hint:
+            "Add a subscription or a local config on the Profiles page, and its config \
                           shows up here.",
         no_config_title: "This profile has no config yet",
         no_config_hint: "Update it on the Profiles page to download its config.",
@@ -600,7 +610,9 @@ pub static EN: Strings = Strings {
         close_connection_failed: |e| format!("Failed to close connection: {e}"),
         close_connections_failed: |e| format!("Failed to close connections: {e}"),
         sing_box_exited: "sing-box exited.",
-        start_failed: |binary, config, e| format!("Failed to start {binary} with config {config}: {e}"),
+        start_failed: |binary, config, e| {
+            format!("Failed to start {binary} with config {config}: {e}")
+        },
         api_no_response: "sing-box API did not respond",
         groups_failed: |e| format!("Failed to load proxy groups: {e}"),
         switch_node_failed: |e| format!("Failed to switch node: {e}"),
