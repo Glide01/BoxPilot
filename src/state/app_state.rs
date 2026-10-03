@@ -1,7 +1,7 @@
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
 use crate::core::orchestration::{
-    config_change_action, fetch_result_applies, process_edge_effects, ConfigChangeAction,
-    ProcessEdgeEffect, StartPhase,
+    config_change_action, fetch_result_applies, process_edge_effects, ApiPortRetry,
+    ConfigChangeAction, ProcessEdgeEffect, StartPhase,
 };
 #[cfg(target_os = "linux")]
 use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
@@ -16,15 +16,15 @@ use crate::core::settings::{
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::subscription::{
-    import_local_config, perform_update, prepare_config, save_runtime_config, RuntimeOptions,
-    UpdateOutcome,
+    import_local_config, perform_update, pick_api_port, prepare_config, save_runtime_config,
+    RuntimeOptions, UpdateOutcome,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
 use crate::state::clash_mode::ClashMode;
 use crate::state::connections::Connections;
 use crate::state::log_buffer::LogBuffer;
 use crate::state::network_tools::NetworkTools;
-use crate::state::process_session::{PendingStart, ProcessSession};
+use crate::state::process_session::{ApiPortLost, PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
 use crate::state::tailscale::TailscaleState;
 use crate::state::traffic::Traffic;
@@ -188,6 +188,10 @@ pub struct AppState {
     /// the process observer starts again once it is back to `Stopped`.
     /// Cleared by `stop_process`.
     restart_pending: bool,
+    /// The one automatic redo of a start that lost its API port; the
+    /// process observer runs it once sing-box has stopped. Re-armed by
+    /// every other start, and by `stop_process`.
+    api_port_retry: ApiPortRetry,
     /// Numbers every profile fetch; the last one handed out.
     fetch_seq: u64,
     /// The newest fetch started per profile id. A finished fetch whose
@@ -288,8 +292,8 @@ impl AppState {
         };
 
         // Replaced by `launch` before any sing-box runs; until then nothing
-        // listens for this one.
-        let api = SingBoxApi::new(settings.api_port);
+        // listens for this one (nothing can listen on port 0).
+        let api = SingBoxApi::new(0);
         let logs = cx.new(|_| LogBuffer::new(api));
         let process = cx.new({
             let logs = logs.clone();
@@ -374,8 +378,24 @@ impl AppState {
                 if this.restart_pending && stopped {
                     this.restart_pending = false;
                     this.start_process(cx);
+                } else if stopped {
+                    this.redo_start_if_api_port_lost(cx);
                 }
             })
+            .detach();
+
+            cx.subscribe(
+                &process,
+                |this: &mut AppState, process, lost: &ApiPortLost, cx| {
+                    this.api_port_retry = this.api_port_retry.port_lost(lost.port, this.api.port());
+                    // Usually sing-box is still exiting, and the observer
+                    // redoes the start once it's stopped; the report can
+                    // also come last.
+                    if process.read(cx).is_stopped() {
+                        this.redo_start_if_api_port_lost(cx);
+                    }
+                },
+            )
             .detach();
 
             let auto_update_task = cx.spawn(async move |this, cx| {
@@ -597,6 +617,7 @@ impl AppState {
                 #[cfg(target_os = "linux")]
                 tun_gate: None,
                 restart_pending: false,
+                api_port_retry: ApiPortRetry::default(),
                 fetch_seq: 0,
                 latest_fetch: HashMap::new(),
                 queued_fetches: VecDeque::new(),
@@ -687,16 +708,18 @@ impl AppState {
     }
 
     /// Read the active profile's canonical config, inject mode-specific
-    /// inbounds + experimental + the `api` service with a fresh secret, and
-    /// write the result to the separate runtime config (the `-c` target).
-    /// Returns that path and the API endpoint it was written for. Done
-    /// synchronously immediately before the prep task — order matters, do
-    /// not move to the background executor.
+    /// inbounds, cache_file, and BoxPilot's `api` service on a freshly
+    /// picked free port with a fresh secret, and write the result to the
+    /// separate runtime config (the `-c` target). Returns that path and the
+    /// API endpoint it was written for. Done synchronously immediately
+    /// before the prep task — order matters, do not move to the background
+    /// executor.
     fn write_runtime_config(&self) -> Result<(PathBuf, SingBoxApi), String> {
         let config_path = self.active_config_path();
         let data = fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        let opts = RuntimeOptions::from(&self.settings);
+        let api = SingBoxApi::new(pick_api_port(&data, self.settings.proxy_port)?);
+        let opts = RuntimeOptions::new(&self.settings, api);
         let prepared = prepare_config(&data, opts)?;
         let runtime_path = runtime_config_path(&self.app_dir);
         save_runtime_config(&runtime_path, &prepared)
@@ -790,10 +813,11 @@ impl AppState {
     /// running `sing_path`. The `-D` working dir stays the user's data dir
     /// whichever binary runs, so `cache.db` and friends stay user-owned.
     fn launch(&mut self, sing_path: PathBuf, cx: &mut Context<Self>) {
-        let config_path = match self.write_runtime_config() {
+        self.api_port_retry = self.api_port_retry.launched();
+        let (config_path, api_port) = match self.write_runtime_config() {
             Ok((path, api)) => {
                 self.set_api(api, cx);
-                path
+                (path, api.port())
             }
             Err(e) => {
                 cx.emit(StatusEvent {
@@ -810,6 +834,7 @@ impl AppState {
             working_dir: self.app_dir.clone(),
             proxy_mode: self.settings.proxy_mode,
             set_system_proxy: self.settings.set_system_proxy,
+            api_port,
         };
 
         self.process.update(cx, |p, cx| p.start(pending, cx));
@@ -891,12 +916,25 @@ impl AppState {
     /// dropped, a `Preparing` start is abandoned (`ProcessSession::stop`).
     pub fn stop_process(&mut self, cx: &mut Context<Self>) {
         self.restart_pending = false;
+        self.api_port_retry = ApiPortRetry::Armed;
         #[cfg(target_os = "linux")]
         {
             self.tun_gate = None;
         }
         self.process.update(cx, |p, cx| p.stop(cx));
         cx.notify();
+    }
+
+    /// sing-box is stopped: if its run lost the API port it was given, start
+    /// once more, which picks a fresh one (`ApiPortRetry`).
+    fn redo_start_if_api_port_lost(&mut self, cx: &mut Context<Self>) {
+        if self.api_port_retry.take_redo() {
+            cx.emit(StatusEvent {
+                level: StatusLevel::Info,
+                message: "The sing-box API port was taken; retrying on another port.".to_string(),
+            });
+            self.start_process(cx);
+        }
     }
 
     pub fn toggle_process(&mut self, cx: &mut Context<Self>) {
@@ -992,19 +1030,6 @@ impl AppState {
             return;
         }
         self.settings.proxy_port = value;
-        self.save_settings();
-        self.restart_if_running(cx);
-        cx.notify();
-    }
-
-    /// Settings 页改 sing-box API 端口:持久化 + 运行中(或启动中)重启
-    /// sing-box 让新的 api 服务端口生效。各实体的 `SingBoxApi` 句柄由下次
-    /// `launch` 统一换新(连同新 secret)。
-    pub fn set_api_port(&mut self, value: u16, cx: &mut Context<Self>) {
-        if self.settings.api_port == value {
-            return;
-        }
-        self.settings.api_port = value;
         self.save_settings();
         self.restart_if_running(cx);
         cx.notify();

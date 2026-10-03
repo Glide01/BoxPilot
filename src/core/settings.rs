@@ -14,14 +14,14 @@ pub const CONFIG_FILENAME: &str = "config.json";
 /// Per-profile configs live in `<app_dir>/configs/<profile_id>.json`. The
 /// legacy single `config.json` is migrated into here on first launch.
 pub const PROFILES_DIR: &str = "configs";
-/// The prepared (inbounds + experimental injected) config sing-box actually
+/// The prepared (inbounds + cache_file + BoxPilot's `api` service injected)
+/// config sing-box actually
 /// runs with. Rewritten from the active profile's canonical config on every
 /// process start; the canonical `configs/<id>.json` files are never touched
 /// by a start, so their bytes/mtime only change on a real subscription update.
 pub const RUNTIME_CONFIG_FILENAME: &str = "running_config.json";
 pub const SETTINGS_FILE: &str = "box_pilot_settings.json";
 pub const PROXY_PORT: u16 = 7788;
-pub const API_PORT: u16 = 7789;
 pub const MAX_LOG_LINES: usize = 1000;
 pub const HTTP_TIMEOUT_SECS: u64 = 8;
 
@@ -169,11 +169,6 @@ pub struct AppSettings {
     /// 本地 mixed 代理入站端口(Settings 页可配)。
     #[serde(default = "default_proxy_port")]
     pub proxy_port: u16,
-    /// sing-box API 服务(`services[]` 里 type=api)端口——节点切换/整组测速/
-    /// 网速流都走它,固定 127.0.0.1(Settings 页可配)。`clash_api_port` 是它
-    /// 换掉 Clash API 之前的字段名,老设置文件照常读入。
-    #[serde(default = "default_api_port", alias = "clash_api_port")]
-    pub api_port: u16,
     /// TUN 模式下是否给 TUN 接口分配 IPv6 地址(Settings 页可配)。关闭时
     /// IPv6 流量不进隧道,走物理网卡直连。默认关——设置文件里没有这个字段的
     /// 老安装升级后同样是关。
@@ -199,17 +194,12 @@ pub fn default_proxy_port() -> u16 {
     PROXY_PORT
 }
 
-pub fn default_api_port() -> u16 {
-    API_PORT
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         let mut settings = Self {
             proxy_mode: false,
             set_system_proxy: false,
             proxy_port: default_proxy_port(),
-            api_port: default_api_port(),
             tun_ipv6: false,
             profiles: Vec::new(),
             active_profile_id: String::new(),
@@ -462,7 +452,6 @@ mod tests {
         assert!(settings.proxy_mode);
         assert!(!settings.set_system_proxy);
         assert_eq!(settings.proxy_port, 7788);
-        assert_eq!(settings.api_port, 7789);
         assert!(
             !settings.tun_ipv6,
             "installs that predate the toggle get TUN IPv6 off"
@@ -617,16 +606,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Settings written before the move off the Clash API stored the port as
-    /// `clash_api_port`; a user's custom port must survive the rename.
+    /// The sing-box API port used to be a setting (`api_port`, earlier
+    /// `clash_api_port`); BoxPilot now picks a free one for every start.
+    /// Files that still carry either field load as before, and the next
+    /// save drops it.
     #[test]
-    fn legacy_clash_api_port_field_is_read_as_api_port() {
-        let legacy = r#"{"proxy_mode": false, "clash_api_port": 17900}"#;
-        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(settings.api_port, 17900);
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(saved["api_port"], 17900);
-        assert!(saved.get("clash_api_port").is_none());
+    fn legacy_api_port_fields_are_ignored() {
+        for legacy in [
+            r#"{"proxy_mode": true, "proxy_port": 18888, "api_port": 17900}"#,
+            r#"{"proxy_mode": true, "proxy_port": 18888, "clash_api_port": 17900}"#,
+        ] {
+            let settings: AppSettings = serde_json::from_str(legacy).unwrap();
+            assert!(settings.proxy_mode);
+            assert_eq!(settings.proxy_port, 18888);
+            let saved = serde_json::to_value(&settings).unwrap();
+            assert!(saved.get("api_port").is_none(), "{}", saved);
+            assert!(saved.get("clash_api_port").is_none(), "{}", saved);
+        }
     }
 
     fn backups(dir: &Path) -> Vec<PathBuf> {
@@ -650,7 +646,6 @@ mod tests {
         fs::write(dir.join(SETTINGS_FILE), "{not json").unwrap();
         let loaded = AppSettings::load(&dir);
         assert_eq!(loaded.settings.proxy_port, 7788);
-        assert_eq!(loaded.settings.api_port, 7789);
         assert!(loaded.settings.profiles.is_empty());
         assert!(loaded.persist);
 
@@ -711,7 +706,6 @@ mod tests {
             proxy_mode: true,
             set_system_proxy: true,
             proxy_port: 18888,
-            api_port: 17900,
             tun_ipv6: true,
             profiles: vec![
                 Profile {
@@ -740,7 +734,6 @@ mod tests {
         assert_eq!(loaded.proxy_mode, original.proxy_mode);
         assert_eq!(loaded.set_system_proxy, original.set_system_proxy);
         assert_eq!(loaded.proxy_port, 18888);
-        assert_eq!(loaded.api_port, 17900);
         assert!(loaded.tun_ipv6);
         assert_eq!(loaded.profiles, original.profiles);
         assert_eq!(loaded.active_profile_id, "p2");

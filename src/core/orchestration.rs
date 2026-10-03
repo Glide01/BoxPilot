@@ -122,9 +122,84 @@ pub fn fetch_result_applies(latest_fetch: Option<u64>, fetch: u64, profile_exist
     profile_exists && latest_fetch == Some(fetch)
 }
 
+/// The one automatic redo of a start whose BoxPilot `api` service lost its
+/// picked port before sing-box bound it (`subscription::pick_api_port`).
+/// `AppState` holds one; `ProcessSession` reports the loss, and the process
+/// observer starts again, with a fresh port, once the run has stopped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ApiPortRetry {
+    /// The current run may still be redone once.
+    #[default]
+    Armed,
+    /// The current run lost its port: start again once it has stopped.
+    Pending,
+    /// That start is under way; its launch uses the retry up.
+    Redoing,
+    /// The current run is the redo: a second loss stands, and its error
+    /// (the exit toast, the line in Logs) is what the user sees.
+    Used,
+}
+
+impl ApiPortRetry {
+    /// A runtime config was written for a new run. Only the redo's own
+    /// launch keeps the retry used up; any other start gets a fresh one.
+    pub fn launched(self) -> Self {
+        match self {
+            ApiPortRetry::Redoing => ApiPortRetry::Used,
+            _ => ApiPortRetry::Armed,
+        }
+    }
+
+    /// sing-box could not listen on `lost_port`. Only a loss of the current
+    /// run's port counts: a late report from an earlier run is ignored.
+    pub fn port_lost(self, lost_port: u16, run_port: u16) -> Self {
+        match self {
+            ApiPortRetry::Armed if lost_port == run_port => ApiPortRetry::Pending,
+            other => other,
+        }
+    }
+
+    /// sing-box is stopped: whether to start again now. Moves `Pending` on
+    /// to `Redoing`, so the redo happens once.
+    pub fn take_redo(&mut self) -> bool {
+        if *self == ApiPortRetry::Pending {
+            *self = ApiPortRetry::Redoing;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lost port leads to exactly one redo, and the redo's own loss to
+    /// none.
+    #[test]
+    fn api_port_loss_is_retried_once() {
+        let mut retry = ApiPortRetry::default().launched();
+        assert!(!retry.take_redo(), "nothing lost yet");
+        retry = retry.port_lost(41234, 41234);
+        assert!(retry.take_redo());
+        assert!(!retry.take_redo(), "one redo per loss");
+        retry = retry.launched();
+        assert_eq!(retry, ApiPortRetry::Used);
+        retry = retry.port_lost(41235, 41235);
+        assert!(!retry.take_redo(), "the redo is not redone");
+        // The user's next start may retry again.
+        retry = retry.launched();
+        assert_eq!(retry.port_lost(41236, 41236), ApiPortRetry::Pending);
+    }
+
+    /// A report from an earlier run names a port the current run doesn't
+    /// use.
+    #[test]
+    fn stale_api_port_loss_is_ignored() {
+        let retry = ApiPortRetry::Armed.port_lost(41234, 50000);
+        assert_eq!(retry, ApiPortRetry::Armed);
+    }
 
     #[test]
     fn started_edge_starts_every_api_consumer() {

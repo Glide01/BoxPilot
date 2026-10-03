@@ -17,12 +17,15 @@ BoxPilot version; "Unknown" when the binary is missing or unreadable.
 
 **sing-box API**:
 The control interface of the running sing-box: its `api` service (gRPC,
-sing-box ≥ 1.14), which BoxPilot injects on a loopback port behind a fresh
-secret per sing-box start, and uses for everything it shows of a running
-sing-box: groups, node switching, delay tests, runtime status, logs,
-connections, clash mode, diagnostics and the Tailscale / OpenConnect /
-OpenVPN / USB/IP endpoints. Replaced the Clash API (`experimental.clash_api`),
-which BoxPilot no longer enables.
+sing-box ≥ 1.14), which BoxPilot injects for every sing-box start on a free
+loopback port it picks itself, behind a fresh secret, and uses for
+everything it shows of a running sing-box: groups, node switching, delay
+tests, runtime status, logs, connections, clash mode, diagnostics and the
+Tailscale / OpenConnect / OpenVPN / USB/IP endpoints. Internal: the user
+never sees or sets its port. Replaced the Clash API
+(`experimental.clash_api`), which BoxPilot no longer uses. Controllers a
+profile's config brings itself (its own `api` services, `clash_api`) run
+alongside as the config writes them; BoxPilot never talks to them.
 _Avoid_: Clash API, external controller, core API
 
 **Connection**:

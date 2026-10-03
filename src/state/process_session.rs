@@ -5,6 +5,7 @@ use crate::core::process::{
 #[cfg(target_os = "linux")]
 use crate::core::privilege::{forget_sing_box_pid, record_sing_box_pid, stop_stale_sing_box};
 use crate::core::settings::{StatusEvent, StatusLevel, SING_EXECUTABLE};
+use crate::core::subscription::is_api_bind_failure;
 use crate::state::log_buffer::LogBuffer;
 use gpui::{Context, Entity, EventEmitter, Task};
 use std::path::PathBuf;
@@ -26,6 +27,15 @@ pub struct PendingStart {
     pub working_dir: PathBuf,
     pub proxy_mode: bool,
     pub set_system_proxy: bool,
+    /// The port of BoxPilot's `api` service in this run's config.
+    pub api_port: u16,
+}
+
+/// sing-box said it could not listen on BoxPilot's API port `port` (another
+/// program took it after it was picked); it exits right after. `AppState`
+/// starts once more with a fresh port (`ApiPortRetry`).
+pub struct ApiPortLost {
+    pub port: u16,
 }
 
 pub enum ProcessState {
@@ -65,6 +75,7 @@ pub struct ProcessSession {
 }
 
 impl EventEmitter<StatusEvent> for ProcessSession {}
+impl EventEmitter<ApiPortLost> for ProcessSession {}
 
 impl ProcessSession {
     pub fn new(logs: Entity<LogBuffer>) -> Self {
@@ -148,7 +159,9 @@ impl ProcessSession {
                     self.pid_dir = Some(pending.working_dir.clone());
                 }
                 let weak_logs = self.logs.downgrade();
-                let drain = cx.spawn(async move |_this, cx| {
+                let api_port = pending.api_port;
+                let drain = cx.spawn(async move |this, cx| {
+                    let mut api_port_lost = false;
                     loop {
                         cx.background_executor().timer(LOG_DRAIN_INTERVAL).await;
                         let mut batch = Vec::new();
@@ -162,6 +175,13 @@ impl ProcessSession {
                                     break;
                                 }
                             }
+                        }
+                        if !api_port_lost
+                            && batch.iter().any(|line| is_api_bind_failure(line, api_port))
+                        {
+                            api_port_lost = true;
+                            let _ =
+                                this.update(cx, |_, cx| cx.emit(ApiPortLost { port: api_port }));
                         }
                         if !batch.is_empty()
                             && weak_logs

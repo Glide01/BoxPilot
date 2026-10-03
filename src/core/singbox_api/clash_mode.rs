@@ -11,9 +11,10 @@ impl SingBoxApi {
     /// The list is derived from the config: every `clash_mode` value used in
     /// `route.rules` and `dns.rules` (logical rules included), custom modes
     /// sorted by name first, then whichever of `Rule`, `Global`, `Direct`
-    /// appear, in that order. The default mode (`Rule`, since BoxPilot sets
-    /// no `clash_api.default_mode`) is prepended when no rule mentions it, so
-    /// a config without `clash_mode` rules yields just `["Rule"]`. The
+    /// appear, in that order. The default mode (`Rule`, unless the config's
+    /// own `clash_api.default_mode` names another) is prepended when no rule
+    /// mentions it, so a config without `clash_mode` rules yields just
+    /// `["Rule"]`. The
     /// current mode is restored from `cache_file` at startup.
     pub fn get_clash_mode_status(&self) -> Result<ClashModeStatus, ApiError> {
         self.unary("GetClashModeStatus", &())

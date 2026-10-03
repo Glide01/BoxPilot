@@ -37,7 +37,7 @@ pub struct VpnPresence {
 
 impl VpnPresence {
     /// Read from a sing-box config (the prepared runtime config, which
-    /// passes `endpoints` and non-`api` `services` through untouched).
+    /// passes the profile's `endpoints` and `services` through untouched).
     /// Unparsable JSON reads as empty.
     pub fn from_config(config: &str) -> Self {
         let Ok(json) = serde_json::from_str::<Value>(config) else {

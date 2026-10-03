@@ -65,7 +65,8 @@ use std::fmt;
 
 /// Tag of the `api` service BoxPilot injects into the runtime config.
 /// Distinct from anything a subscription is likely to use, since service tags
-/// share one namespace.
+/// share one namespace; `prepare_config` adds a suffix in case the config's
+/// own services use it anyway.
 pub const API_SERVICE_TAG: &str = "boxpilot-api";
 
 /// First sing-box release with the `api` service. Older binaries reject the
@@ -151,6 +152,11 @@ impl SingBoxApi {
         })
     }
 
+    /// The port this endpoint listens on.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     /// POST URL of one `StartedService` method. Public so the path shape is
     /// testable without HTTP.
     pub fn method_url(&self, method: &str) -> String {
@@ -161,6 +167,15 @@ impl SingBoxApi {
             method
         )
     }
+}
+
+/// Whether a `services[]` entry is one `SingBoxApi::service_config` wrote,
+/// whatever its tag, port or secret: recognized by the CORS origin only
+/// BoxPilot uses. Found only in a runtime config fed back in (say an import
+/// of `running_config.json`), where its secret is long dead.
+pub fn is_boxpilot_api_service(service: &Value) -> bool {
+    service["type"] == "api"
+        && service["access_control_allow_origin"] == serde_json::json!([ALLOWED_ORIGIN])
 }
 
 impl fmt::Debug for SingBoxApi {
@@ -226,6 +241,20 @@ mod tests {
             service["access_control_allow_origin"],
             serde_json::json!(["http://boxpilot.invalid"])
         );
+    }
+
+    /// Ours is recognized by its origin, not its tag; a config's own `api`
+    /// service is not ours, even under our tag.
+    #[test]
+    fn boxpilot_api_service_is_recognized_by_origin() {
+        let mut ours = SingBoxApi::new(7789).service_config();
+        assert!(is_boxpilot_api_service(&ours));
+        ours["tag"] = Value::from("boxpilot-api-2");
+        assert!(is_boxpilot_api_service(&ours));
+        let theirs = serde_json::json!({
+            "type": "api", "tag": API_SERVICE_TAG, "listen": "0.0.0.0", "listen_port": 9090
+        });
+        assert!(!is_boxpilot_api_service(&theirs));
     }
 
     #[test]

@@ -16,9 +16,9 @@
 - **Tailscale**：配置含 Tailscale endpoint 时出现 Tailscale 页——登录 / 登出、设备列表、出口节点、Ping、Taildrop 收件、HTTPS 证书
 - **OpenConnect / OpenVPN / USB/IP**：配置含这些 endpoint 时出现 VPN 页——连接状态、隧道信息，以及登录表单 / 一次性验证码等交互式认证
 - **深链接导入**：浏览器点击 `sing-box://import-remote-profile` 链接直接导入订阅
-- **端口可配**：本地代理端口（默认 7788）与 sing-box API 端口（默认 7789）均可在 Settings 页修改
-- **一键复制**代理环境变量（跟随配置端口）：Windows 上为 PowerShell / WSL，Linux 上为 bash/zsh / fish
-- 配置与设置持久化（配置列表、代理模式、系统代理开关、端口）
+- **端口可配**：本地代理端口（默认 7788）可在 Settings 页修改；BoxPilot 自用的 sing-box API 每次启动自动挑一个空闲的本地端口，无需设置。配置自带的控制接口（`api` 服务、`clash_api`）照原样运行，互不干扰
+- **一键复制**代理环境变量（跟随代理端口）：Windows 上为 PowerShell / WSL，Linux 上为 bash/zsh / fish
+- 配置与设置持久化（配置列表、代理模式、系统代理开关、代理端口）
 
 ## 系统要求
 
@@ -65,7 +65,7 @@ chmod +x BoxPilot-*-x86_64.AppImage
 2. 在 **Profiles** 页点 **+ Add** 添加配置——粘贴订阅 URL 或选择本地 JSON 文件；也可以直接点击浏览器中的 `sing-box://` 导入链接。
 3. 回到 **Home** 页，点大圆按钮连接。
 4. 用 **Proxy Mode**（TUN / Mixed）和 **System Proxy** 开关控制代理行为。
-5. **Groups** 页选节点、测延迟；**Logs** 页看 sing-box 实时输出；**Settings** 页改端口、清缓存（清缓存会重置节点选择）。
+5. **Groups** 页选节点、测延迟；**Logs** 页看 sing-box 实时输出；**Settings** 页改代理端口、清缓存（清缓存会重置节点选择）。
 
 ## 从源码构建
 
