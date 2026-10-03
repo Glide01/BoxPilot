@@ -10,6 +10,7 @@ use crate::core::singbox_api::{ApiError, RuntimeStatus, SingBoxApi};
 use crate::state::drain::next_batch;
 use futures_channel::mpsc;
 use gpui::{Context, Task};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -27,6 +28,16 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// version before giving up for this run. Both answer as soon as the API
 /// listens, which is within a second or two of the process starting.
 const INFO_ATTEMPTS: usize = 30;
+/// How many samples the rate history keeps: sing-box reports once a second,
+/// so this is the Home traffic chart's two-minute window.
+pub const HISTORY_LEN: usize = 120;
+
+/// One status sample's rates, bytes/sec, as the Home traffic chart plots them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RatePoint {
+    pub up: u64,
+    pub down: u64,
+}
 
 /// Current runtime status. Session-scoped: zeroed when sing-box stops, never
 /// persisted.
@@ -45,6 +56,10 @@ pub struct Traffic {
     pub started_at: Option<i64>,
     /// The running sing-box's own version (`GetVersion`).
     pub version: Option<String>,
+    /// The last [`HISTORY_LEN`] samples' rates, oldest first. Every sample
+    /// lands here (see `ingest`); cleared with the rest of the readout when a
+    /// run starts or stops.
+    history: VecDeque<RatePoint>,
     /// sing-box API 句柄(端口 + 本次运行的 secret)。`start()` 从它订阅
     /// `SubscribeStatus`;AppState 每次启动 sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
@@ -68,6 +83,7 @@ impl Traffic {
             status: RuntimeStatus::default(),
             started_at: None,
             version: None,
+            history: VecDeque::with_capacity(HISTORY_LEN),
             api,
             running: Arc::new(AtomicBool::new(false)),
             _drain: None,
@@ -147,12 +163,12 @@ impl Traffic {
         // each call is bounded by the transport's 2s unary timeout.
         let info = cx.spawn(async move |this, cx| {
             for _ in 0..INFO_ATTEMPTS {
-                let result = cx
-                    .background_executor()
-                    .spawn(async move {
-                        Ok::<_, ApiError>((api.get_started_at()?, api.get_version()?))
-                    })
-                    .await;
+                let result =
+                    cx.background_executor()
+                        .spawn(async move {
+                            Ok::<_, ApiError>((api.get_started_at()?, api.get_version()?))
+                        })
+                        .await;
                 if let Ok((started_at, version)) = result {
                     let _ = this.update(cx, |traffic, cx| {
                         traffic.started_at = started_at;
@@ -171,10 +187,25 @@ impl Traffic {
     /// Every sample of a batch, oldest first. The readout shows the newest
     /// (totals are cumulative, rates per-second, so nothing is lost by
     /// skipping one); each one still passes through here.
+    /// Each one also joins the rate history, so a backlog folded into one
+    /// batch still plots one point per second.
     fn ingest(&mut self, samples: Vec<RuntimeStatus>) {
         for sample in samples {
+            if self.history.len() == HISTORY_LEN {
+                self.history.pop_front();
+            }
+            self.history.push_back(RatePoint {
+                up: sample.uplink,
+                down: sample.downlink,
+            });
             self.apply(sample);
         }
+    }
+
+    /// The recent rates, oldest first: at most [`HISTORY_LEN`] samples, one
+    /// a second, of the current run only.
+    pub fn history(&self) -> &VecDeque<RatePoint> {
+        &self.history
     }
 
     fn apply(&mut self, status: RuntimeStatus) {
@@ -183,9 +214,10 @@ impl Traffic {
         self.status = status;
     }
 
-    /// Back to the stopped state: no sample, no run facts.
+    /// Back to the stopped state: no sample, no history, no run facts.
     fn reset(&mut self) {
         self.apply(RuntimeStatus::default());
+        self.history.clear();
         self.started_at = None;
         self.version = None;
     }
@@ -209,5 +241,68 @@ impl Drop for Traffic {
         // exits at its next sample (or reconnect check) once the entity is
         // gone (e.g. on app quit).
         self.running.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(up: u64, down: u64) -> RuntimeStatus {
+        RuntimeStatus {
+            uplink: up,
+            downlink: down,
+            ..RuntimeStatus::default()
+        }
+    }
+
+    fn traffic() -> Traffic {
+        Traffic::new(SingBoxApi::new(0))
+    }
+
+    #[test]
+    fn every_sample_of_a_batch_joins_the_history_oldest_first() {
+        let mut traffic = traffic();
+        traffic.ingest(vec![sample(1, 10), sample(2, 20), sample(3, 30)]);
+        let history: Vec<_> = traffic.history().iter().copied().collect();
+        assert_eq!(
+            history,
+            vec![
+                RatePoint { up: 1, down: 10 },
+                RatePoint { up: 2, down: 20 },
+                RatePoint { up: 3, down: 30 },
+            ]
+        );
+        // The readout shows the newest.
+        assert_eq!((traffic.up, traffic.down), (3, 30));
+    }
+
+    #[test]
+    fn history_keeps_only_the_newest_window() {
+        let mut traffic = traffic();
+        // One batch past the cap, then single samples like the live stream.
+        traffic.ingest((0..HISTORY_LEN as u64 + 5).map(|i| sample(i, i)).collect());
+        traffic.ingest(vec![sample(1000, 2000)]);
+        let history = traffic.history();
+        assert_eq!(history.len(), HISTORY_LEN);
+        assert_eq!(history.front(), Some(&RatePoint { up: 6, down: 6 }));
+        assert_eq!(
+            history.back(),
+            Some(&RatePoint {
+                up: 1000,
+                down: 2000
+            })
+        );
+    }
+
+    #[test]
+    fn reset_clears_the_history_with_the_readout() {
+        let mut traffic = traffic();
+        traffic.ingest(vec![sample(5, 7), sample(6, 8)]);
+        traffic.reset();
+        assert!(traffic.history().is_empty());
+        assert_eq!((traffic.up, traffic.down), (0, 0));
+        traffic.ingest(vec![sample(9, 9)]);
+        assert_eq!(traffic.history().len(), 1);
     }
 }
