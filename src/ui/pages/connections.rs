@@ -9,8 +9,20 @@
 //! `(revision, view, sort, query)` 缓存,只有数据或条件变了才重算;行内容在
 //! 渲染时按 id 从 `ConnectionTable` 现取,时长随渲染时刻走。
 //! 过滤 / 排序 / 显示字符串都是 `core::connections_view` 的纯函数。
+//!
+//! Clicking a row opens the details panel (`connection_details`) over the
+//! right of the list and highlights the row; while it is open Esc closes it
+//! and Up / Down select the neighbouring row of the current list (the page
+//! sets `CONNECTION_DETAILS_CONTEXT` then, and keeps keyboard focus on its
+//! own handle). The selection lives here; the panel follows it.
 
+use super::connection_details::{ConnectionDetailsPanel, DetailsDismissed};
+use crate::actions::{
+    CloseConnectionDetails, SelectNextConnection, SelectPreviousConnection,
+    CONNECTION_DETAILS_CONTEXT,
+};
 use crate::core::bytefmt::{format_bytes, format_speed};
+use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
     chain_label, connection_age_ms, format_elapsed, host_label, inbound_label, network_label,
     process_name, rule_label, select_connections, summarize, ConnectionSort, ConnectionView,
@@ -30,11 +42,18 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
 };
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Fixed row height — `uniform_list` lays every row out at the first row's
 /// size, so all rows must match.
 const ROW_HEIGHT: f32 = 52.;
+/// The details panel's width; on a narrow window it takes most of the list
+/// (`DETAILS_MAX_FRACTION`), leaving the selected row's start in view.
+const DETAILS_WIDTH: f32 = 380.;
+const DETAILS_MAX_FRACTION: f32 = 0.86;
+/// The panel's slide-in.
+const DETAILS_SLIDE: Duration = Duration::from_millis(180);
+const DETAILS_SLIDE_PX: f32 = 28.;
 
 /// What the cached row order was derived from.
 #[derive(Clone, PartialEq)]
@@ -54,12 +73,36 @@ pub struct ConnectionsPage {
     /// Ids of the rows to show, in display order, and what they came from.
     rows: Rc<Vec<String>>,
     rows_key: Option<RowsKey>,
+    /// The connection the details panel shows; `None` = panel closed.
+    selected: Option<SharedString>,
+    /// Where `selected` last was in `rows`, so Up / Down carry on from there
+    /// after it left the list (closed off the Active tab, filtered out).
+    selected_ix: Option<usize>,
+    /// Bumped each time the panel opens, to replay its slide-in.
+    details_opened: u64,
+    details: Entity<ConnectionDetailsPanel>,
+    /// Holds keyboard focus on this page (any click in it), so the panel's
+    /// key context is on the dispatch path.
+    focus_handle: FocusHandle,
 }
 
 impl ConnectionsPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let connections = app_state.read(cx).connections.clone();
-        cx.observe(&connections, |_, _, cx| cx.notify()).detach();
+        cx.observe(&connections, |this: &mut Self, connections, cx| {
+            // sing-box stopped: the list is gone, and the panel with it.
+            if !connections.read(cx).live && this.selected.is_some() {
+                this.close_details(cx);
+            }
+            cx.notify();
+        })
+        .detach();
+
+        let details = cx.new(|cx| ConnectionDetailsPanel::new(connections.clone(), cx));
+        cx.subscribe(&details, |this, _, _: &DetailsDismissed, cx| {
+            this.close_details(cx)
+        })
+        .detach();
 
         let filter_input = cx
             .new(|cx| InputState::new(window, cx).placeholder(s().connections.filter_placeholder));
@@ -84,6 +127,83 @@ impl ConnectionsPage {
             scroll: UniformListScrollHandle::new(),
             rows: Rc::new(Vec::new()),
             rows_key: None,
+            selected: None,
+            selected_ix: None,
+            details_opened: 0,
+            details,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// Open the panel on `id` (or move it there) and highlight its row.
+    fn select(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.is_none() {
+            self.details_opened += 1;
+        }
+        self.selected_ix = self.rows.iter().position(|row| row.as_str() == id.as_ref());
+        self.details
+            .update(cx, |panel, cx| panel.set_selected(Some(id.to_string()), cx));
+        self.selected = Some(id);
+        // Out of the filter box, if that had focus: the panel's keys are
+        // bound outside `Input`.
+        if !self.focus_handle.is_focused(window) {
+            self.focus_handle.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_details(&mut self, cx: &mut Context<Self>) {
+        if self.selected.take().is_none() {
+            return;
+        }
+        self.selected_ix = None;
+        self.details
+            .update(cx, |panel, cx| panel.set_selected(None, cx));
+        cx.notify();
+    }
+
+    fn on_close_details(
+        &mut self,
+        _: &CloseConnectionDetails,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_details(cx);
+    }
+
+    fn on_select_previous(
+        &mut self,
+        _: &SelectPreviousConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.step(Step::Previous, window, cx);
+    }
+
+    fn on_select_next(
+        &mut self,
+        _: &SelectNextConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.step(Step::Next, window, cx);
+    }
+
+    /// Select the row above / below in the current (filtered, sorted) list
+    /// and scroll it into view.
+    fn step(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_rows(cx);
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.rows.iter().position(|row| row.as_str() == id.as_ref()));
+        let Some(ix) = step_selection(self.rows.len(), current, self.selected_ix, step) else {
+            return;
+        };
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        if current != Some(ix) {
+            let id = SharedString::from(self.rows[ix].clone());
+            self.select(id, window, cx);
         }
     }
 
@@ -121,10 +241,17 @@ impl ConnectionsPage {
             .collect();
         self.rows = Rc::new(ids);
         self.rows_key = Some(key);
+        // Remember where the selection is while it is listed (kept when it
+        // is not: Up / Down continue from there).
+        if let Some(id) = &self.selected {
+            if let Some(ix) = self.rows.iter().position(|row| row.as_str() == id.as_ref()) {
+                self.selected_ix = Some(ix);
+            }
+        }
     }
 }
 
-fn unix_millis_now() -> i64 {
+pub(super) fn unix_millis_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -162,6 +289,8 @@ fn connection_row(
     connection: &Connection,
     now_ms: i64,
     connections: &Entity<Connections>,
+    page: &WeakEntity<ConnectionsPage>,
+    selected: bool,
     theme: &Theme,
 ) -> Stateful<Div> {
     let closed = connection.is_closed();
@@ -252,13 +381,18 @@ fn connection_row(
                 .icon(IconName::Close)
                 .tooltip(s().connections.close_connection)
                 .on_click(move |_, _, cx| {
+                    // Not a click on the row: that would open the details.
+                    cx.stop_propagation();
                     connections.update(cx, |state, cx| state.close(id.clone(), cx));
                 }),
         )
     });
 
+    let id = SharedString::from(connection.id.clone());
+    let page = page.clone();
     div()
         .id(SharedString::from(format!("conn-row-{}", connection.id)))
+        .relative()
         .h(px(ROW_HEIGHT))
         .w_full()
         .px_3()
@@ -267,7 +401,23 @@ fn connection_row(
         .gap_3()
         .border_b_1()
         .border_color(theme.border)
-        .hover(move |style| style.bg(hover_bg))
+        .cursor_pointer()
+        .when(selected, |row| {
+            row.bg(theme.primary.opacity(0.08)).child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(3.))
+                    .bg(theme.primary),
+            )
+        })
+        .when(!selected, |row| row.hover(move |style| style.bg(hover_bg)))
+        .on_click(move |_, window, cx| {
+            page.update(cx, |page, cx| page.select(id.clone(), window, cx))
+                .ok();
+        })
         .child(
             div()
                 .v_flex()
@@ -397,16 +547,23 @@ impl Render for ConnectionsPage {
         } else {
             let rows = self.rows.clone();
             let list_connections = connections.clone();
+            let list_page = page.clone();
+            let selected = self.selected.clone();
             let list = uniform_list("connections-list", rows.len(), move |range, _, cx| {
                 let now_ms = unix_millis_now();
                 let theme = cx.theme();
                 let state = list_connections.read(cx);
                 range
                     .map(|ix| match state.table.get(&rows[ix]) {
-                        Some(connection) => {
-                            connection_row(connection, now_ms, &list_connections, theme)
-                                .into_any_element()
-                        }
+                        Some(connection) => connection_row(
+                            connection,
+                            now_ms,
+                            &list_connections,
+                            &list_page,
+                            selected.as_deref() == Some(rows[ix].as_str()),
+                            theme,
+                        )
+                        .into_any_element(),
                         // Ids are refreshed with every revision before the
                         // list renders, so this is only a defensive blank.
                         None => div().h(px(ROW_HEIGHT)).into_any_element(),
@@ -432,7 +589,48 @@ impl Render for ConnectionsPage {
                 .into_any_element()
         };
 
+        // The details panel overlays the list's right side, below the
+        // filter row (which stays usable). A cached view of its own: it
+        // re-renders only when its connection's shown fields change.
+        let details = self.selected.is_some().then(|| {
+            let panel =
+                AnyView::from(self.details.clone()).cached(StyleRefinement::default().size_full());
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .w(px(DETAILS_WIDTH))
+                .max_w(relative(DETAILS_MAX_FRACTION))
+                .occlude()
+                .child(panel)
+                .with_animation(
+                    ElementId::NamedInteger("conn-details-slide".into(), self.details_opened),
+                    Animation::new(DETAILS_SLIDE).with_easing(ease_out_quint()),
+                    |panel, delta| {
+                        panel
+                            .right(px(-(1. - delta) * DETAILS_SLIDE_PX))
+                            .opacity(delta)
+                    },
+                )
+        });
+        let body = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .v_flex()
+            .child(body)
+            .children(details);
+
         div()
+            .id("connections-page")
+            .track_focus(&self.focus_handle)
+            .when(self.selected.is_some(), |page| {
+                page.key_context(CONNECTION_DETAILS_CONTEXT)
+            })
+            .on_action(cx.listener(Self::on_close_details))
+            .on_action(cx.listener(Self::on_select_previous))
+            .on_action(cx.listener(Self::on_select_next))
             .v_flex()
             .size_full()
             .gap_4()
