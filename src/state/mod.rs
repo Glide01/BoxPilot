@@ -21,6 +21,7 @@
 pub mod app_state;
 pub mod clash_mode;
 pub mod connections;
+pub mod drain;
 pub mod log_buffer;
 pub mod network_tools;
 pub mod process_session;

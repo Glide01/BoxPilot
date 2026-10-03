@@ -1,7 +1,10 @@
 pub mod atomic_write;
 pub mod bytefmt;
+pub mod config_view;
 pub mod connections_view;
 pub mod deeplink;
+pub mod groups_view;
+pub mod lan;
 #[cfg(target_os = "linux")]
 pub mod desktop_integration;
 pub mod log_merge;
@@ -14,9 +17,11 @@ pub mod profile_draft;
 pub mod settings;
 pub mod single_instance;
 pub mod singbox_api;
+pub mod sub_usage;
 pub mod subscription;
 pub mod tailscale;
 pub mod process;
 pub mod paths;
 pub mod timefmt;
+pub mod update_check;
 pub mod vpn;

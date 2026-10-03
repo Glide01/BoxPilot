@@ -4,11 +4,16 @@
 //! page observes the slice of `AppState` it cares about. Shared theme
 //! comes from `gpui_component::ActiveTheme`.
 
+pub mod app_window;
 pub mod assets;
+pub mod config_viewer;
 pub mod pages;
 pub mod root;
 pub mod sidebar;
+pub mod theme;
 pub mod toast;
+pub mod traffic_chart;
+pub mod tray;
 pub mod widgets;
 
 pub use root::RootView;

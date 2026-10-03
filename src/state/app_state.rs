@@ -11,8 +11,8 @@ use crate::core::paths::{
     runtime_config_path,
 };
 use crate::core::settings::{
-    default_auto_update_interval, AppSettings, Profile, ProfileSource, StatusEvent, StatusLevel,
-    CONFIG_FILENAME, SING_EXECUTABLE,
+    default_auto_update_interval, AppSettings, CloseAction, LanguagePreference, Profile,
+    ProfileSource, StatusEvent, StatusLevel, ThemePreference, CONFIG_FILENAME, SING_EXECUTABLE,
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::subscription::{
@@ -1057,6 +1057,70 @@ impl AppState {
         cx.notify();
     }
 
+    /// Settings › General "Appearance". Persists only; applying the theme
+    /// to the windows is the caller's job (`ui::theme`).
+    pub fn set_theme(&mut self, value: ThemePreference, cx: &mut Context<Self>) {
+        if self.settings.theme == value {
+            return;
+        }
+        self.settings.theme = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Settings › General "Language". Persists only; switching the UI
+    /// strings is the caller's job.
+    pub fn set_language(&mut self, value: LanguagePreference, cx: &mut Context<Self>) {
+        if self.settings.language == value {
+            return;
+        }
+        self.settings.language = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Settings › Network "Allow LAN connections": changes the inbound's
+    /// listen address, so a running (or starting) sing-box is restarted.
+    pub fn set_allow_lan(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.allow_lan == value {
+            return;
+        }
+        self.settings.allow_lan = value;
+        self.save_settings();
+        self.restart_if_running(cx);
+        cx.notify();
+    }
+
+    /// Settings › General "Close button".
+    pub fn set_close_action(&mut self, value: CloseAction, cx: &mut Context<Self>) {
+        if self.settings.close_action == value {
+            return;
+        }
+        self.settings.close_action = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Settings › About "Check automatically".
+    pub fn set_check_updates(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.check_updates == value {
+            return;
+        }
+        self.settings.check_updates = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// "Skip this version" (`Some(version)`), or forget a skipped one (`None`).
+    pub fn skip_update_version(&mut self, version: Option<String>, cx: &mut Context<Self>) {
+        if self.settings.skipped_update_version == version {
+            return;
+        }
+        self.settings.skipped_update_version = version;
+        self.save_settings();
+        cx.notify();
+    }
+
     /// Delete every `*.db` file in `app_dir`. sing-box stores its DNS/fakeip
     /// cache as `cache.db`. No-op when the process is running or preparing —
     /// the file is locked on Windows and the UI button is disabled in that
@@ -1319,6 +1383,7 @@ impl AppState {
             name,
             source,
             last_updated_secs: None,
+            usage: None,
         });
         self.save_settings();
         // First profile in an empty app → make it active so Home leaves the
@@ -1511,6 +1576,7 @@ impl AppState {
                         auto_update_interval_minutes: default_auto_update_interval(),
                     },
                     last_updated_secs: None,
+                    usage: None,
                 });
                 self.save_settings();
                 (id, true)

@@ -1,4 +1,5 @@
 use crate::core::atomic_write::{write_atomic, FileAccess};
+use crate::core::sub_usage::SubscriptionUsage;
 use crate::core::timefmt::to_unix_secs;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -77,6 +78,10 @@ pub struct Profile {
     /// the config file's mtime, which a sing-box start would otherwise bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_updated_secs: Option<u64>,
+    /// Traffic / expiry from the subscription's `subscription-userinfo`
+    /// header at the last fetch. `None` = never reported (or a Local profile).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SubscriptionUsage>,
 }
 
 /// Deserialization shim that accepts both the current shape (`source` object)
@@ -91,6 +96,8 @@ struct ProfileDe {
     source: Option<ProfileSource>,
     #[serde(default)]
     last_updated_secs: Option<u64>,
+    #[serde(default)]
+    usage: Option<SubscriptionUsage>,
     // Legacy flat fields (releases before ProfileSource existed).
     #[serde(default)]
     url: Option<String>,
@@ -111,6 +118,7 @@ impl From<ProfileDe> for Profile {
             name: de.name,
             source,
             last_updated_secs: de.last_updated_secs,
+            usage: de.usage,
         }
     }
 }
@@ -184,6 +192,68 @@ pub struct AppSettings {
     /// existing id.
     #[serde(default)]
     pub profile_id_counter: u64,
+    /// Light / Dark / follow the OS.
+    #[serde(default)]
+    pub theme: ThemePreference,
+    /// UI language; `System` follows the OS locale.
+    #[serde(default)]
+    pub language: LanguagePreference,
+    /// Listen on all interfaces so other devices on the LAN can use the
+    /// local proxy inbound. Off = loopback only.
+    #[serde(default)]
+    pub allow_lan: bool,
+    /// What the window's close button does.
+    #[serde(default)]
+    pub close_action: CloseAction,
+    /// Check GitHub for a newer BoxPilot release in the background.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
+    /// A release the user chose to skip ("Skip this version"); no reminder
+    /// for it, only for something newer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_update_version: Option<String>,
+}
+
+/// Appearance setting. Unknown values (from a newer release) load as
+/// `System` instead of failing the whole settings parse.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    Light,
+    Dark,
+    // Last: serde requires the `other` fallback to be the final variant.
+    #[default]
+    #[serde(other)]
+    System,
+}
+
+/// UI language setting. Unknown values load as `System`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LanguagePreference {
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "zh-CN")]
+    SimplifiedChinese,
+    // Last: serde requires the `other` fallback to be the final variant.
+    #[default]
+    #[serde(rename = "system", other)]
+    System,
+}
+
+/// What the window's close button does. Unknown values load as `Ask`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseAction {
+    MinimizeToTray,
+    Quit,
+    // Last: serde requires the `other` fallback to be the final variant.
+    #[default]
+    #[serde(other)]
+    Ask,
+}
+
+pub fn default_true() -> bool {
+    true
 }
 
 pub fn default_auto_update_interval() -> u64 {
@@ -204,6 +274,12 @@ impl Default for AppSettings {
             profiles: Vec::new(),
             active_profile_id: String::new(),
             profile_id_counter: 0,
+            theme: ThemePreference::default(),
+            language: LanguagePreference::default(),
+            allow_lan: false,
+            close_action: CloseAction::default(),
+            check_updates: true,
+            skipped_update_version: None,
         };
         settings.normalize_profiles();
         settings
@@ -456,6 +532,80 @@ mod tests {
             !settings.tun_ipv6,
             "installs that predate the toggle get TUN IPv6 off"
         );
+        assert_eq!(settings.theme, ThemePreference::System);
+        assert_eq!(settings.language, LanguagePreference::System);
+        assert!(!settings.allow_lan);
+        assert_eq!(settings.close_action, CloseAction::Ask);
+        assert!(settings.check_updates, "update checks default on");
+        assert_eq!(settings.skipped_update_version, None);
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("skipped_update_version").is_none(), "{}", saved);
+    }
+
+    /// Preference values from a newer release must load as the default,
+    /// not fail the whole parse (which would back up and reset settings).
+    #[test]
+    fn unknown_preference_values_load_as_defaults() {
+        let json = r#"{"proxy_mode": true, "proxy_port": 18888,
+            "theme": "auto", "language": "fr", "close_action": "hibernate"}"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert!(settings.proxy_mode);
+        assert_eq!(settings.proxy_port, 18888);
+        assert_eq!(settings.theme, ThemePreference::System);
+        assert_eq!(settings.language, LanguagePreference::System);
+        assert_eq!(settings.close_action, CloseAction::Ask);
+    }
+
+    /// The preference enums serialize to their documented strings.
+    #[test]
+    fn preference_values_serialize_to_stable_strings() {
+        let to = |v: serde_json::Value| v.as_str().unwrap().to_string();
+        let cases = [
+            (serde_json::to_value(ThemePreference::Dark), "dark"),
+            (serde_json::to_value(ThemePreference::System), "system"),
+            (serde_json::to_value(LanguagePreference::English), "en"),
+            (
+                serde_json::to_value(LanguagePreference::SimplifiedChinese),
+                "zh-CN",
+            ),
+            (serde_json::to_value(LanguagePreference::System), "system"),
+            (
+                serde_json::to_value(CloseAction::MinimizeToTray),
+                "minimize_to_tray",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(to(value.unwrap()), expected);
+        }
+        let lang: LanguagePreference = serde_json::from_str(r#""zh-CN""#).unwrap();
+        assert_eq!(lang, LanguagePreference::SimplifiedChinese);
+        let theme: ThemePreference = serde_json::from_str(r#""light""#).unwrap();
+        assert_eq!(theme, ThemePreference::Light);
+    }
+
+    /// A profile without `usage` (every pre-existing file) loads as `None`
+    /// and serializes without the key; a present value round-trips.
+    #[test]
+    fn profile_usage_defaults_and_round_trips() {
+        let without = r#"{"id":"p1","name":"S","source":{"kind":"remote","url":"https://a/s","auto_update_interval_minutes":60}}"#;
+        let profile: Profile = serde_json::from_str(without).unwrap();
+        assert_eq!(profile.usage, None);
+        assert!(!serde_json::to_string(&profile).unwrap().contains("usage"));
+
+        let with = Profile {
+            usage: Some(SubscriptionUsage {
+                upload: 1,
+                download: 2,
+                total: 0,
+                expire: None,
+                fetched_at: 3,
+            }),
+            ..profile
+        };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(!json.contains("expire"), "None expire is skipped: {}", json);
+        let back: Profile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, with);
     }
 
     /// A settings file with no `profiles` array stays empty — no Default
@@ -499,6 +649,7 @@ mod tests {
                     auto_update_interval_minutes: 60,
                 },
                 last_updated_secs: None,
+                usage: None,
             },
             Profile {
                 id: "p7".into(),
@@ -508,6 +659,7 @@ mod tests {
                     auto_update_interval_minutes: 60,
                 },
                 last_updated_secs: None,
+                usage: None,
             },
         ];
         settings.active_profile_id = "p99".into();
@@ -524,6 +676,7 @@ mod tests {
                 auto_update_interval_minutes: 60,
             },
             last_updated_secs: None,
+            usage: None,
         }
     }
 
@@ -716,6 +869,13 @@ mod tests {
                         auto_update_interval_minutes: 30,
                     },
                     last_updated_secs: Some(1_700_000_000),
+                    usage: Some(SubscriptionUsage {
+                        upload: 1_024,
+                        download: 2_048,
+                        total: 107_374_182_400,
+                        expire: Some(1_800_000_000),
+                        fetched_at: 1_700_000_100,
+                    }),
                 },
                 Profile {
                     id: "p2".into(),
@@ -724,10 +884,17 @@ mod tests {
                         path: "/home/u/box.json".into(),
                     },
                     last_updated_secs: None,
+                    usage: None,
                 },
             ],
             active_profile_id: "p2".to_string(),
             profile_id_counter: 9,
+            theme: ThemePreference::Dark,
+            language: LanguagePreference::SimplifiedChinese,
+            allow_lan: true,
+            close_action: CloseAction::MinimizeToTray,
+            check_updates: false,
+            skipped_update_version: Some("1.14.0".into()),
         };
         original.save(&dir);
         let loaded = AppSettings::load(&dir).settings;
@@ -738,6 +905,12 @@ mod tests {
         assert_eq!(loaded.profiles, original.profiles);
         assert_eq!(loaded.active_profile_id, "p2");
         assert_eq!(loaded.profile_id_counter, 9);
+        assert_eq!(loaded.theme, ThemePreference::Dark);
+        assert_eq!(loaded.language, LanguagePreference::SimplifiedChinese);
+        assert!(loaded.allow_lan);
+        assert_eq!(loaded.close_action, CloseAction::MinimizeToTray);
+        assert!(!loaded.check_updates);
+        assert_eq!(loaded.skipped_update_version.as_deref(), Some("1.14.0"));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -764,6 +937,7 @@ mod tests {
                 path: "/home/u/box.json".into(),
             },
             last_updated_secs: None,
+            usage: None,
         };
         let back: Profile =
             serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
@@ -784,6 +958,7 @@ mod tests {
                 auto_update_interval_minutes: 15,
             },
             last_updated_secs: None,
+            usage: None,
         };
         let json = serde_json::to_string(&profile).unwrap();
         assert!(json.contains("\"source\""), "new shape: {}", json);

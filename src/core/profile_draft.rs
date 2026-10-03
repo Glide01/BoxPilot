@@ -127,6 +127,7 @@ mod tests {
                 auto_update_interval_minutes: interval,
             },
             last_updated_secs: None,
+            usage: None,
         }
     }
 
@@ -147,6 +148,7 @@ mod tests {
                 path: "C:\\box.json".into(),
             },
             last_updated_secs: None,
+            usage: None,
         };
         let draft = ProfileDraft::from_profile(Some(&profile));
         assert_eq!(draft.kind, DraftKind::Local);

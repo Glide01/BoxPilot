@@ -1,4 +1,17 @@
 //! 设置页:Shell 环境复制、清除缓存。订阅/profile 管理在 `ProfilesPage`。
+//!
+//! Feature rows live in one slot file each (`language`, `appearance`,
+//! `window`, `lan`, `diagnostics`, `updates`). Every slot exposes the same
+//! `rows(app_state, window, cx) -> Vec<AnyElement>`, called once per render
+//! and placed into the card layout below; a card made only of slot rows is
+//! omitted while its slots return nothing.
+
+mod appearance;
+mod diagnostics;
+mod lan;
+mod language;
+mod updates;
+mod window;
 
 use crate::core::presentation::sanitize_port;
 #[cfg(not(target_os = "windows"))]
@@ -9,7 +22,7 @@ use crate::core::settings::{posix_proxy_command, StatusLevel, PROXY_PORT};
 use crate::state::AppState;
 use crate::ui::widgets::{page_header, setting_row};
 use crate::ui::{card_frame, toast};
-use gpui::*;
+use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button,
     input::{Input, InputEvent, InputState},
@@ -76,7 +89,17 @@ impl SettingsPage {
 }
 
 impl Render for SettingsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Slot rows first: they need `cx` mutably, the rest of render only
+        // borrows it.
+        let app_state = self.app_state.clone();
+        let mut general_rows = language::rows(&app_state, window, cx);
+        general_rows.extend(appearance::rows(&app_state, window, cx));
+        general_rows.extend(window::rows(&app_state, window, cx));
+        let lan_rows = lan::rows(&app_state, window, cx);
+        let diagnostics_rows = diagnostics::rows(&app_state, window, cx);
+        let update_rows = updates::rows(&app_state, window, cx);
+
         let state = self.app_state.read(cx);
         let can_clear = state.process.read(cx).is_stopped() && !state.is_updating();
         let app_state_clear = self.app_state.clone();
@@ -146,6 +169,13 @@ impl Render for SettingsPage {
         let cards = div()
             .v_flex()
             .gap_4()
+            .when(!general_rows.is_empty(), |cards| {
+                cards.child(
+                    card_frame(theme)
+                        .child(section_label("GENERAL"))
+                        .children(general_rows),
+                )
+            })
             .child(
                 card_frame(theme)
                     .child(section_label("NETWORK"))
@@ -156,7 +186,8 @@ impl Render for SettingsPage {
                                 .on_mouse_down_out(|_, window, cx| window.blur(cx))
                                 .child(Input::new(&self.port_input).cleanable(false)),
                         ),
-                    ),
+                    )
+                    .children(lan_rows),
             )
             .child(
                 card_frame(theme).child(section_label("TUN")).child(
@@ -196,6 +227,13 @@ impl Render for SettingsPage {
                     ),
                 ),
             )
+            .when(!diagnostics_rows.is_empty(), |cards| {
+                cards.child(
+                    card_frame(theme)
+                        .child(section_label("TROUBLESHOOTING"))
+                        .children(diagnostics_rows),
+                )
+            })
             .child(
                 card_frame(theme)
                     .child(section_label("ABOUT"))
@@ -207,6 +245,7 @@ impl Render for SettingsPage {
                                 .child(env!("CARGO_PKG_VERSION")),
                         ),
                     )
+                    .children(update_rows)
                     .child(
                         setting_row(theme, "sing-box", None).child(
                             div()
