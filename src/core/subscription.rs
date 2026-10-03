@@ -4,13 +4,15 @@ use crate::core::atomic_write::{
 use crate::core::paths::create_private_dir;
 use crate::core::settings::{AppSettings, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi, API_SERVICE_TAG};
+use crate::core::sub_usage::{parse_userinfo, SubscriptionUsage, USERINFO_HEADER};
+use crate::core::timefmt::to_unix_secs;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs;
 use std::io;
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Subscription User-Agent. Servers sniff the literal `sing-box` token to
 /// decide whether to serve sing-box JSON or Clash YAML, and read the version
@@ -55,6 +57,16 @@ impl UpdateOutcome {
             UpdateOutcome::Unchanged => Ok(false),
         }
     }
+}
+
+/// A successful subscription fetch: the config outcome, plus the traffic /
+/// expiry the server reported in its `subscription-userinfo` header (`None`
+/// when it sent none, or nothing usable). Carried on `Unchanged` too: usage
+/// moves even when the config doesn't.
+#[derive(Debug)]
+pub struct Fetched {
+    pub outcome: UpdateOutcome,
+    pub usage: Option<SubscriptionUsage>,
 }
 
 /// Strip BoxPilot-managed sections from config (used when saving subscription
@@ -320,14 +332,15 @@ pub fn save_runtime_config(path: &Path, prepared: &str) -> io::Result<()> {
 /// resources exactly like at runtime.
 ///
 /// Settings persistence is the caller's responsibility (`AppState::save_settings`),
-/// so the caller doesn't risk clobbering settings fields not visible here.
+/// so the caller doesn't risk clobbering settings fields not visible here —
+/// that includes storing the returned `Fetched::usage`.
 pub fn perform_update(
     sub_url: &str,
     app_dir: &Path,
     config_path: &Path,
     sing_box: Option<&Path>,
     sing_box_version: Option<&str>,
-) -> Result<UpdateOutcome, String> {
+) -> Result<Fetched, String> {
     if !sub_url.starts_with("http://") && !sub_url.starts_with("https://") {
         return Err("Invalid URL: must start with http:// or https://".to_string());
     }
@@ -359,6 +372,14 @@ pub fn perform_update(
         ));
     }
 
+    // Before `text()`, which consumes the response.
+    let now = to_unix_secs(SystemTime::now()).unwrap_or(0);
+    let usage = response
+        .headers()
+        .get(USERINFO_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_userinfo(value, now));
+
     let config_data = response.text().map_err(|e| {
         format!(
             "Failed to read subscription response: {}",
@@ -366,7 +387,8 @@ pub fn perform_update(
         )
     })?;
 
-    apply_config_text(&config_data, app_dir, config_path, sing_box)
+    let outcome = apply_config_text(&config_data, app_dir, config_path, sing_box)?;
+    Ok(Fetched { outcome, usage })
 }
 
 /// A reqwest error for a message that reaches toasts and stderr. Its
@@ -1138,6 +1160,73 @@ mod tests {
             assert!(name.starts_with("config_check-p3-"), "got {}", name);
             assert!(name.ends_with(".tmp"), "got {}", name);
         }
+    }
+
+    /// A loopback HTTP server that answers exactly one request with `200`,
+    /// the given `subscription-userinfo` header and `body`. Returns the URL
+    /// (with a token-looking query, as real subscription URLs have) and the
+    /// server thread, which yields the request head it received.
+    fn serve_once(
+        userinfo: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap() == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Subscription-Userinfo: {}\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{}",
+                userinfo,
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&head).into_owned()
+        });
+        (format!("http://127.0.0.1:{}/sub?token=abc", port), server)
+    }
+
+    #[test]
+    fn fetch_carries_usage_on_changed_and_unchanged() {
+        const BODY: &str = r#"{"outbounds":[{"type":"direct","tag":"direct"}]}"#;
+        let dir = sub_temp_dir("fetch_usage");
+        let config_path = dir.join("configs").join("p1.json");
+
+        let (url, server) = serve_once(
+            "upload=1024; download=2048; total=1e6; expire=1800000000",
+            BODY,
+        );
+        let fetched = perform_update(&url, &dir, &config_path, None, Some("1.14.0")).unwrap();
+        let head = server.join().unwrap();
+        assert!(head.contains("sing-box 1.14.0"), "User-Agent: {}", head);
+        assert!(matches!(fetched.outcome, UpdateOutcome::Changed(_)));
+        let usage = fetched.usage.expect("usage parsed");
+        assert_eq!(
+            (usage.upload, usage.download, usage.total, usage.expire),
+            (1024, 2048, 1_000_000, Some(1_800_000_000))
+        );
+        assert!(usage.fetched_at > 1_700_000_000, "stamped with now");
+        assert_eq!(fetched.outcome.commit(), Ok(true));
+
+        let (url, server) = serve_once("upload=4096; download=8192; total=1e6", BODY);
+        let fetched = perform_update(&url, &dir, &config_path, None, None).unwrap();
+        server.join().unwrap();
+        assert!(matches!(fetched.outcome, UpdateOutcome::Unchanged));
+        let usage = fetched.usage.expect("usage parsed on Unchanged too");
+        assert_eq!((usage.upload, usage.download, usage.expire), (4096, 8192, None));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::core::profile_draft::{is_json_config, DraftKind, ProfileDraft};
 use crate::core::settings::{Profile, StatusLevel};
 use crate::state::app_state::FetchOrigin;
 use crate::state::AppState;
-use crate::ui::widgets::{page_header, pill, PillTone};
+use crate::ui::widgets::{minute_ticker, page_header, pill, usage_meter, PillTone};
 use crate::ui::toast;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -24,12 +24,18 @@ use std::time::SystemTime;
 
 pub struct ProfilesPage {
     app_state: Entity<AppState>,
+    /// Re-renders once a minute: "updated N min ago" and the usage line's
+    /// expiry countdown move with the clock, not with any entity.
+    _ticker: Task<()>,
 }
 
 impl ProfilesPage {
     pub fn new(app_state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         cx.observe(&app_state, |_, _, cx| cx.notify()).detach();
-        Self { app_state }
+        Self {
+            app_state,
+            _ticker: minute_ticker(cx),
+        }
     }
 
     /// 打开编辑/新增弹窗。`profile = None` 即新增。顶部 Subscription/Local file
@@ -326,7 +332,8 @@ impl ProfilesPage {
         let this_updating = updating_id == Some(profile.id.as_str());
         let any_updating = updating_id.is_some();
         let row_info = profile_row_info(&profile.source);
-        let time_label = updated_label(profile.last_updated_secs, SystemTime::now(), "never updated");
+        let now = SystemTime::now();
+        let time_label = updated_label(profile.last_updated_secs, now, "never updated");
 
         let app_state_refresh = self.app_state.clone();
         let app_state_edit = self.app_state.clone();
@@ -379,7 +386,11 @@ impl ProfilesPage {
                             .text_color(theme.muted_foreground)
                             .truncate()
                             .child(row_info.subtitle),
-                    ),
+                    )
+                    // Traffic / expiry the subscription server reported.
+                    .children(profile.usage.as_ref().map(|usage| {
+                        usage_meter(theme, ("profile-usage", ix), usage, now, px(120.))
+                    })),
             )
             .child(
                 div()

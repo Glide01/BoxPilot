@@ -7,7 +7,7 @@ use crate::core::bytefmt::format_bytes;
 use crate::core::presentation::{runtime_subtitle, updated_label, ConnectionStatus};
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
-use crate::ui::widgets::setting_row;
+use crate::ui::widgets::{minute_ticker, setting_row, usage_meter};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants}, scroll::ScrollableElement, spinner::Spinner,
@@ -23,6 +23,10 @@ const POWER_ICON_SIZE: f32 = 36.;
 
 pub struct HomePage {
     app_state: Entity<AppState>,
+    /// Re-renders once a minute: the subscription card's "updated N min
+    /// ago" and expiry countdown move with the clock, and while sing-box is
+    /// stopped no status sample ticks the page.
+    _ticker: Task<()>,
 }
 
 impl HomePage {
@@ -36,7 +40,10 @@ impl HomePage {
         // uptime label.
         cx.observe(&traffic, |_, _, cx| cx.notify()).detach();
         cx.observe(&clash_mode, |_, _, cx| cx.notify()).detach();
-        Self { app_state }
+        Self {
+            app_state,
+            _ticker: minute_ticker(cx),
+        }
     }
 }
 
@@ -164,11 +171,13 @@ impl Render for HomePage {
 
         let active = state.settings.active_profile();
         let profile_name = active.map(|p| p.name.clone()).unwrap_or_default();
+        let now = SystemTime::now();
         let sub_label = updated_label(
             active.and_then(|p| p.last_updated_secs),
-            SystemTime::now(),
+            now,
             "not updated yet",
         );
+        let usage = active.and_then(|p| p.usage);
 
         let app_state_toggle = self.app_state.clone();
         let app_state_mode = self.app_state.clone();
@@ -370,28 +379,39 @@ impl Render for HomePage {
                         .w_full()
                         .child(
                             // 名字过长时截断,不把 Update 按钮挤出卡片。
+                            // 订阅服务器报了流量/到期时,下面再加一行用量。
                             div()
-                                .h_flex()
-                                .items_center()
-                                .gap_2()
+                                .v_flex()
+                                .gap_1()
                                 .flex_1()
                                 .min_w_0()
                                 .child(
                                     div()
+                                        .h_flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .w_full()
                                         .min_w_0()
-                                        .text_sm()
-                                        .text_color(theme.foreground)
-                                        .truncate()
-                                        .child(profile_name),
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .text_sm()
+                                                .text_color(theme.foreground)
+                                                .truncate()
+                                                .child(profile_name),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground)
+                                                .whitespace_nowrap()
+                                                .child(format!("· {}", sub_label)),
+                                        ),
                                 )
-                                .child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .whitespace_nowrap()
-                                        .child(format!("· {}", sub_label)),
-                                ),
+                                .children(usage.map(|usage| {
+                                    usage_meter(theme, "home-usage", &usage, now, px(160.))
+                                })),
                         )
                         .child(
                             Button::new("home-update")
