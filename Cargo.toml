@@ -67,6 +67,9 @@ getrandom = "0.3"
 sys-locale = "0.3"
 # LAN IPv4 addresses shown in the "Allow LAN connections" hint.
 if-addrs = "0.15"
+# Local date-time of a connection's open / close (Connections details panel).
+# Already in the dep graph via gpui and gpui-component: adds no new crate.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Used by `ensure_elevated()` in `src/main.rs` (token elevation check +
 # `ShellExecuteW("runas", ...)` self-relaunch), by the deep-link

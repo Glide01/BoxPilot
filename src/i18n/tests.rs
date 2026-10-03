@@ -92,6 +92,18 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.groups.timeout,
         t.connections.filter_placeholder,
         t.connections.close_all,
+        t.connection_details.close_panel,
+        t.connection_details.gone_title,
+        t.connection_details.gone_hint,
+        t.connection_details.overview,
+        t.connection_details.route,
+        t.connection_details.source_section,
+        t.connection_details.traffic_section,
+        t.connection_details.destination,
+        t.connection_details.chain,
+        t.connection_details.from_outbound,
+        t.connection_details.opened_at,
+        t.connection_details.duration,
         t.logs.configured_level,
         t.tools.quality_hint,
         t.tools.nat_full_cone_hint,
@@ -230,6 +242,7 @@ fn chinese_uses_full_width_punctuation() {
         (ZH_CN.messages.clash_mode_failed)("x"),
         (ZH_CN.errors.read_failed)("a", "b"),
         (ZH_CN.settings.lan_on_at)("192.168.1.2:7788"),
+        ZH_CN.connection_details.close_panel.to_string(),
     ];
     for sample in samples {
         let chars: Vec<char> = sample.chars().collect();
