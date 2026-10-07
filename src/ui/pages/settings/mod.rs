@@ -19,7 +19,9 @@ use crate::core::settings::PROXY_PORT;
 use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::theme::FORM_MAX_WIDTH;
-use crate::ui::widgets::{grouped_card, page_header, section_heading, setting_row, small_input};
+use crate::ui::widgets::{
+    grouped_card, page_header, section_heading, setting_row, small_input, TextLabel,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button,
@@ -162,7 +164,7 @@ impl Render for SettingsPage {
                     Button::new("clear-cache")
                         .outline()
                         .small()
-                        .label(t.clear_cache_action)
+                        .text_label(t.clear_cache_action)
                         .disabled(!can_clear)
                         .on_click(move |_, _, cx| {
                             app_state_clear.update(cx, |state, cx| state.clear_cache(cx));

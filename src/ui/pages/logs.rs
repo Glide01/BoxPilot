@@ -4,7 +4,7 @@ use crate::core::singbox_api::LogLevel;
 use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::card_frame;
-use crate::ui::widgets::{connect_button, empty_state, page_header, segmented, Segment};
+use crate::ui::widgets::{connect_button, empty_state, page_header, segmented, Segment, TextLabel};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button,
@@ -305,7 +305,7 @@ impl Render for LogsPage {
                 Button::new("logs-clear")
                     .outline()
                     .small()
-                    .label(s().logs.clear)
+                    .text_label(s().logs.clear)
                     .on_click(move |_, _, cx| {
                         app_state_entity.update(cx, |state, cx| state.clear_logs(cx));
                     }),

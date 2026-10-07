@@ -20,7 +20,7 @@ use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
     empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
     minute_ticker, profile_source_line, section_heading, setting_row, shorten, stat, usage_meter,
-    IconLabel, CONTROL_LINE_HEIGHT,
+    IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -452,7 +452,7 @@ impl Render for HomePage {
             .ghost()
             .small()
             .dropdown_caret(true)
-            .label(profile_name.clone())
+            .text_label(profile_name.clone())
             .font_weight(FontWeight::MEDIUM)
             .when(long_name, |button| button.tooltip(profile_name.clone()))
             // Connected, the stats card pushes this one to the bottom of the

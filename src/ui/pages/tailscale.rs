@@ -21,7 +21,7 @@ use crate::state::tailscale::{CertificateFetched, PingSession, TailscaleAction};
 use crate::state::{AppState, TailscaleState};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{empty_state, meta_row, page_header, status_label};
+use crate::ui::widgets::{empty_state, meta_row, page_header, status_label, TextLabel};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -236,7 +236,7 @@ fn overview_card(
         Button::new(id(ei, "login"))
             .primary()
             .small()
-            .label(s().tailscale.log_in)
+            .text_label(s().tailscale.log_in)
             .tooltip(s().tailscale.log_in_tooltip)
             .on_click(move |_, _, cx| cx.open_url(&url))
     });
@@ -249,7 +249,7 @@ fn overview_card(
         Button::new(id(ei, "logout"))
             .outline()
             .small()
-            .label(s().tailscale.log_out)
+            .text_label(s().tailscale.log_out)
             .loading(busy)
             .disabled(busy)
             .on_click(move |_, window, cx| {
@@ -369,7 +369,7 @@ fn exit_node_card(
     let picker = Button::new(id(ei, "exit-node"))
         .outline()
         .small()
-        .label(
+        .text_label(
             current
                 .clone()
                 .unwrap_or_else(|| s().tailscale.exit_node_none.to_string()),
@@ -419,14 +419,14 @@ fn ping_card(ei: usize, ping: &PingSession, entity: &Entity<TailscaleState>, the
         Button::new(id(ei, "ping-stop"))
             .outline()
             .small()
-            .label(s().common.stop)
+            .text_label(s().common.stop)
             .on_click(move |_, _, cx| entity.update(cx, |state, cx| state.stop_ping(cx)))
     } else {
         let entity = entity.clone();
         Button::new(id(ei, "ping-close"))
             .outline()
             .small()
-            .label(s().common.close)
+            .text_label(s().common.close)
             .on_click(move |_, _, cx| entity.update(cx, |state, cx| state.dismiss_ping(cx)))
     };
     let header = div()
@@ -508,7 +508,7 @@ fn taildrop_card(
         Button::new(id(ei, "mark-read"))
             .outline()
             .small()
-            .label(s().tailscale.mark_read)
+            .text_label(s().tailscale.mark_read)
             .loading(busy)
             .disabled(busy)
             .on_click(move |_, _, cx| {
@@ -589,7 +589,7 @@ fn receiving_row(
         Button::new(id(ei, format!("recv-cancel-{}", i)))
             .ghost()
             .small()
-            .label(s().common.cancel)
+            .text_label(s().common.cancel)
             .loading(busy)
             .disabled(busy)
             .on_click(move |_, _, cx| {
@@ -655,7 +655,7 @@ fn file_row(
         Button::new(id(ei, format!("file-save-{}", i)))
             .outline()
             .small()
-            .label(s().common.save_as)
+            .text_label(s().common.save_as)
             .loading(downloading)
             .disabled(downloading)
             .on_click(move |_, window, cx| {
@@ -668,7 +668,7 @@ fn file_row(
         Button::new(id(ei, format!("file-delete-{}", i)))
             .ghost()
             .small()
-            .label(s().common.delete)
+            .text_label(s().common.delete)
             .loading(deleting)
             .disabled(deleting || downloading)
             .on_click(move |_, window, cx| {
@@ -805,7 +805,7 @@ fn certificate_card(
                     Button::new(id(ei, format!("cert-{}", i)))
                         .outline()
                         .small()
-                        .label(s().tailscale.get_certificate)
+                        .text_label(s().tailscale.get_certificate)
                         .loading(busy)
                         .disabled(busy)
                         .on_click(move |_, _, cx| {
@@ -834,7 +834,7 @@ fn show_certificate(
             let pem = pem.clone();
             Button::new("ts-cert-copy")
                 .outline()
-                .label(s().tailscale.copy_certificate)
+                .text_label(s().tailscale.copy_certificate)
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(pem.to_string()));
                     toast::show(StatusLevel::Info, s().tailscale.certificate_copied, cx);
@@ -845,7 +845,7 @@ fn show_certificate(
             let certificate = certificate.clone();
             Button::new("ts-cert-save")
                 .primary()
-                .label(s().common.save_as)
+                .text_label(s().common.save_as)
                 .on_click(move |_, window, cx| {
                     save_certificate(domain.clone(), certificate.clone(), window, cx)
                 })
@@ -884,7 +884,7 @@ fn show_certificate(
                         DialogClose::new().child(
                             Button::new("ts-cert-close")
                                 .outline()
-                                .label(s().common.close),
+                                .text_label(s().common.close),
                         ),
                     )
                     .child(save),
@@ -1039,7 +1039,7 @@ fn peer_row(
         Button::new(id(ei, format!("peer-ping-{}", key)))
             .ghost()
             .small()
-            .label(s().tailscale.ping)
+            .text_label(s().tailscale.ping)
             .on_click(move |_, _, cx| {
                 entity.update(cx, |state, cx| {
                     state.start_ping(tag.clone(), ip.clone(), name.clone(), cx)

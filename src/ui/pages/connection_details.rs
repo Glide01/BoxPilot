@@ -15,7 +15,7 @@ use crate::core::connections_view::host_label;
 use crate::core::timefmt::format_local_datetime;
 use crate::i18n::s;
 use crate::state::Connections;
-use crate::ui::widgets::status_label;
+use crate::ui::widgets::{status_label, TextLabel};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -341,7 +341,7 @@ impl Render for ConnectionDetailsPanel {
                                 .outline()
                                 .danger()
                                 .small()
-                                .label(s().connections.close_connection)
+                                .text_label(s().connections.close_connection)
                                 .on_click(cx.listener(|this, _, _, cx| this.close_connection(cx))),
                         )
                 });

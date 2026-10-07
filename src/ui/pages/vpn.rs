@@ -25,7 +25,9 @@ use crate::state::vpn::VpnStream;
 use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{empty_state, form_input, meta_row, page_header, IconLabel, Lead};
+use crate::ui::widgets::{
+    empty_state, form_input, meta_row, page_header, IconLabel, Lead, TextLabel,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -131,7 +133,7 @@ impl DialogHandle {
         let handle = self.clone();
         Button::new("vpn-dialog-cancel")
             .outline()
-            .label(label)
+            .text_label(label)
             .on_click(move |_, window, cx| {
                 let key = handle.key.clone();
                 handle
@@ -155,7 +157,7 @@ impl DialogHandle {
             .h_flex()
             .gap_2()
             .child(
-                DialogClose::new().child(Button::new("vpn-dialog-close").outline().label(
+                DialogClose::new().child(Button::new("vpn-dialog-close").outline().text_label(
                     if pending && submit_label.is_some() {
                         s().vpn.later
                     } else {
@@ -166,7 +168,7 @@ impl DialogHandle {
             .when_some(submit_label.filter(|_| pending), |this, label| {
                 this.child(
                     DialogAction::new()
-                        .child(Button::new("vpn-dialog-submit").primary().label(label)),
+                        .child(Button::new("vpn-dialog-submit").primary().text_label(label)),
                 )
             });
         DialogFooter::new()
@@ -747,7 +749,7 @@ impl VpnPage {
             )))
             .primary()
             .small()
-            .label(s().vpn.sign_in)
+            .text_label(s().vpn.sign_in)
             .loading(busy)
             .disabled(busy)
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {

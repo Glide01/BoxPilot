@@ -6,7 +6,7 @@
 use super::SettingsPage;
 use crate::i18n::s;
 use crate::state::{app_state::UpdateCheck, AppState};
-use crate::ui::widgets::{setting_row, IconLabel};
+use crate::ui::widgets::{setting_row, IconLabel, TextLabel};
 use gpui::{
     div, prelude::FluentBuilder, AnyElement, Context, Entity, Hsla, IntoElement, ParentElement,
     SharedString, Styled, Window,
@@ -67,7 +67,7 @@ pub(super) fn rows(
         let url = info.url.clone();
         let download = Button::new("update-download")
             .small()
-            .label(t.download)
+            .text_label(t.download)
             .tooltip(url.clone())
             .on_click(move |_, _, cx| cx.open_url(&url));
         // The offered release gets the primary button; a skipped one stays
@@ -84,7 +84,7 @@ pub(super) fn rows(
                 Button::new("update-skip")
                     .outline()
                     .small()
-                    .label(t.skip)
+                    .text_label(t.skip)
                     .on_click(move |_, _, cx| {
                         let version = version.clone();
                         app_state
@@ -103,7 +103,7 @@ pub(super) fn rows(
                 if checking {
                     button.icon_label(Spinner::new(), t.check_now)
                 } else {
-                    button.label(t.check_now)
+                    button.text_label(t.check_now)
                 }
             })
             .loading(checking)

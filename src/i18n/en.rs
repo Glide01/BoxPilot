@@ -243,23 +243,15 @@ pub static EN: Strings = Strings {
         search_outbounds: "Search outbounds",
         default_outbound: "Default outbound",
         quality_section: "Network quality",
-        quality_hint: "Measures throughput and responsiveness (round trips per minute under load) \
-                       through an outbound, the way Apple's networkQuality does.",
         mode: "Mode",
-        mode_hint: "Parallel loads both directions at once; serial measures download, then upload.",
         parallel: "Parallel",
         serial: "Serial",
         max_runtime: "Max runtime",
         seconds: |n| format!("{n}s"),
-        http3_hint: "Measure over QUIC instead of TCP.",
         config_url: "Config URL",
-        config_url_hint: "A networkQuality config; empty uses Apple's test servers.",
         config_url_placeholder: "Default (Apple)",
         accuracy: |capacity, rpm| format!("Accuracy: {capacity}, RPM {rpm}"),
         idle_latency: "Idle latency",
-        rpm_hint: "RPM: round trips per minute while the link is loaded — higher means \
-                   more responsive. Accuracy: how stable each measurement became within the \
-                   runtime.",
         accuracy_low: "Low",
         accuracy_medium: "Medium",
         accuracy_high: "High",
@@ -275,12 +267,8 @@ pub static EN: Strings = Strings {
         measuring: "Measuring…",
         progress_timeout: "Timed out waiting for progress from sing-box",
         ended_without_result: "sing-box ended the test without a result",
-        stun_section: "NAT type (STUN)",
-        stun_hint: "Sends STUN requests over UDP through an outbound to find the external \
-                    address and how the NAT on that path maps and filters (RFC 5780). Through \
-                    a proxy, this describes the proxy server's UDP path.",
+        stun_section: "NAT type",
         stun_server: "STUN server",
-        stun_server_hint: "host[:port]; empty uses sing-box's default.",
         stun_binding: "Sending binding request…",
         stun_binding_answered: "Binding answered…",
         stun_mapping: "Detecting NAT mapping behavior…",
@@ -290,9 +278,7 @@ pub static EN: Strings = Strings {
         latency: "Latency",
         nat_mapping: "NAT mapping",
         nat_filtering: "NAT filtering",
-        nat_unsupported:
-            "This server doesn't support NAT type detection (RFC 5780 OTHER-ADDRESS). \
-                          Try another STUN server to see mapping and filtering behaviour.",
+        nat_unsupported: "This server can't detect the NAT type. Try another STUN server.",
         nat_endpoint_independent: "Endpoint Independent",
         nat_address_dependent: "Address Dependent",
         nat_address_port_dependent: "Address and Port Dependent",
@@ -300,21 +286,12 @@ pub static EN: Strings = Strings {
         nat_restricted_cone: "Restricted cone (NAT2)",
         nat_port_restricted_cone: "Port-restricted cone (NAT3)",
         nat_symmetric: "Symmetric (NAT4)",
-        nat_full_cone_hint: "Your external address is the same for every destination, and any \
-                             host can reach it. The most open NAT: best for P2P, games and calls.",
-        nat_restricted_cone_hint:
-            "Your external address is the same for every destination, but only \
-                                   hosts you have sent to can reach it (from any of their ports).",
-        nat_port_restricted_cone_hint:
-            "Your external address is the same for every destination, but only \
-                                        the exact address and port you have sent to can reach it.",
-        nat_independent_unknown_hint:
-            "Your external address is the same for every destination. Filtering \
-                                       behaviour could not be determined.",
-        nat_symmetric_hint: "Every destination gets a different external port, so peers cannot \
-                             reuse your address. P2P connections usually need a relay.",
-        nat_dependent_hint: "Different destinations get different external mappings, so peers \
-                             cannot reuse your address. P2P connections usually need a relay.",
+        nat_full_cone_hint: "The most open NAT: best for P2P, games and calls.",
+        nat_restricted_cone_hint: "Only hosts you've sent to can reach you.",
+        nat_port_restricted_cone_hint: "Only the address and port you've sent to can reach you.",
+        nat_independent_unknown_hint: "A fixed external address; filtering is unknown.",
+        nat_symmetric_hint: "A new external port per destination: P2P usually needs a relay.",
+        nat_dependent_hint: "Mappings change per destination: P2P usually needs a relay.",
     },
     tailscale: Tailscale {
         title: "Tailscale",

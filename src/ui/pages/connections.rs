@@ -32,7 +32,7 @@ use crate::i18n::s;
 use crate::state::{AppState, Connections};
 use crate::ui::widgets::{
     connect_button, empty_state, full_text_tooltip, page_header, row_hover_bg, segmented,
-    small_input, Segment,
+    small_input, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -520,7 +520,7 @@ impl Render for ConnectionsPage {
             Button::new("connections-close-all")
                 .outline()
                 .small()
-                .label(t.close_all)
+                .text_label(t.close_all)
                 .disabled(summary.open == 0)
                 .on_click(move |_, _, cx| {
                     connections.update(cx, |state, cx| state.close_all(cx));

@@ -227,22 +227,15 @@ pub static ZH_CN: Strings = Strings {
         search_outbounds: "搜索出站",
         default_outbound: "默认出站",
         quality_section: "网络质量",
-        quality_hint: "通过指定出站测量吞吐量和响应能力（负载下每分钟往返次数），\
-                       方法与 Apple 的 networkQuality 相同。",
         mode: "模式",
-        mode_hint: "并行同时测量上下行；串行先测下载、再测上传。",
         parallel: "并行",
         serial: "串行",
         max_runtime: "最长时间",
         seconds: |n| format!("{n} 秒"),
-        http3_hint: "使用 QUIC 而非 TCP 测量。",
         config_url: "配置 URL",
-        config_url_hint: "networkQuality 配置地址；留空则用 Apple 的服务器。",
         config_url_placeholder: "默认（Apple）",
         accuracy: |capacity, rpm| format!("准确度：{capacity}，RPM {rpm}"),
         idle_latency: "空闲延迟",
-        rpm_hint: "RPM：链路满载时每分钟的往返次数，越高响应越快。\
-                   准确度：各项测量在限定时间内的稳定程度。",
         accuracy_low: "低",
         accuracy_medium: "中",
         accuracy_high: "高",
@@ -258,11 +251,8 @@ pub static ZH_CN: Strings = Strings {
         measuring: "正在测量…",
         progress_timeout: "等待 sing-box 返回进度超时",
         ended_without_result: "sing-box 结束了测试，但没有给出结果",
-        stun_section: "NAT 类型（STUN）",
-        stun_hint: "通过指定出站发送 UDP STUN 请求，获取外部地址，并检测该路径上 NAT \
-                    的映射与过滤行为（RFC 5780）。经由代理时，结果描述的是代理服务器的 UDP 路径。",
+        stun_section: "NAT 类型",
         stun_server: "STUN 服务器",
-        stun_server_hint: "host[:port]；留空则使用 sing-box 的默认值。",
         stun_binding: "正在发送绑定请求…",
         stun_binding_answered: "绑定请求已响应…",
         stun_mapping: "正在检测 NAT 映射行为…",
@@ -272,8 +262,7 @@ pub static ZH_CN: Strings = Strings {
         latency: "延迟",
         nat_mapping: "NAT 映射",
         nat_filtering: "NAT 过滤",
-        nat_unsupported: "该服务器不支持 NAT 类型检测（RFC 5780 OTHER-ADDRESS）。\
-                          换一个 STUN 服务器才能看到映射与过滤行为。",
+        nat_unsupported: "该服务器无法检测 NAT 类型，换一个 STUN 服务器试试。",
         nat_endpoint_independent: "与端点无关",
         nat_address_dependent: "与地址有关",
         nat_address_port_dependent: "与地址和端口有关",
@@ -281,17 +270,12 @@ pub static ZH_CN: Strings = Strings {
         nat_restricted_cone: "受限锥形（NAT2）",
         nat_port_restricted_cone: "端口受限锥形（NAT3）",
         nat_symmetric: "对称型（NAT4）",
-        nat_full_cone_hint: "访问任何目标时外部地址都相同，且任何主机都能访问到它。\
-                             最开放的 NAT，最适合 P2P、游戏和通话。",
-        nat_restricted_cone_hint: "访问任何目标时外部地址都相同，但只有你发送过数据的主机\
-                                   （从其任意端口）才能访问到它。",
-        nat_port_restricted_cone_hint: "访问任何目标时外部地址都相同，但只有你发送过数据的那个\
-                                        地址和端口才能访问到它。",
-        nat_independent_unknown_hint: "访问任何目标时外部地址都相同。无法确定过滤行为。",
-        nat_symmetric_hint: "每个目标都会分配不同的外部端口，对端无法复用你的地址。\
-                             P2P 连接通常需要中继。",
-        nat_dependent_hint: "不同目标会得到不同的外部映射，对端无法复用你的地址。\
-                             P2P 连接通常需要中继。",
+        nat_full_cone_hint: "最开放，适合 P2P、游戏和通话。",
+        nat_restricted_cone_hint: "只有你发送过数据的主机能连入。",
+        nat_port_restricted_cone_hint: "只有你发送过数据的地址和端口能连入。",
+        nat_independent_unknown_hint: "外部地址固定，过滤行为未知。",
+        nat_symmetric_hint: "每个目标的外部端口都不同，P2P 通常需要中继。",
+        nat_dependent_hint: "不同目标的外部映射不同，P2P 通常需要中继。",
     },
     tailscale: Tailscale {
         title: "Tailscale",

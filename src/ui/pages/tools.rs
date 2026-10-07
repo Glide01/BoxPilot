@@ -12,7 +12,10 @@ use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
 use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
 use crate::ui::theme::FORM_MAX_WIDTH;
-use crate::ui::widgets::{connect_button, empty_state, page_header, setting_row, small_input};
+use crate::ui::widgets::{
+    choice_select_with, connect_button, empty_state, grouped_card, page_header, section_heading,
+    setting_row, small_input, stat, status_label, text_centered, TextLabel,
+};
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -194,275 +197,259 @@ impl ToolsPage {
             .update(cx, |tools, cx| tools.start_stun(request, cx));
     }
 
-    fn quality_card(&self, run: Option<&QualityRun>, cx: &mut Context<Self>) -> Div {
-        let running = run.is_some_and(|r| r.status.is_running());
-        let serial = self.serial;
-        let http3 = self.http3;
-        let runtime_ix = MAX_RUNTIME_CHOICES
-            .iter()
-            .position(|&s| s == self.max_runtime)
-            .unwrap_or(1);
-        let theme = cx.theme();
+    /// Start, or Cancel while the test runs.
+    fn run_button(
+        &self,
+        id: &'static str,
+        running: bool,
+        start: fn(&mut Self, &mut Context<Self>),
+        cancel: fn(&mut NetworkTools, &mut Context<NetworkTools>),
+        cx: &mut Context<Self>,
+    ) -> Button {
         let t = s();
-
-        let start = if running {
-            Button::new("nq-cancel")
+        let button = Button::new(id).small();
+        if running {
+            button
                 .outline()
-                .small()
-                .label(t.common.cancel)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.tools.update(cx, |tools, cx| tools.cancel_quality(cx));
+                .text_label(t.common.cancel)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.tools.update(cx, cancel);
                 }))
         } else {
-            Button::new("nq-start")
+            button
                 .primary()
-                .small()
-                .label(t.common.start)
-                .on_click(cx.listener(|this, _, _, cx| this.start_quality(cx)))
-        };
-
-        let mut card = card_frame(theme)
-            .child(section_label(theme, t.tools.quality_section))
-            .child(hint(theme, t.tools.quality_hint))
-            .child(
-                setting_row(theme, t.tools.outbound, None).child(
-                    div().w(px(FIELD_WIDTH)).child(
-                        Select::new(&self.quality_outbound)
-                            .small()
-                            .search_placeholder(t.tools.search_outbounds)
-                            .disabled(running),
-                    ),
-                ),
-            )
-            .child(
-                setting_row(theme, t.tools.mode, Some(t.tools.mode_hint)).child(
-                    TabBar::new("nq-mode")
-                        .segmented()
-                        .selected_index(if serial { 1 } else { 0 })
-                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                            this.serial = *ix == 1;
-                            cx.notify();
-                        }))
-                        .children(
-                            [t.tools.parallel, t.tools.serial]
-                                .map(|label| Tab::new().label(label).disabled(running)),
-                        ),
-                ),
-            )
-            .child(
-                setting_row(theme, t.tools.max_runtime, None).child(
-                    TabBar::new("nq-runtime")
-                        .segmented()
-                        .selected_index(runtime_ix)
-                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                            if let Some(&secs) = MAX_RUNTIME_CHOICES.get(*ix) {
-                                this.max_runtime = secs;
-                                cx.notify();
-                            }
-                        }))
-                        .children(MAX_RUNTIME_CHOICES.map(|secs| {
-                            Tab::new().label((t.tools.seconds)(secs)).disabled(running)
-                        })),
-                ),
-            )
-            .child(
-                setting_row(theme, "HTTP/3", Some(t.tools.http3_hint)).child(
-                    Switch::new("nq-http3")
-                        .checked(http3)
-                        .disabled(running)
-                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            this.http3 = *checked;
-                            cx.notify();
-                        })),
-                ),
-            )
-            .child(
-                setting_row(theme, t.tools.config_url, Some(t.tools.config_url_hint)).child(
-                    div()
-                        .w(px(FIELD_WIDTH))
-                        .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                        .child(small_input(&self.config_url).disabled(running)),
-                ),
-            )
-            .child(action_row(
-                theme,
-                start,
-                run.map(|r| (r.status.clone(), r.status_label())),
-            ));
-
-        let Some(run) = run else {
-            return card;
-        };
-        if running {
-            let progress = Progress::new("nq-progress").small();
-            card = card.child(match run.percent() {
-                Some(percent) => progress.value(percent),
-                None => progress.loading(true),
-            });
+                .text_label(t.common.start)
+                .on_click(cx.listener(move |this, _, _, cx| start(this, cx)))
         }
-        let metrics = run.metrics();
-        // Accuracy arrives with the final result only.
-        let accuracy = |capacity: Option<&str>, rpm: Option<&str>| match (capacity, rpm) {
-            (Some(capacity), Some(rpm)) => {
-                vec![(s().tools.accuracy)(capacity, rpm)]
-            }
-            _ => Vec::new(),
-        };
-        card.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_3()
-                .w_full()
-                .child(metric_tile(
-                    theme,
-                    t.common.download,
-                    metrics.download,
-                    std::iter::once(metrics.download_rpm)
-                        .chain(accuracy(
-                            metrics.download_accuracy,
-                            metrics.download_rpm_accuracy,
-                        ))
-                        .collect(),
-                ))
-                .child(metric_tile(
-                    theme,
-                    t.common.upload,
-                    metrics.upload,
-                    std::iter::once(metrics.upload_rpm)
-                        .chain(accuracy(
-                            metrics.upload_accuracy,
-                            metrics.upload_rpm_accuracy,
-                        ))
-                        .collect(),
-                ))
-                .child(metric_tile(
-                    theme,
-                    t.tools.idle_latency,
-                    metrics.idle_latency,
-                    Vec::new(),
-                )),
-        )
-        .when(run.status == RunStatus::Done, |this| {
-            this.child(hint(theme, t.tools.rpm_hint))
-        })
-        .when_some(failure(&run.status), |this, message| {
-            this.child(error_text(theme, message))
-        })
     }
 
-    fn stun_card(&self, run: Option<&StunRun>, cx: &mut Context<Self>) -> Div {
+    fn quality_section(
+        &self,
+        run: Option<&QualityRun>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let running = run.is_some_and(|r| r.status.is_running());
-        let theme = cx.theme();
         let t = s();
+        let page = cx.entity().downgrade();
+        let runtime = choice_select_with(
+            "nq-runtime",
+            MAX_RUNTIME_CHOICES.map(|secs| (secs, (t.tools.seconds)(secs))),
+            self.max_runtime,
+            running,
+            move |secs, _, cx| {
+                let _ = page.update(cx, |this, cx| {
+                    this.max_runtime = secs;
+                    cx.notify();
+                });
+            },
+            window,
+            cx,
+        );
+        let button = self.run_button(
+            "nq-run",
+            running,
+            Self::start_quality,
+            NetworkTools::cancel_quality,
+            cx,
+        );
+        let serial = self.serial;
+        let http3 = self.http3;
+        let theme = cx.theme();
 
-        let start = if running {
-            Button::new("stun-cancel")
-                .outline()
-                .small()
-                .label(t.common.cancel)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.tools.update(cx, |tools, cx| tools.cancel_stun(cx));
-                }))
-        } else {
-            Button::new("stun-start")
-                .primary()
-                .small()
-                .label(t.common.start)
-                .on_click(cx.listener(|this, _, _, cx| this.start_stun(cx)))
-        };
+        let options = grouped_card(
+            theme,
+            [
+                setting_row(theme, t.tools.outbound, None)
+                    .child(outbound_picker(&self.quality_outbound, running))
+                    .into_any_element(),
+                setting_row(theme, t.tools.mode, None)
+                    .child(
+                        TabBar::new("nq-mode")
+                            .segmented()
+                            .selected_index(if serial { 1 } else { 0 })
+                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                                this.serial = *ix == 1;
+                                cx.notify();
+                            }))
+                            .children(
+                                [t.tools.parallel, t.tools.serial]
+                                    .map(|label| Tab::new().label(label).disabled(running)),
+                            ),
+                    )
+                    .into_any_element(),
+                setting_row(theme, t.tools.max_runtime, None)
+                    .child(runtime)
+                    .into_any_element(),
+                setting_row(theme, "HTTP/3", None)
+                    .child(
+                        Switch::new("nq-http3")
+                            .checked(http3)
+                            .disabled(running)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.http3 = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+                setting_row(theme, t.tools.config_url, None)
+                    .child(text_field(&self.config_url, running))
+                    .into_any_element(),
+            ],
+        );
 
-        let card = card_frame(theme)
-            .child(section_label(theme, t.tools.stun_section))
-            .child(hint(theme, t.tools.stun_hint))
-            .child(
-                setting_row(theme, t.tools.outbound, None).child(
-                    div().w(px(FIELD_WIDTH)).child(
-                        Select::new(&self.stun_outbound)
-                            .small()
-                            .search_placeholder(t.tools.search_outbounds)
-                            .disabled(running),
-                    ),
-                ),
-            )
-            .child(
-                setting_row(theme, t.tools.stun_server, Some(t.tools.stun_server_hint)).child(
-                    div()
-                        .w(px(FIELD_WIDTH))
-                        .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                        .child(small_input(&self.stun_server).disabled(running)),
-                ),
-            )
-            .child(action_row(
-                theme,
-                start,
-                run.map(|r| (r.status.clone(), r.status_label().to_string())),
-            ));
+        // A run that ended before measuring anything shows only why it
+        // failed, if it did.
+        let shows_results =
+            |run: &&QualityRun| running || run.latest.is_some() || failure(&run.status).is_some();
+        let results = run.filter(shows_results).map(|run| {
+            let measured = running || run.latest.is_some();
+            let metrics = run.metrics();
+            // Accuracy arrives with the final result only.
+            let accuracy = |capacity: Option<&str>, rpm: Option<&str>| match (capacity, rpm) {
+                (Some(capacity), Some(rpm)) => vec![(t.tools.accuracy)(capacity, rpm)],
+                _ => Vec::new(),
+            };
+            let progress = running.then(|| {
+                let progress = Progress::new("nq-progress").small();
+                match run.percent() {
+                    Some(percent) => progress.value(percent),
+                    None => progress.loading(true),
+                }
+            });
+            card_frame(theme)
+                .gap_4()
+                .children(progress)
+                .when(measured, |this| {
+                    this.child(
+                        div()
+                            .h_flex()
+                            .items_start()
+                            .gap_4()
+                            .w_full()
+                            .child(metric(
+                                theme,
+                                t.common.download,
+                                metrics.download,
+                                std::iter::once(metrics.download_rpm)
+                                    .chain(accuracy(
+                                        metrics.download_accuracy,
+                                        metrics.download_rpm_accuracy,
+                                    ))
+                                    .collect(),
+                            ))
+                            .child(metric(
+                                theme,
+                                t.common.upload,
+                                metrics.upload,
+                                std::iter::once(metrics.upload_rpm)
+                                    .chain(accuracy(
+                                        metrics.upload_accuracy,
+                                        metrics.upload_rpm_accuracy,
+                                    ))
+                                    .collect(),
+                            ))
+                            .child(metric(
+                                theme,
+                                t.tools.idle_latency,
+                                metrics.idle_latency,
+                                Vec::new(),
+                            )),
+                    )
+                })
+                .when_some(failure(&run.status), |this, message| {
+                    this.child(error_text(theme, message))
+                })
+        });
 
-        let Some(run) = run else {
-            return card;
-        };
-        let unsupported = run.nat_type_supported == Some(false);
-        card.child(
-            div()
-                .v_flex()
-                .gap_2()
-                .w_full()
-                .child(result_row(
+        section(
+            theme,
+            t.tools.quality_section,
+            run.map(|r| (r.status.clone(), r.status_label())),
+            button,
+        )
+        .child(options)
+        .children(results)
+    }
+
+    fn stun_section(&self, run: Option<&StunRun>, cx: &mut Context<Self>) -> Div {
+        let running = run.is_some_and(|r| r.status.is_running());
+        let t = s();
+        let button = self.run_button(
+            "stun-run",
+            running,
+            Self::start_stun,
+            NetworkTools::cancel_stun,
+            cx,
+        );
+        let theme = cx.theme();
+
+        let options = grouped_card(
+            theme,
+            [
+                setting_row(theme, t.tools.outbound, None)
+                    .child(outbound_picker(&self.stun_outbound, running))
+                    .into_any_element(),
+                setting_row(theme, t.tools.stun_server, None)
+                    .child(text_field(&self.stun_server, running))
+                    .into_any_element(),
+            ],
+        );
+
+        let results = run.and_then(|run| {
+            let unsupported = run.nat_type_supported == Some(false);
+            // A run that ended before measuring anything shows only why.
+            let measured = running || !run.external_addr.is_empty();
+            let mut rows = Vec::new();
+            // The verdict first: what the mapping and filtering add up to.
+            if let Some(summary) = run.summary() {
+                rows.push(match summary.classic {
+                    Some(classic) => setting_row(theme, classic, Some(summary.explanation)),
+                    None => setting_row(theme, summary.explanation, None),
+                });
+            }
+            if measured {
+                rows.push(value_row(
                     theme,
                     t.tools.external_address,
                     run.external_addr_label(),
-                ))
-                .child(result_row(theme, t.tools.latency, run.latency_label()))
-                .when(!unsupported, |this| {
-                    this.child(result_row(
-                        theme,
-                        t.tools.nat_mapping,
-                        run.mapping_label().to_string(),
-                    ))
-                    .child(result_row(
-                        theme,
-                        t.tools.nat_filtering,
-                        run.filtering_label().to_string(),
-                    ))
-                }),
+                ));
+                rows.push(value_row(theme, t.tools.latency, run.latency_label()));
+            }
+            if measured && unsupported {
+                rows.push(div().child(hint(theme, t.tools.nat_unsupported)));
+            } else if measured {
+                rows.push(value_row(
+                    theme,
+                    t.tools.nat_mapping,
+                    run.mapping_label().to_string(),
+                ));
+                rows.push(value_row(
+                    theme,
+                    t.tools.nat_filtering,
+                    run.filtering_label().to_string(),
+                ));
+            }
+            if let Some(message) = failure(&run.status) {
+                rows.push(error_text(theme, message));
+            }
+            (!rows.is_empty())
+                .then(|| grouped_card(theme, rows.into_iter().map(IntoElement::into_any_element)))
+        });
+
+        section(
+            theme,
+            t.tools.stun_section,
+            run.map(|r| (r.status.clone(), r.status_label().to_string())),
+            button,
         )
-        .when(unsupported, |this| {
-            this.child(hint(theme, t.tools.nat_unsupported))
-        })
-        .when_some(run.summary(), |this, summary| {
-            this.child(
-                div()
-                    .v_flex()
-                    .gap_1()
-                    .p_3()
-                    .rounded_md()
-                    .bg(theme.muted)
-                    .when_some(summary.classic, |this, classic| {
-                        this.child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.foreground)
-                                .child(classic),
-                        )
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(summary.explanation),
-                    ),
-            )
-        })
-        .when_some(failure(&run.status), |this, message| {
-            this.child(error_text(theme, message))
-        })
+        .child(options)
+        .children(results)
     }
 }
 
 impl Render for ToolsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tools = self.tools.read(cx);
         let active = tools.active;
         let quality = tools.quality.clone();
@@ -480,9 +467,10 @@ impl Render for ToolsPage {
         } else {
             let cards = div()
                 .v_flex()
-                .gap_4()
-                .child(self.quality_card(quality.as_ref(), cx))
-                .child(self.stun_card(stun.as_ref(), cx));
+                .gap_6()
+                .pb_2()
+                .child(self.quality_section(quality.as_ref(), window, cx))
+                .child(self.stun_section(stun.as_ref(), cx));
             div()
                 .flex_1()
                 .min_h_0()
@@ -504,18 +492,71 @@ impl Render for ToolsPage {
     }
 }
 
-/// A card's title ("Network quality").
-fn section_label(theme: &Theme, text: &'static str) -> Div {
+/// A test's heading, its run's status and its Start / Cancel button on
+/// one line above its cards.
+fn section(
+    theme: &Theme,
+    title: &'static str,
+    status: Option<(RunStatus, String)>,
+    button: Button,
+) -> Div {
+    let status = status.map(|(status, label)| {
+        let color = match status {
+            RunStatus::Running | RunStatus::Cancelled => theme.muted_foreground,
+            RunStatus::Done => theme.success,
+            RunStatus::Failed(_) => theme.danger,
+        };
+        if status.is_running() {
+            div()
+                .h_flex()
+                .items_center()
+                .gap_1p5()
+                .text_xs()
+                .text_color(color)
+                .child(text_centered(Spinner::new(), label.clone()))
+                .child(label)
+        } else {
+            status_label(color, label)
+        }
+    });
+    div().v_flex().gap_2().child(
+        div()
+            .h_flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(section_heading(theme, title))
+            .child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_3()
+                    .children(status)
+                    .child(button),
+            ),
+    )
+}
+
+/// The outbound a test runs through.
+fn outbound_picker(select: &OutboundSelect, disabled: bool) -> Div {
+    div().w(px(FIELD_WIDTH)).child(
+        Select::new(select)
+            .small()
+            .search_placeholder(s().tools.search_outbounds)
+            .disabled(disabled),
+    )
+}
+
+fn text_field(input: &Entity<InputState>, disabled: bool) -> Div {
     div()
-        .text_sm()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.foreground)
-        .child(text)
+        .w(px(FIELD_WIDTH))
+        .on_mouse_down_out(|_, window, cx| window.blur(cx))
+        .child(small_input(input).disabled(disabled))
 }
 
 fn hint(theme: &Theme, text: &'static str) -> Div {
     div()
-        .text_xs()
+        .text_sm()
         .text_color(theme.muted_foreground)
         .child(text)
 }
@@ -524,80 +565,27 @@ fn error_text(theme: &Theme, message: String) -> Div {
     div().text_sm().text_color(theme.danger).child(message)
 }
 
-/// Start/Cancel button with the run's status beside it.
-fn action_row(theme: &Theme, button: Button, status: Option<(RunStatus, String)>) -> Div {
-    let status = status.map(|(status, label)| {
-        let color = match status {
-            RunStatus::Running => theme.muted_foreground,
-            RunStatus::Done => theme.success,
-            RunStatus::Failed(_) => theme.danger,
-            RunStatus::Cancelled => theme.muted_foreground,
-        };
+/// A result: caption, value, then its finer points in small print.
+fn metric(theme: &Theme, label: &'static str, value: String, subs: Vec<String>) -> Div {
+    stat(theme, label, value).children(subs.into_iter().map(|sub| {
         div()
-            .h_flex()
-            .items_center()
-            .gap_2()
-            .when(status.is_running(), |this| {
-                this.child(Spinner::new().small())
-            })
-            .child(div().text_sm().text_color(color).child(label))
-    });
-    div()
-        .h_flex()
-        .items_center()
-        .gap_3()
-        .child(button)
-        .children(status)
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(sub)
+    }))
 }
 
-fn metric_tile(theme: &Theme, label: &'static str, value: String, subs: Vec<String>) -> Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .v_flex()
-        .gap_1()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .border_1()
-        .border_color(theme.border)
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(label),
-        )
-        .child(
-            div()
-                .text_lg()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.foreground)
-                .child(value),
-        )
-        .children(subs.into_iter().map(|sub| {
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .whitespace_nowrap()
-                .overflow_hidden()
-                .text_ellipsis()
-                .child(sub)
-        }))
-}
-
-fn result_row(theme: &Theme, label: &'static str, value: String) -> Div {
-    div()
-        .h_flex()
-        .items_center()
-        .justify_between()
-        .w_full()
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(label),
-        )
-        .child(div().text_sm().text_color(theme.foreground).child(value))
+/// A result row: what was measured on the left, the value on the right.
+fn value_row(theme: &Theme, label: &'static str, value: String) -> Div {
+    setting_row(theme, label, None).child(
+        div()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child(value),
+    )
 }
 
 fn failure(status: &RunStatus) -> Option<String> {

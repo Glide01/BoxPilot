@@ -4,7 +4,10 @@
 use super::SettingsPage;
 use crate::i18n::s;
 use crate::state::AppState;
-use crate::ui::{config_viewer, widgets::setting_row};
+use crate::ui::{
+    config_viewer,
+    widgets::{setting_row, TextLabel},
+};
 use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
 use gpui_component::{button::Button, ActiveTheme, Sizable};
 
@@ -24,7 +27,7 @@ pub(super) fn rows(
         Button::new("view-running-config")
             .outline()
             .small()
-            .label(s().common.view)
+            .text_label(s().common.view)
             .on_click(move |_, window, cx| config_viewer::open(app_state.clone(), window, cx)),
     )
     .into_any_element()]

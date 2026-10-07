@@ -16,9 +16,14 @@
 //! `outline` (Test all, Close all, Clear). `ghost` is for icon-only buttons
 //! and for quiet actions inside list rows. An empty state's call to action
 //! is [`empty_state_button`]: primary, a touch roomier than a header
-//! button, with the same text size. An icon goes in front of a label with
+//! button, with the same text size. A label goes on with
+//! [`TextLabel::text_label`], not `.label(..)`, so its letters sit in the
+//! middle of the button; an icon goes in front of it with
 //! [`IconLabel::icon_label`], not `.icon(..).label(..)`, and in front of
 //! other text with [`text_centered`]: both centre it on the letters.
+//!
+//! Words: a label says what a control is; a hint, when one is needed at
+//! all, is one short line. No paragraphs of explanation on a page.
 //!
 //! Choices: a setting with two options is a switch or a segmented control;
 //! one with three or more is a [`choice_select`] dropdown.
@@ -65,10 +70,17 @@ fn lead_top(
     lead_height: Pixels,
     window: &Window,
 ) -> Pixels {
+    window.pixel_snap(letters_middle(text, style, window) - lead_height / 2.)
+}
+
+/// How far below the top of the line box the middle of one line of
+/// `text`'s letters lies (half the cap height above the baseline), as
+/// gpui will paint it (see [`lead_top`]).
+fn letters_middle(text: &SharedString, style: &TextStyle, window: &Window) -> Pixels {
     let font_size = style.font_size.to_pixels(window.rem_size());
     let line_height = line_height(style, window);
     if text.is_empty() {
-        return window.pixel_snap((line_height - lead_height) / 2.);
+        return line_height / 2.;
     }
     let text_system = window.text_system();
     // The same shaping the text's own layout does (and caches).
@@ -80,7 +92,7 @@ fn lead_top(
     let cap_height = Some(text_system.cap_height(font_id, font_size))
         .filter(|height| *height > Pixels::ZERO)
         .unwrap_or(font_size * 0.72);
-    window.pixel_snap(baseline - cap_height / 2. - lead_height / 2.)
+    baseline - cap_height / 2.
 }
 
 /// How far to move an element `lead_height` tall that its row centres in
@@ -175,8 +187,58 @@ impl RenderOnce for TextCentered {
     }
 }
 
+/// One line of `text`, or something drawn with it, moved up or down so
+/// the letters sit in the middle of their line box instead of wherever the
+/// fonts' ascent and descent put them. Chinese takes its fallback font's,
+/// which (Noto Sans CJK on Linux) sets it a pixel or two low: invisible in
+/// running text, plain to see inside a button. Takes the text style of the
+/// element it sits in, as [`TextCentered`] does.
+#[derive(IntoElement)]
+pub struct OnLetters {
+    text: SharedString,
+    child: AnyElement,
+}
+
+impl RenderOnce for OnLetters {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let style = window.text_style();
+        let shift = line_height(&style, window) / 2. - letters_middle(&self.text, &style, window);
+        div()
+            .relative()
+            .top(window.pixel_snap(shift))
+            .min_w_0()
+            .child(self.child)
+    }
+}
+
+/// A button label's own wrapper (`Button::label`'s), centred on its letters.
+fn button_text(label: SharedString) -> OnLetters {
+    OnLetters {
+        text: label.clone(),
+        child: div()
+            .min_w_0()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(label)
+            .into_any_element(),
+    }
+}
+
+/// `Button::label`, with the letters centred in the button ([`OnLetters`]).
+pub trait TextLabel {
+    fn text_label(self, label: impl Into<SharedString>) -> Self;
+}
+
+impl TextLabel for Button {
+    fn text_label(self, label: impl Into<SharedString>) -> Self {
+        let label = label.into();
+        self.accessibility_label(label.clone())
+            .child(button_text(label))
+    }
+}
+
 /// `Button::icon` + `Button::label`, with the icon centred on the label's
-/// letters ([`TextCentered`]). The icon takes the label's size, as a
+/// letters ([`TextCentered`]) and both on the button ([`OnLetters`]). The icon takes the label's size, as a
 /// small or extra-small button's own does.
 pub trait IconLabel {
     fn icon_label(self, icon: impl Into<Lead>, label: impl Into<SharedString>) -> Self;
@@ -186,15 +248,11 @@ impl IconLabel for Button {
     fn icon_label(self, icon: impl Into<Lead>, label: impl Into<SharedString>) -> Self {
         let label = label.into();
         self.accessibility_label(label.clone())
-            .child(text_centered(icon, label.clone()))
-            // `Button::label`'s own wrapper.
-            .child(
-                div()
-                    .min_w_0()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(label),
-            )
+            .child(OnLetters {
+                text: label.clone(),
+                child: text_centered(icon, label.clone()).into_any_element(),
+            })
+            .child(button_text(label))
     }
 }
 
@@ -568,6 +626,20 @@ pub fn choice_select<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    choice_select_with(id, choices, selected, false, on_select, window, cx)
+}
+
+/// [`choice_select`], greyed out and closed to input while `disabled`
+/// (a test option while the test runs).
+pub fn choice_select_with<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
+    id: &'static str,
+    choices: impl IntoIterator<Item = (V, L)>,
+    selected: V,
+    disabled: bool,
+    on_select: impl Fn(V, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let choices: Vec<Choice<V>> = choices
         .into_iter()
         .map(|(value, label)| Choice {
@@ -606,7 +678,7 @@ pub fn choice_select<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
     div()
         .flex_none()
         .w(px(CHOICE_SELECT_WIDTH))
-        .child(Select::new(&state).small())
+        .child(Select::new(&state).small().disabled(disabled))
         .into_any_element()
 }
 

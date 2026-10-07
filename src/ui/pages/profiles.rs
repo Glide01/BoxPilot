@@ -15,7 +15,7 @@ use crate::ui::toast;
 use crate::ui::widgets::{
     choice_select, empty_state, form_input, freshness_button, full_text_tooltip, grouped_card,
     minute_ticker, page_header, profile_source_line, row_hover_bg, section_heading, setting_row,
-    usage_meter, IconLabel, CONTROL_LINE_HEIGHT,
+    usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -134,7 +134,7 @@ impl ProfilesPage {
                 let name = delete_name.clone();
                 Button::new("profile-dialog-delete")
                     .outline()
-                    .label(t.common.delete)
+                    .text_label(t.common.delete)
                     .text_color(theme.danger)
                     .border_color(theme.danger.opacity(0.5))
                     .disabled(!can_delete)
@@ -226,7 +226,7 @@ impl ProfilesPage {
                 let name_input = name_input.clone();
                 Button::new("profile-choose-file")
                     .outline()
-                    .label(t.profiles.browse)
+                    .text_label(t.profiles.browse)
                     .on_click(move |_, window, cx| {
                         let rx = cx.prompt_for_paths(PathPromptOptions {
                             files: true,
@@ -321,12 +321,12 @@ impl ProfilesPage {
                                 .child(DialogClose::new().child(
                                     Button::new("profile-dialog-cancel")
                                         .outline()
-                                        .label(t.common.cancel),
+                                        .text_label(t.common.cancel),
                                 ))
                                 .child(DialogAction::new().child(
                                     Button::new("profile-dialog-save")
                                         .primary()
-                                        .label(t.common.save),
+                                        .text_label(t.common.save),
                                 )),
                         ),
                 )

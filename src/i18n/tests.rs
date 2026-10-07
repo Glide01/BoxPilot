@@ -116,7 +116,7 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.connection_details.opened_at,
         t.connection_details.duration,
         t.logs.configured_level,
-        t.tools.quality_hint,
+        t.tools.nat_unsupported,
         t.tools.nat_full_cone_hint,
         t.tailscale.waiting_approval,
         t.tailscale.https_hint,
@@ -250,6 +250,8 @@ fn chinese_uses_full_width_punctuation() {
     let samples = [
         ZH_CN.profiles.update_via_sing_box_hint.to_string(),
         ZH_CN.profiles.delete_body.to_string(),
+        ZH_CN.tools.nat_unsupported.to_string(),
+        ZH_CN.tools.nat_symmetric_hint.to_string(),
         ZH_CN.settings.lan_off.to_string(),
         (ZH_CN.messages.clash_mode_failed)("x"),
         (ZH_CN.errors.read_failed)("a", "b"),
