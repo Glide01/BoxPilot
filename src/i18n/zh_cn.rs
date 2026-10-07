@@ -293,7 +293,7 @@ pub static ZH_CN: Strings = Strings {
         addresses: "地址",
         logout_title: "登出 Tailscale？",
         logout_body: |tag| format!("「{tag}」将退出 tailnet，直到再次登录。"),
-        logout_key_auth: "它是用 auth key 登录的，重新加入需要在浏览器中登录或使用新的 key。",
+        logout_key_auth: "重新加入需在浏览器中登录或使用新的 auth key。",
         exit_node: "出口节点",
         exit_node_on: "经过此端点的全部流量都从出口节点出去。",
         exit_node_off: "流量从本设备直接出去。",
@@ -306,7 +306,7 @@ pub static ZH_CN: Strings = Strings {
         mark_read: "标记为已读",
         new_files: |n| format!("{n} 个新文件"),
         taildrop: "Taildrop",
-        no_files_share: "没有收到文件。其他设备发来的文件会显示在这里。",
+        no_files_share: "其他设备发来的文件会显示在这里。",
         no_files: "没有收到文件。",
         receiving: |progress| format!("正在接收 {progress}"),
         from_sender: |sender| format!("来自 {sender}"),
@@ -314,7 +314,7 @@ pub static ZH_CN: Strings = Strings {
         delete_title: |name| format!("删除「{name}」？"),
         delete_body: "该文件将从 Taildrop 收件箱中删除，已保存的副本不受影响。",
         https_certs: "HTTPS 证书",
-        https_hint: "为本设备的 tailnet 名称签发，需要 tailnet 已启用 HTTPS。",
+        https_hint: "需要 tailnet 已启用 HTTPS。",
         get_certificate: "获取证书",
         copy_certificate: "复制证书",
         certificate_copied: "证书已复制。",
@@ -373,7 +373,7 @@ pub static ZH_CN: Strings = Strings {
         ended: "此登录请求已结束。",
         open_sign_in_page: "打开登录页",
         callback_address: "浏览器最终停留的地址",
-        step_too_new: "此登录步骤比当前 BoxPilot 支持的更新。请更新 BoxPilot，或取消登录。",
+        step_too_new: "此登录步骤需要更新版本的 BoxPilot。",
         callback_intro: "请在浏览器中打开服务器的页面完成登录。",
         callback_body: |prefixes| {
             format!(
@@ -383,7 +383,7 @@ pub static ZH_CN: Strings = Strings {
         },
         or: " 或 ",
         last_attempt_failed: |e| format!("上次尝试失败：{e}"),
-        open_url_body: "服务器要求在网页上登录。打开该网页并完成登录后，连接会自动继续。",
+        open_url_body: "在网页上完成登录后，连接会自动继续。",
         unknown_step: |kind| format!("sing-box 要求进行「{kind}」登录步骤，当前版本的 BoxPilot 无法处理。"),
         username: "用户名",
         password: "密码",
@@ -396,7 +396,7 @@ pub static ZH_CN: Strings = Strings {
         no_devices_shared: "没有共享设备。动态服务器共享的是客户端应用借给它的设备；\
                             BoxPilot 不会借出本机的设备。",
         no_status: "sing-box 没有报告它的状态。",
-        default_server_hint: "共享本机上匹配的 USB 设备。此类服务器的设备状态 sing-box 不会报告。",
+        default_server_hint: "共享本机上匹配的 USB 设备。",
         connecting: "正在连接",
         waiting_sign_in: "等待登录",
         connected: "已连接",
@@ -445,37 +445,31 @@ pub static ZH_CN: Strings = Strings {
         troubleshooting: "故障排查",
         about: "关于",
         language: "语言",
-        language_hint: "「跟随系统」使用桌面的语言。",
         follow_system: "跟随系统",
         appearance: "外观",
-        appearance_hint: "「跟随系统」使用桌面的浅色/深色设置。",
         theme_light: "浅色",
         theme_dark: "深色",
         close_button: "关闭按钮",
-        close_hint: "BoxPilot 在托盘中运行时，sing-box 保持连接。",
-        close_no_tray_hint: "关闭窗口会退出 BoxPilot。此桌面没有系统托盘，无法让它在托盘中运行。",
+        close_hint: "在托盘中运行时保持连接。",
+        close_no_tray_hint: "此桌面没有托盘，关闭窗口即退出。",
         close_ask: "询问",
         close_minimize: "最小化到托盘",
         close_quit: "退出",
         local_proxy_port: "本地代理端口",
         allow_lan: "允许局域网连接",
         lan_on_at: |at| {
-            format!("其他设备可通过 {at} 使用代理——无需密码；防火墙可能会询问是否允许 sing-box。")
+            format!("其他设备可通过 {at} 使用代理，无需密码。")
         },
         lan_on_port: |port| {
-            format!(
-                "本机接入网络后，其他设备可通过端口 {port} 使用代理——无需密码；\
-                 防火墙可能会询问是否允许 sing-box。"
-            )
+            format!("接入网络后，其他设备可通过端口 {port} 使用代理，无需密码。")
         },
         lan_off_at: |at| format!("允许局域网中的其他设备通过 {at} 使用代理。"),
         lan_off: "允许局域网中的其他设备使用代理。",
         ipv6: "IPv6",
         ipv6_hint: "在 TUN 模式下代理 IPv6 流量。",
         clear_cache: "清除缓存",
-        clear_cache_hint: "忘记各分组选中的节点，以及 sing-box 在两次运行之间保存的其他状态。",
-        clear_cache_hint_connected:
-            "忘记各分组选中的节点，以及 sing-box 在两次运行之间保存的其他状态。连接时 sing-box 正在使用，请先断开。",
+        clear_cache_hint: "忘记各分组选中的节点等状态。",
+        clear_cache_hint_connected: "断开连接后才能清除。",
         clear_cache_action: "清除",
         running_config: "运行配置",
         running_config_hint: "sing-box 实际运行所用的配置文件。",
@@ -483,7 +477,7 @@ pub static ZH_CN: Strings = Strings {
     updates: Updates {
         updates: "更新",
         check_automatically: "自动检查更新",
-        check_automatically_hint: "每天在 GitHub 上检查一次 BoxPilot 新版本。",
+        check_automatically_hint: "每天在 GitHub 上检查一次。",
         not_checked: "尚未检查",
         checking: "正在检查…",
         up_to_date: "已是最新版本",
@@ -512,12 +506,11 @@ pub static ZH_CN: Strings = Strings {
         running: "运行中",
         running_hint: "sing-box 启动时使用的配置文件（running_config.json）。",
         preview: "预览——未运行",
-        preview_hint: "现在连接时会运行的内容：当前配置加上你的现有设置。\
-                       BoxPilot 每次启动都会重新选择 API 端口和密钥。",
+        preview_hint: "现在连接时会运行的配置。",
         hide_credentials: "隐藏凭据",
-        hide_credentials_tooltip: "隐藏密码、密钥、UUID 和链接中的令牌。BoxPilot 自己的 API 密钥始终隐藏。",
+        hide_credentials_tooltip: "隐藏密码、密钥、UUID 和链接中的令牌。",
         no_profile_title: "还没有配置",
-        no_profile_hint: "在「配置」页添加订阅或本地配置文件后，它的内容会显示在这里。",
+        no_profile_hint: "在「配置」页添加后，它的内容会显示在这里。",
         no_config_title: "此配置还没有配置文件",
         no_config_hint: "在「配置」页更新它即可下载配置文件。",
         load_failed_title: "无法加载配置文件",

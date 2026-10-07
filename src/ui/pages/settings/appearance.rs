@@ -48,11 +48,7 @@ pub(super) fn rows(
         cx,
     );
 
-    vec![setting_row(
-        cx.theme(),
-        s().settings.appearance,
-        Some(s().settings.appearance_hint),
-    )
-    .child(control)
-    .into_any_element()]
+    vec![setting_row(cx.theme(), s().settings.appearance, None)
+        .child(control)
+        .into_any_element()]
 }

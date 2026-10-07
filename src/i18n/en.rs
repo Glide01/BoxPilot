@@ -309,8 +309,7 @@ pub static EN: Strings = Strings {
         addresses: "Addresses",
         logout_title: "Log out of Tailscale?",
         logout_body: |tag| format!("\"{tag}\" leaves the tailnet until it logs in again."),
-        logout_key_auth: " It logged in with an auth key, so getting back in needs a browser \
-                          login or a new key.",
+        logout_key_auth: " Getting back in needs a browser login or a new auth key.",
         exit_node: "Exit node",
         exit_node_on: "All traffic through this endpoint leaves via the exit node.",
         exit_node_off: "Traffic leaves from this device.",
@@ -323,7 +322,7 @@ pub static EN: Strings = Strings {
         mark_read: "Mark as read",
         new_files: |n| format!("{n} new"),
         taildrop: "Taildrop",
-        no_files_share: "No files received. Files other devices send here appear in this list.",
+        no_files_share: "Files other devices send show up here.",
         no_files: "No files received.",
         receiving: |progress| format!("Receiving {progress}"),
         from_sender: |sender| format!("from {sender}"),
@@ -331,7 +330,7 @@ pub static EN: Strings = Strings {
         delete_title: |name| format!("Delete \"{name}\"?"),
         delete_body: "The received file is removed from the Taildrop inbox. Saved copies are kept.",
         https_certs: "HTTPS certificates",
-        https_hint: "Issued for this device's tailnet name. Needs HTTPS enabled for the tailnet.",
+        https_hint: "Needs HTTPS enabled for the tailnet.",
         get_certificate: "Get certificate",
         copy_certificate: "Copy certificate",
         certificate_copied: "Certificate copied.",
@@ -394,8 +393,7 @@ pub static EN: Strings = Strings {
         ended: "This sign-in request has ended.",
         open_sign_in_page: "Open sign-in page",
         callback_address: "Address your browser ended on",
-        step_too_new: "This sign-in step is newer than BoxPilot understands. \
-                       Update BoxPilot, or cancel it.",
+        step_too_new: "This sign-in step needs a newer BoxPilot.",
         callback_intro: "Sign in on the server's page in your browser.",
         callback_body: |prefixes| {
             format!(
@@ -406,9 +404,7 @@ pub static EN: Strings = Strings {
         },
         or: " or ",
         last_attempt_failed: |e| format!("The last attempt failed: {e}"),
-        open_url_body: "The server wants you to sign in on a web page. Open it, \
-                        finish signing in there, and the connection continues on \
-                        its own.",
+        open_url_body: "Sign in on the web page; the connection then continues on its own.",
         unknown_step: |kind| {
             format!(
                 "sing-box asks for a \"{kind}\" sign-in step, which this version of \
@@ -426,8 +422,7 @@ pub static EN: Strings = Strings {
         no_devices_shared: "No devices shared. A dynamic server shares the devices a client \
                             app lends it; BoxPilot doesn't lend this computer's devices.",
         no_status: "sing-box reports no status for it.",
-        default_server_hint: "Shares this computer's matching USB devices. sing-box doesn't \
-                              report their status for this kind of server.",
+        default_server_hint: "Shares this computer's matching USB devices.",
         connecting: "Connecting",
         waiting_sign_in: "Waiting for sign-in",
         connected: "Connected",
@@ -485,30 +480,22 @@ pub static EN: Strings = Strings {
         troubleshooting: "Troubleshooting",
         about: "About",
         language: "Language",
-        language_hint: "System follows your desktop's language.",
         follow_system: "System",
         appearance: "Appearance",
-        appearance_hint: "System follows your desktop's light or dark setting.",
         theme_light: "Light",
         theme_dark: "Dark",
         close_button: "Close button",
-        close_hint: "While BoxPilot runs in the tray, sing-box stays connected.",
-        close_no_tray_hint: "Closing the window quits BoxPilot. This desktop has no system tray to keep it running in.",
+        close_hint: "Stays connected while in the tray.",
+        close_no_tray_hint: "No tray on this desktop: closing quits.",
         close_ask: "Ask",
         close_minimize: "Minimize to tray",
         close_quit: "Quit",
         local_proxy_port: "Local proxy port",
         allow_lan: "Allow LAN connections",
-        lan_on_at: |at| {
-            format!(
-                "Other devices can use the proxy at {at} — no password; \
-                 your firewall may ask to allow sing-box."
-            )
-        },
+        lan_on_at: |at| format!("Other devices can use the proxy at {at}, no password."),
         lan_on_port: |port| {
             format!(
-                "Other devices can use the proxy on port {port} once this computer \
-                 is on a network — no password; your firewall may ask to allow sing-box."
+                "Once on a network, other devices can use the proxy on port {port}, no password."
             )
         },
         lan_off_at: |at| format!("Let other devices on your network use the proxy at {at}."),
@@ -516,10 +503,8 @@ pub static EN: Strings = Strings {
         ipv6: "IPv6",
         ipv6_hint: "Proxies IPv6 traffic in TUN mode.",
         clear_cache: "Clear cache",
-        clear_cache_hint:
-            "Forgets the node picked in each group and other state sing-box keeps between runs.",
-        clear_cache_hint_connected: "Forgets the node picked in each group and other state \
-            sing-box keeps between runs. sing-box uses it while connected, so disconnect first.",
+        clear_cache_hint: "Forgets each group's picked node and other saved state.",
+        clear_cache_hint_connected: "Disconnect first to clear it.",
         clear_cache_action: "Clear",
         running_config: "Running config",
         running_config_hint: "The exact config sing-box runs with.",
@@ -527,7 +512,7 @@ pub static EN: Strings = Strings {
     updates: Updates {
         updates: "Updates",
         check_automatically: "Check for updates automatically",
-        check_automatically_hint: "Looks for a new BoxPilot release on GitHub once a day.",
+        check_automatically_hint: "Checks GitHub once a day.",
         not_checked: "Not checked yet",
         checking: "Checking…",
         up_to_date: "Up to date",
@@ -558,15 +543,11 @@ pub static EN: Strings = Strings {
         running: "Running",
         running_hint: "The config sing-box was started with (running_config.json).",
         preview: "Preview — not running",
-        preview_hint: "What connecting now would run: the active profile with your current \
-                       settings. BoxPilot picks its API port and secret at each start.",
+        preview_hint: "What connecting now would run.",
         hide_credentials: "Hide credentials",
-        hide_credentials_tooltip: "Masks passwords, keys, UUIDs and URL tokens. \
-                                   BoxPilot's own API secret is always masked.",
+        hide_credentials_tooltip: "Masks passwords, keys, UUIDs and URL tokens.",
         no_profile_title: "No profile yet",
-        no_profile_hint:
-            "Add a subscription or a local config on the Profiles page, and its config \
-                          shows up here.",
+        no_profile_hint: "Add one on the Profiles page to see its config here.",
         no_config_title: "This profile has no config yet",
         no_config_hint: "Update it on the Profiles page to download its config.",
         load_failed_title: "Couldn't load the config",

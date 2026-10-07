@@ -52,11 +52,7 @@ pub(super) fn rows(
         cx,
     );
 
-    vec![setting_row(
-        cx.theme(),
-        s().settings.language,
-        Some(s().settings.language_hint),
-    )
-    .child(control)
-    .into_any_element()]
+    vec![setting_row(cx.theme(), s().settings.language, None)
+        .child(control)
+        .into_any_element()]
 }
