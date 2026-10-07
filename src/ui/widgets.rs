@@ -559,9 +559,9 @@ impl<V: Clone + PartialEq> SearchableListItem for Choice<V> {
 /// drawn every frame, and is rebuilt when its page comes back. Each render
 /// brings its labels (the UI language may have changed) and its selection
 /// (`selected` may have been changed elsewhere) up to date.
-pub fn choice_select<V: Copy + PartialEq + 'static>(
+pub fn choice_select<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
     id: &'static str,
-    choices: impl IntoIterator<Item = (V, &'static str)>,
+    choices: impl IntoIterator<Item = (V, L)>,
     selected: V,
     on_select: impl Fn(V, &mut Window, &mut App) + 'static,
     window: &mut Window,

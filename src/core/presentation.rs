@@ -196,6 +196,37 @@ fn short_error(error: &str) -> String {
     out
 }
 
+/// The auto-update cadences the subscription dialog offers, in minutes
+/// (0 = off).
+pub const AUTO_UPDATE_PRESETS: [u64; 5] = [0, 60, 360, 720, 1440];
+
+/// An auto-update cadence in words: "Off", "Every hour", "Every 6 hours",
+/// "Every day", or "Every 45 min" when it isn't whole hours.
+pub fn auto_update_label(minutes: u64) -> String {
+    let t = &s().profiles;
+    match minutes {
+        0 => t.interval_off.to_string(),
+        1440 => t.interval_daily.to_string(),
+        m if m % 60 == 0 => (t.interval_hours)(m / 60),
+        m => (t.interval_minutes)(m),
+    }
+}
+
+/// The subscription dialog's auto-update choices: the presets, plus
+/// `current` in order when it is none of them (a cadence typed in before
+/// the dropdown existed), so saving the dialog never changes it unasked.
+pub fn auto_update_choices(current: u64) -> Vec<(u64, String)> {
+    let mut minutes = AUTO_UPDATE_PRESETS.to_vec();
+    if !minutes.contains(&current) {
+        minutes.push(current);
+        minutes.sort_unstable();
+    }
+    minutes
+        .into_iter()
+        .map(|m| (m, auto_update_label(m)))
+        .collect()
+}
+
 /// The Settings-page port rule: a port field parses to a non-zero u16 or
 /// falls back to `default`. The caller writes the sanitized value back into
 /// the field so the display always matches what took effect.
@@ -395,6 +426,29 @@ pub fn runtime_info(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn auto_update_labels_read_as_cadences() {
+        assert_eq!(auto_update_label(0), "Off");
+        assert_eq!(auto_update_label(60), "Every hour");
+        assert_eq!(auto_update_label(720), "Every 12 hours");
+        assert_eq!(auto_update_label(1440), "Every day");
+        assert_eq!(auto_update_label(45), "Every 45 min");
+        assert_eq!(auto_update_label(90), "Every 90 min");
+    }
+
+    #[test]
+    fn auto_update_choices_keep_an_off_preset_cadence() {
+        let values = |current| -> Vec<u64> {
+            auto_update_choices(current)
+                .into_iter()
+                .map(|(m, _)| m)
+                .collect()
+        };
+        assert_eq!(values(60), AUTO_UPDATE_PRESETS.to_vec());
+        assert_eq!(values(45), vec![0, 45, 60, 360, 720, 1440]);
+        assert_eq!(values(2880), vec![0, 60, 360, 720, 1440, 2880]);
+    }
 
     #[test]
     fn connection_status_maps_flags_and_labels() {

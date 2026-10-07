@@ -4,7 +4,7 @@
 //! 增删改全走弹窗(草稿存弹窗 InputState,Save 才写回),删除入口在编辑
 //! 弹窗左下角。
 
-use crate::core::presentation::{profile_freshness, profile_row_info};
+use crate::core::presentation::{auto_update_choices, profile_freshness, profile_row_info};
 use crate::core::profile_draft::{is_json_config, DraftKind, ProfileDraft};
 use crate::core::settings::{Profile, StatusLevel};
 use crate::i18n::s;
@@ -13,8 +13,9 @@ use crate::state::AppState;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    empty_state, freshness_button, full_text_tooltip, minute_ticker, page_header,
-    profile_source_line, row_hover_bg, setting_row, usage_meter, IconLabel, CONTROL_LINE_HEIGHT,
+    choice_select, empty_state, freshness_button, full_text_tooltip, grouped_card, minute_ticker,
+    page_header, profile_source_line, row_hover_bg, section_heading, setting_row, usage_meter,
+    IconLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -84,36 +85,51 @@ impl ProfilesPage {
                 .placeholder(t.profiles.url_placeholder)
                 .default_value(draft.url.clone())
         });
-        let interval_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("60")
-                .default_value(draft.interval_raw.clone())
-        });
         let path_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t.profiles.no_file_selected)
                 .default_value(draft.path.clone())
         });
         let kind_cell = cx.new(|_| draft.kind.index());
+        // The dropdown's entries stay fixed while the dialog is open: a
+        // cadence off the presets keeps its entry even after another pick,
+        // so the user can go back to it (and the list never changes under
+        // the selection).
+        let interval_choices = auto_update_choices(draft.interval_minutes);
+        let interval_cell = cx.new(|_| draft.interval_minutes);
         let via_sing_box_cell = cx.new(|_| draft.update_via_sing_box);
 
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let t = s();
-            let theme = cx.theme();
             let kind = *kind_cell.read(cx);
+            let interval = *interval_cell.read(cx);
             let via_sing_box = *via_sing_box_cell.read(cx);
             let is_edit = editing_id.is_some();
 
+            // Built before `theme` borrows `cx`: the dropdown keeps its state
+            // in the window.
+            let interval_select = {
+                let interval_cell = interval_cell.clone();
+                choice_select(
+                    "profile-auto-update",
+                    interval_choices.clone(),
+                    interval,
+                    move |minutes, window, cx| {
+                        interval_cell.update(cx, |cell, _| *cell = minutes);
+                        window.refresh();
+                    },
+                    window,
+                    cx,
+                )
+            };
+            let theme = cx.theme();
+
+            // A form field: its label over the input, both full width.
             let field = |label: &'static str, input: AnyElement| {
                 div()
                     .v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(label),
-                    )
+                    .gap_1p5()
+                    .child(div().text_sm().text_color(theme.foreground).child(label))
                     .child(input)
             };
 
@@ -175,38 +191,40 @@ impl ProfilesPage {
                 Input::new(&name_input).cleanable(false).into_any_element(),
             );
 
-            // 预构建两套字段(避免共享的 `field` 闭包被某个 move 分支独占)。
-            let remote_fields = div()
+            // 订阅:链接一栏;更新选项(自动更新、经 sing-box)放进与设置页同款的
+            // 分组卡片。本地文件没有更新选项,不显示这一节。
+            let url_field = field(
+                t.profiles.subscription_url,
+                Input::new(&url_input).cleanable(true).into_any_element(),
+            );
+            let update_options = div()
                 .v_flex()
-                .gap_3()
-                .child(field(
-                    t.profiles.subscription_url,
-                    Input::new(&url_input).cleanable(true).into_any_element(),
-                ))
-                .child(field(
-                    t.profiles.interval,
-                    div()
-                        .w(px(120.))
-                        .child(Input::new(&interval_input).cleanable(false))
+                .gap_2()
+                .child(section_heading(theme, t.profiles.update_section))
+                .child(grouped_card(
+                    theme,
+                    [
+                        setting_row(theme, t.profiles.auto_update, None)
+                            .child(interval_select)
+                            .into_any_element(),
+                        setting_row(
+                            theme,
+                            t.profiles.update_via_sing_box,
+                            Some(t.profiles.update_via_sing_box_hint),
+                        )
+                        .child({
+                            let via_sing_box_cell = via_sing_box_cell.clone();
+                            Switch::new("profile-update-via-sing-box")
+                                .checked(via_sing_box)
+                                .on_click(move |checked: &bool, window, cx| {
+                                    let checked = *checked;
+                                    via_sing_box_cell.update(cx, |via, _| *via = checked);
+                                    window.refresh();
+                                })
+                        })
                         .into_any_element(),
-                ))
-                .child(
-                    setting_row(
-                        theme,
-                        t.profiles.update_via_sing_box,
-                        Some(t.profiles.update_via_sing_box_hint),
-                    )
-                    .child({
-                        let via_sing_box_cell = via_sing_box_cell.clone();
-                        Switch::new("profile-update-via-sing-box")
-                            .checked(via_sing_box)
-                            .on_click(move |checked: &bool, window, cx| {
-                                let checked = *checked;
-                                via_sing_box_cell.update(cx, |via, _| *via = checked);
-                                window.refresh();
-                            })
-                    }),
-                );
+                    ],
+                ));
 
             let choose_file = {
                 let path_input = path_input.clone();
@@ -280,15 +298,22 @@ impl ProfilesPage {
 
             dialog
                 .title(title)
-                .w(px(420.))
+                .w(px(460.))
                 .child(
                     div()
                         .v_flex()
-                        .gap_3()
+                        .gap_5()
+                        .pt_2()
                         .children(kind_toggle)
-                        .child(name_field)
-                        .when(kind == 0, move |this| this.child(remote_fields))
-                        .when(kind == 1, move |this| this.child(local_field)),
+                        .child(
+                            div()
+                                .v_flex()
+                                .gap_3()
+                                .child(name_field)
+                                .when(kind == 0, move |this| this.child(url_field))
+                                .when(kind == 1, move |this| this.child(local_field)),
+                        )
+                        .when(kind == 0, move |this| this.child(update_options)),
                 )
                 .footer(
                     DialogFooter::new()
@@ -316,7 +341,7 @@ impl ProfilesPage {
                     let kind_cell = kind_cell.clone();
                     let name_input = name_input.clone();
                     let url_input = url_input.clone();
-                    let interval_input = interval_input.clone();
+                    let interval_cell = interval_cell.clone();
                     let via_sing_box_cell = via_sing_box_cell.clone();
                     let path_input = path_input.clone();
                     move |_, _, cx| {
@@ -326,7 +351,7 @@ impl ProfilesPage {
                             name: name_input.read(cx).value().to_string(),
                             kind: DraftKind::from_index(*kind_cell.read(cx)),
                             url: url_input.read(cx).value().to_string(),
-                            interval_raw: interval_input.read(cx).value().to_string(),
+                            interval_minutes: *interval_cell.read(cx),
                             update_via_sing_box: *via_sing_box_cell.read(cx),
                             path: path_input.read(cx).value().to_string(),
                         }

@@ -248,10 +248,19 @@ pub struct Profiles {
     pub kind_local: &'static str,
     pub subscription_url: &'static str,
     pub url_placeholder: &'static str,
-    pub interval: &'static str,
+    /// Heading of the subscription dialog's update options.
+    pub update_section: &'static str,
+    /// The auto-update dropdown's label.
+    pub auto_update: &'static str,
+    /// Auto-update choices: "Off", "Every hour", "Every 6 hours",
+    /// "Every day", and "Every 45 min" for a cadence off the presets.
+    pub interval_off: &'static str,
+    pub interval_hours: FmtN,
+    pub interval_daily: &'static str,
+    pub interval_minutes: FmtN,
     /// The subscription dialog's switch: fetch through the running sing-box.
     pub update_via_sing_box: &'static str,
-    /// Under that switch: the fallback, and when to turn it off.
+    /// Under that switch: the fallback when it fails.
     pub update_via_sing_box_hint: &'static str,
     pub config_file: &'static str,
     pub browse: &'static str,

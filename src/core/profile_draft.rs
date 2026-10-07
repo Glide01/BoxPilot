@@ -1,7 +1,7 @@
-//! The profile dialog's draft model: the raw field text as typed, and the one
-//! owner of how it becomes a `(name, ProfileSource)` — trimming, interval
-//! parsing, kind selection, and the has-content gate all live here instead of
-//! inside the dialog's `on_ok` closure. No gpui dependency.
+//! The profile dialog's draft model: the fields as entered, and the one
+//! owner of how they become a `(name, ProfileSource)` — trimming, kind
+//! selection, and the has-content gate all live here instead of inside the
+//! dialog's `on_ok` closure. No gpui dependency.
 
 use crate::core::settings::{
     default_auto_update_interval, default_update_via_sing_box, Profile, ProfileSource,
@@ -43,8 +43,8 @@ pub struct ProfileDraft {
     pub name: String,
     pub kind: DraftKind,
     pub url: String,
-    /// Interval field as typed; parse failures mean 0 (= auto-update off).
-    pub interval_raw: String,
+    /// The auto-update dropdown's choice, in minutes; 0 = off.
+    pub interval_minutes: u64,
     /// The "Update through sing-box" switch (Remote only).
     pub update_via_sing_box: bool,
     pub path: String,
@@ -79,10 +79,9 @@ impl ProfileDraft {
                 .and_then(|p| p.remote_url())
                 .unwrap_or_default()
                 .to_string(),
-            interval_raw: profile
+            interval_minutes: profile
                 .map(|p| p.auto_update_interval())
-                .unwrap_or_else(default_auto_update_interval)
-                .to_string(),
+                .unwrap_or_else(default_auto_update_interval),
             update_via_sing_box: match profile.map(|p| &p.source) {
                 Some(ProfileSource::Remote {
                     update_via_sing_box,
@@ -98,7 +97,7 @@ impl ProfileDraft {
     }
 
     /// The draft → model rule: only the fields of the selected kind count,
-    /// everything is trimmed, and an unparseable interval means 0 (off).
+    /// and text is trimmed.
     pub fn build(&self) -> DraftOutput {
         let source = match self.kind {
             DraftKind::Local => ProfileSource::Local {
@@ -106,7 +105,7 @@ impl ProfileDraft {
             },
             DraftKind::Remote => ProfileSource::Remote {
                 url: self.url.trim().to_string(),
-                auto_update_interval_minutes: self.interval_raw.trim().parse().unwrap_or(0),
+                auto_update_interval_minutes: self.interval_minutes,
                 update_via_sing_box: self.update_via_sing_box,
             },
         };
@@ -150,10 +149,7 @@ mod tests {
     fn add_draft_defaults_to_remote_with_default_interval() {
         let draft = ProfileDraft::from_profile(None);
         assert_eq!(draft.kind, DraftKind::Remote);
-        assert_eq!(
-            draft.interval_raw,
-            default_auto_update_interval().to_string()
-        );
+        assert_eq!(draft.interval_minutes, default_auto_update_interval());
         assert!(draft.update_via_sing_box);
         assert!(draft.name.is_empty() && draft.url.is_empty() && draft.path.is_empty());
     }
@@ -190,15 +186,15 @@ mod tests {
         assert_eq!(draft.kind, DraftKind::Local);
         assert_eq!(draft.name, "Lab");
         assert_eq!(draft.path, "C:\\box.json");
-        assert_eq!(draft.interval_raw, "0", "Local never auto-updates");
+        assert_eq!(draft.interval_minutes, 0, "Local never auto-updates");
     }
 
     #[test]
-    fn build_trims_and_parses_interval() {
+    fn build_trims_text_and_keeps_interval() {
         let mut draft = ProfileDraft::from_profile(None);
         draft.name = "  My Sub  ".into();
         draft.url = " https://a/s ".into();
-        draft.interval_raw = " 30 ".into();
+        draft.interval_minutes = 30;
         let out = draft.build();
         assert_eq!(out.name, "My Sub");
         assert_eq!(
@@ -210,23 +206,6 @@ mod tests {
             }
         );
         assert!(out.has_content);
-    }
-
-    #[test]
-    fn unparseable_interval_means_off() {
-        for raw in ["", "abc", "-5", "1.5"] {
-            let mut draft = ProfileDraft::from_profile(None);
-            draft.url = "https://a/s".into();
-            draft.interval_raw = raw.into();
-            let ProfileSource::Remote {
-                auto_update_interval_minutes,
-                ..
-            } = draft.build().source
-            else {
-                panic!("remote draft must build a Remote source");
-            };
-            assert_eq!(auto_update_interval_minutes, 0, "raw: {:?}", raw);
-        }
     }
 
     /// Only the selected kind's fields count — a draft that toggled from
