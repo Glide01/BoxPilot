@@ -153,8 +153,48 @@ fn kde_proxy_key(key: &str) -> Vec<&str> {
     ]
 }
 
+/// Undo the system proxy sing-box set, if it is still there — same job and
+/// same rule as on Linux. sing-box's `common/settings/proxy_darwin.go` sets
+/// the web, secure web and SOCKS proxy of a network service through
+/// `networksetup`; each one that is still on and points at 127.0.0.1 is
+/// turned off, in every service, so a proxy the user set themselves is left
+/// alone. A service whose state can't be read is skipped.
+#[cfg(target_os = "macos")]
+pub fn disable_system_proxy() -> Result<(), String> {
+    const NETWORKSETUP: &str = "/usr/sbin/networksetup";
+    let Some(services) = read_command(NETWORKSETUP, &["-listallnetworkservices"]) else {
+        return Ok(());
+    };
+    let mut errors = Vec::new();
+    for service in parse_network_services(&services) {
+        for (get, set_state) in MACOS_PROXY_KINDS {
+            let Some(state) = read_command(NETWORKSETUP, &[get, service]) else {
+                continue;
+            };
+            if is_our_macos_proxy(&state) {
+                if let Err(e) = run_command(NETWORKSETUP, &[set_state, service, "off"]) {
+                    errors.push(e);
+                }
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err((s().errors.disable_proxy)(&errors.join("; ")))
+    }
+}
+
+/// The `networksetup` getter and state setter of each proxy sing-box sets.
+#[cfg(target_os = "macos")]
+const MACOS_PROXY_KINDS: [(&str, &str); 3] = [
+    ("-getwebproxy", "-setwebproxystate"),
+    ("-getsecurewebproxy", "-setsecurewebproxystate"),
+    ("-getsocksfirewallproxy", "-setsocksfirewallproxystate"),
+];
+
 /// Stdout of a successful run, or `None` if the tool is missing or fails.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_command(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program)
         .args(args)
@@ -168,7 +208,7 @@ fn read_command(program: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     let output = Command::new(program)
         .args(args)
@@ -185,7 +225,7 @@ fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub fn disable_system_proxy() -> Result<(), String> {
     Ok(())
 }
@@ -205,6 +245,34 @@ fn is_our_gnome_proxy(mode: &str, http_host: &str) -> bool {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn is_our_kde_proxy(proxy_type: &str, http_proxy: &str) -> bool {
     proxy_type.trim() == "1" && http_proxy.contains("127.0.0.1")
+}
+
+/// The service names in `networksetup -listallnetworkservices` output: one
+/// per line after the header line, a disabled one prefixed with `*` (its
+/// proxy is reset too — it would come back with it when re-enabled). Pure
+/// so it is tested on every platform.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_network_services(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .skip(1)
+        .map(|line| line.trim_start_matches('*').trim())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// A macOS proxy is ours while it is still enabled on the loopback host
+/// sing-box writes. Takes `networksetup -getwebproxy <service>` output
+/// (`Enabled: Yes` / `Server: 127.0.0.1` / `Port: …` lines).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_our_macos_proxy(output: &str) -> bool {
+    let field = |name: &str| {
+        output.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key.trim() == name).then(|| value.trim())
+        })
+    };
+    field("Enabled") == Some("Yes") && field("Server") == Some("127.0.0.1")
 }
 
 /// Match sing-box's wintun adapter by FriendlyName, case-insensitively. Pulled
@@ -361,6 +429,18 @@ pub fn flush_dns_linux() {
         .status();
 }
 
+/// Best-effort `dscacheutil -flushcache`. mDNSResponder's own cache needs
+/// root to flush (`killall -HUP`), so that one is kept.
+#[cfg(target_os = "macos")]
+pub fn flush_dns_macos() {
+    let _ = Command::new("/usr/bin/dscacheutil")
+        .arg("-flushcache")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// Pre-start prep (TUN cleanup + DNS flush). Run on a background thread.
 pub fn prepare_process_start(is_tun_mode: bool) {
     if is_tun_mode {
@@ -372,6 +452,8 @@ pub fn prepare_process_start(is_tun_mode: bool) {
     }
     #[cfg(target_os = "linux")]
     flush_dns_linux();
+    #[cfg(target_os = "macos")]
+    flush_dns_macos();
 }
 
 /// Post-stop cleanup (disable system proxy + TUN removal). Fire-and-forget on a thread.
@@ -523,11 +605,12 @@ pub fn start_sing_box(
     Ok((child, receiver))
 }
 
-/// Ask sing-box to stop, without waiting. On Linux that's SIGTERM, so it can
-/// remove its auto_route rules and system proxy on the way out; elsewhere
-/// it's `kill()`. Cheap enough for the UI thread. Follow with `reap_child`.
+/// Ask sing-box to stop, without waiting. On Linux and macOS that's SIGTERM,
+/// so it can remove its auto_route rules and system proxy on the way out;
+/// on Windows it's `kill()`. Cheap enough for the UI thread. Follow with
+/// `reap_child`.
 pub fn signal_stop(child: &mut Child) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         // A reaped child's pid may already belong to another process;
         // `kill()` has the same guard.
@@ -540,17 +623,17 @@ pub fn signal_stop(child: &mut Child) -> io::Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     {
         child.kill()
     }
 }
 
-/// Wait for a child that `signal_stop` was sent to. On Linux, give it up to
-/// `grace` to exit on its own, then SIGKILL it. Blocking: keep it off the
-/// UI thread.
+/// Wait for a child that `signal_stop` was sent to. On Linux and macOS, give
+/// it up to `grace` to exit on its own, then SIGKILL it. Blocking: keep it
+/// off the UI thread.
 pub fn reap_child(child: &mut Child, grace: Duration) -> io::Result<ExitStatus> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         const POLL: Duration = Duration::from_millis(50);
         let deadline = std::time::Instant::now() + grace;
@@ -565,7 +648,7 @@ pub fn reap_child(child: &mut Child, grace: Duration) -> io::Result<ExitStatus> 
         }
         let _ = child.kill();
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     let _ = grace;
     child.wait()
 }
@@ -650,7 +733,7 @@ mod tests {
 
     /// A child that ignores nothing: SIGTERM ends it well before the grace
     /// period, and the status says so.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn terminate_child_stops_with_sigterm() {
         use std::os::unix::process::ExitStatusExt;
@@ -662,7 +745,7 @@ mod tests {
     }
 
     /// A child that ignores SIGTERM is SIGKILLed once the grace runs out.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn terminate_child_escalates_to_sigkill() {
         use std::os::unix::process::ExitStatusExt;
@@ -676,6 +759,35 @@ mod tests {
         let status = terminate_child(&mut child, Duration::from_millis(300)).unwrap();
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn network_services_skip_the_header_and_unmark_disabled_ones() {
+        let out = "An asterisk (*) denotes that a network service is disabled.\n\
+                   Wi-Fi\n\
+                   *Thunderbolt Bridge\n\
+                   USB 10/100/1000 LAN\n\
+                   \n";
+        assert_eq!(
+            parse_network_services(out),
+            vec!["Wi-Fi", "Thunderbolt Bridge", "USB 10/100/1000 LAN"]
+        );
+        assert!(parse_network_services("").is_empty());
+    }
+
+    #[test]
+    fn macos_proxy_is_ours_only_when_enabled_on_loopback() {
+        let get = |enabled: &str, server: &str| {
+            format!(
+                "Enabled: {enabled}\nServer: {server}\nPort: 7788\nAuthenticated Proxy Enabled: 0\n"
+            )
+        };
+        assert!(is_our_macos_proxy(&get("Yes", "127.0.0.1")));
+        assert!(!is_our_macos_proxy(&get("No", "127.0.0.1")));
+        assert!(!is_our_macos_proxy(&get("Yes", "proxy.corp.example")));
+        assert!(!is_our_macos_proxy(&get("Yes", "127.0.0.10")));
+        assert!(!is_our_macos_proxy(&get("No", "")));
+        assert!(!is_our_macos_proxy(""));
     }
 
     /// The native SetupAPI path uninstalls only adapters whose FriendlyName
