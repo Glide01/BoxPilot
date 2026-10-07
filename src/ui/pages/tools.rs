@@ -14,7 +14,7 @@ use crate::state::{AppState, NetworkTools};
 use crate::ui::theme::FORM_MAX_WIDTH;
 use crate::ui::widgets::{
     choice_select_with, connect_button, empty_state, grouped_card, page_header, section_heading,
-    setting_row, small_input, stat, status_label, text_centered, TextLabel,
+    select_widths, setting_row, small_input, stat, status_label, text_centered, TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -29,10 +29,10 @@ use gpui_component::{
     switch::Switch,
     tab::{Tab, TabBar},
     theme::Theme,
-    ActiveTheme, Disableable, Icon, IndexPath, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IndexPath, Sizable, Size, StyledExt,
 };
 
-/// Width of the right-hand controls (pickers and text fields).
+/// Width of the text fields.
 const FIELD_WIDTH: f32 = 260.;
 
 /// Outbound picker row. Value = the outbound tag, "" = default outbound.
@@ -261,7 +261,12 @@ impl ToolsPage {
             theme,
             [
                 setting_row(theme, t.tools.outbound, None)
-                    .child(outbound_picker(&self.quality_outbound, running))
+                    .child(outbound_picker(
+                        &self.quality_outbound,
+                        &self.outbounds,
+                        running,
+                        window,
+                    ))
                     .into_any_element(),
                 setting_row(theme, t.tools.mode, None)
                     .child(
@@ -372,7 +377,12 @@ impl ToolsPage {
         .children(results)
     }
 
-    fn stun_section(&self, run: Option<&StunRun>, cx: &mut Context<Self>) -> Div {
+    fn stun_section(
+        &self,
+        run: Option<&StunRun>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let running = run.is_some_and(|r| r.status.is_running());
         let t = s();
         let button = self.run_button(
@@ -388,7 +398,12 @@ impl ToolsPage {
             theme,
             [
                 setting_row(theme, t.tools.outbound, None)
-                    .child(outbound_picker(&self.stun_outbound, running))
+                    .child(outbound_picker(
+                        &self.stun_outbound,
+                        &self.outbounds,
+                        running,
+                        window,
+                    ))
                     .into_any_element(),
                 setting_row(theme, t.tools.stun_server, None)
                     .child(text_field(&self.stun_server, running))
@@ -470,7 +485,7 @@ impl Render for ToolsPage {
                 .gap_6()
                 .pb_2()
                 .child(self.quality_section(quality.as_ref(), window, cx))
-                .child(self.stun_section(stun.as_ref(), cx));
+                .child(self.stun_section(stun.as_ref(), window, cx));
             div()
                 .flex_1()
                 .min_h_0()
@@ -537,11 +552,28 @@ fn section(
     )
 }
 
-/// The outbound a test runs through.
-fn outbound_picker(select: &OutboundSelect, disabled: bool) -> Div {
-    div().w(px(FIELD_WIDTH)).child(
+/// The outbound a test runs through: as wide as the longest outbound
+/// name, its menu with room for the protocol beside each name.
+fn outbound_picker(
+    select: &OutboundSelect,
+    outbounds: &[OutboundChoice],
+    disabled: bool,
+    window: &Window,
+) -> Div {
+    let names: Vec<SharedString> = outbounds
+        .iter()
+        .map(|o| SharedString::from(o.label().to_string()))
+        .collect();
+    let rows: Vec<SharedString> = outbounds
+        .iter()
+        .map(|o| format!("{}    {}", o.label(), o.outbound_type).into())
+        .collect();
+    let (width, _) = select_widths(&names, Size::Small, window);
+    let (_, menu_width) = select_widths(&rows, Size::Small, window);
+    div().flex_none().w(width).child(
         Select::new(select)
             .small()
+            .menu_width(menu_width.max(width))
             .search_placeholder(s().tools.search_outbounds)
             .disabled(disabled),
     )

@@ -26,7 +26,8 @@
 //! all, is one short line. No paragraphs of explanation on a page.
 //!
 //! Choices: a setting with two options is a switch or a segmented control;
-//! one with three or more is a [`choice_select`] dropdown.
+//! one with three or more is a [`choice_select`] dropdown. Every dropdown
+//! is as wide as its longest choice ([`select_widths`]), not a fixed width.
 
 use crate::actions::{ToggleProcess, KEY_CONTEXT};
 use crate::core::presentation::{Freshness, FreshnessState, ProfileRowInfo};
@@ -35,9 +36,10 @@ use crate::core::timefmt::{format_relative_time, from_unix_secs, to_unix_secs};
 use crate::i18n::s;
 use crate::ui::card_frame;
 use gpui::{
-    div, prelude::FluentBuilder, px, Action, AnyElement, App, ClickEvent, Context, Div, ElementId,
-    Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Task, TextStyle, Window,
+    div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, ClickEvent, Context, Div,
+    ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
+    RenderOnce, SharedString, Stateful, StatefulInteractiveElement, Styled, Task, TextStyle,
+    Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -48,7 +50,7 @@ use gpui_component::{
     spinner::Spinner,
     theme::Theme,
     tooltip::Tooltip,
-    Icon, IconName, IndexPath, Sizable, StyledExt,
+    Icon, IconName, IndexPath, Sizable, Size, StyledExt,
 };
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -583,10 +585,52 @@ pub fn segmented(
         }))
 }
 
-/// Width of a [`choice_select`]: room for the longest choice in either
-/// language ("Minimize to tray") at the small size, the same for every
-/// dropdown so a card's controls line up.
-pub const CHOICE_SELECT_WIDTH: f32 = 160.;
+/// Widest a dropdown grows to fit its choices; a longer one ellipsizes.
+pub const SELECT_MAX_WIDTH: f32 = 280.;
+
+/// What a dropdown's trigger adds around its text at `size`: border,
+/// padding, the gap and the caret (and a pixel each way for rounding).
+fn select_trigger_chrome(size: Size) -> Pixels {
+    match size {
+        Size::Small | Size::XSmall => px(2. + 16. + 4. + 14. + 2.),
+        _ => px(2. + 20. + 4. + 16. + 2.),
+    }
+}
+
+/// What the open menu adds around a choice: border, list padding, item
+/// padding, the gap and the check mark.
+const SELECT_MENU_CHROME: f32 = 2. + 8. + 16. + 4. + 12. + 6.;
+
+/// Widths for a dropdown that fits its choices: the trigger as wide as the
+/// longest of `labels` (so it doesn't change width as the choice does), up
+/// to [`SELECT_MAX_WIDTH`], and its menu at least as wide, with room for
+/// the check mark. Measured in the window's UI font at the dropdown's text
+/// size (`text_sm` for small and medium).
+pub fn select_widths<'a>(
+    labels: impl IntoIterator<Item = &'a SharedString>,
+    size: Size,
+    window: &Window,
+) -> (Pixels, Pixels) {
+    let style = window.text_style();
+    let font_size = rems(0.875).to_pixels(window.rem_size());
+    let text_system = window.text_system();
+    let widest = labels
+        .into_iter()
+        .filter(|label| !label.is_empty())
+        .map(|label| {
+            text_system
+                .shape_line(label.clone(), font_size, &[style.to_run(label.len())], None)
+                .width
+        })
+        .fold(Pixels::ZERO, Pixels::max);
+    let max = px(SELECT_MAX_WIDTH);
+    let trigger = (widest + select_trigger_chrome(size)).ceil().min(max);
+    let menu = (widest + px(SELECT_MENU_CHROME))
+        .ceil()
+        .min(max)
+        .max(trigger);
+    (trigger, menu)
+}
 
 /// One option of a [`choice_select`]: what it shows, what it stands for.
 #[derive(Clone)]
@@ -652,6 +696,9 @@ pub fn choice_select_with<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
         .position(|choice| choice.value == selected)
         .map(|ix| IndexPath::default().row(ix));
 
+    let labels: Vec<SharedString> = choices.iter().map(|choice| choice.label.clone()).collect();
+    let (width, menu_width) = select_widths(&labels, Size::Small, window);
+
     let mut created = false;
     let state = window.use_keyed_state(id, cx, |window, cx| {
         created = true;
@@ -677,8 +724,13 @@ pub fn choice_select_with<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
 
     div()
         .flex_none()
-        .w(px(CHOICE_SELECT_WIDTH))
-        .child(Select::new(&state).small().disabled(disabled))
+        .w(width)
+        .child(
+            Select::new(&state)
+                .small()
+                .menu_width(menu_width)
+                .disabled(disabled),
+        )
         .into_any_element()
 }
 

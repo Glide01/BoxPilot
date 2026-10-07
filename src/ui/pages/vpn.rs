@@ -26,7 +26,7 @@ use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    empty_state, form_input, meta_row, page_header, IconLabel, Lead, TextLabel,
+    empty_state, form_input, meta_row, page_header, select_widths, IconLabel, Lead, TextLabel,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -36,7 +36,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     select::{Select, SelectState},
     theme::Theme,
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, Size, StyledExt, WindowExt,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -182,15 +182,19 @@ impl DialogHandle {
 #[derive(Clone)]
 enum FieldInput {
     Text(Entity<InputState>),
-    /// The select state and the option values, by index.
-    Choice(Entity<SelectState<Vec<SharedString>>>, Vec<String>),
+    /// The select state, the option values by index, and their labels.
+    Choice(
+        Entity<SelectState<Vec<SharedString>>>,
+        Vec<String>,
+        Vec<SharedString>,
+    ),
 }
 
 impl FieldInput {
     fn answer(&self, cx: &App) -> String {
         match self {
             FieldInput::Text(input) => input.read(cx).value().to_string(),
-            FieldInput::Choice(select, values) => select
+            FieldInput::Choice(select, values, _) => select
                 .read(cx)
                 .selected_index(cx)
                 .and_then(|ix| values.get(ix.row).cloned())
@@ -198,10 +202,16 @@ impl FieldInput {
         }
     }
 
-    fn element(&self) -> AnyElement {
+    fn element(&self, window: &Window) -> AnyElement {
         match self {
             FieldInput::Text(input) => form_input(input).cleanable(false).into_any_element(),
-            FieldInput::Choice(select, _) => Select::new(select).into_any_element(),
+            FieldInput::Choice(select, _, labels) => {
+                let (width, menu_width) = select_widths(labels, Size::Medium, window);
+                div()
+                    .w(width)
+                    .child(Select::new(select).menu_width(menu_width))
+                    .into_any_element()
+            }
         }
     }
 }
@@ -306,8 +316,9 @@ fn open_openconnect_dialog(
                             .collect();
                         let values = field.options.iter().map(|c| c.value.clone()).collect();
                         let selected = field.initial_choice().map(IndexPath::new);
-                        let state = cx.new(|cx| SelectState::new(labels, selected, window, cx));
-                        FieldInput::Choice(state, values)
+                        let state =
+                            cx.new(|cx| SelectState::new(labels.clone(), selected, window, cx));
+                        FieldInput::Choice(state, values, labels)
                     }
                     OpenConnectFieldKind::Password => {
                         FieldInput::Text(text_input(window, cx, &field.value, true, ""))
@@ -317,7 +328,7 @@ fn open_openconnect_dialog(
                     }
                 })
                 .collect();
-            window.open_dialog(cx, move |dialog, _, cx| {
+            window.open_dialog(cx, move |dialog, window, cx| {
                 let pending = handle.is_pending(cx);
                 let theme = cx.theme();
                 let mut body = div().v_flex().gap_3().child(challenge_text(
@@ -335,7 +346,7 @@ fn open_openconnect_dialog(
                                     .mask_toggle()
                                     .into_any_element()
                             }
-                            _ => input.element(),
+                            _ => input.element(window),
                         };
                         body = body.child(labeled(theme, field.display_label(), element));
                     }
