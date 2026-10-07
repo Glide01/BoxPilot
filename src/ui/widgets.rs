@@ -1025,22 +1025,32 @@ pub fn small_input(state: &Entity<InputState>) -> Input {
     Input::new(state).small().py(input_py(24.))
 }
 
+/// A dialog button's height: a little under a [`form_input`]'s 32px, so
+/// the footer's actions don't outweigh the fields above them.
+const DIALOG_BUTTON_HEIGHT: Pixels = px(28.);
+
 /// The narrowest a dialog's button gets, so short labels side by side
 /// ("Cancel" / "Save", "取消" / "保存") come out one width, as the system's
 /// own dialogs do. Longer labels widen their button as usual.
-const DIALOG_BUTTON_MIN_WIDTH: Pixels = px(80.);
+const DIALOG_BUTTON_MIN_WIDTH: Pixels = px(72.);
 
-/// A button in a dialog, unlabelled: a [`form_input`]'s 32px height, so it
-/// lines up with the fields beside it, with the small size's 14px text —
-/// gpui-component's medium size jumps to 16px, larger than every label and
-/// field around it (as [`empty_state_button`] notes) — and at least
-/// [`DIALOG_BUTTON_MIN_WIDTH`] wide.
+/// A button in a dialog, unlabelled: [`DIALOG_BUTTON_HEIGHT`] tall, with the
+/// small size's 14px text — gpui-component's medium size jumps to 16px,
+/// larger than every label and field around it (as [`empty_state_button`]
+/// notes) — and at least [`DIALOG_BUTTON_MIN_WIDTH`] wide. A button beside a
+/// field takes [`form_button`] instead.
 pub fn dialog_button(button: Button) -> Button {
     button
         .small()
-        .h(px(32.))
+        .h(DIALOG_BUTTON_HEIGHT)
         .px_3()
         .min_w(DIALOG_BUTTON_MIN_WIDTH)
+}
+
+/// [`dialog_button`] at a [`form_input`]'s 32px, for a button in a row with
+/// a field ("Browse…"), so their edges line up.
+pub fn form_button(button: Button) -> Button {
+    dialog_button(button).h(px(32.))
 }
 
 /// Room a dialog's content leaves below its last control.

@@ -13,9 +13,10 @@ use crate::state::AppState;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    choice_select, dialog_button, empty_state, form_input, freshness_button, full_text_tooltip,
-    grouped_card, minute_ticker, page_header, profile_source_line, row_hover_bg, section_heading,
-    setting_row, usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
+    choice_select, dialog_button, empty_state, form_button, form_input, freshness_button,
+    full_text_tooltip, grouped_card, minute_ticker, page_header, profile_source_line, row_hover_bg,
+    section_heading, setting_row, usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
+    DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -224,7 +225,7 @@ impl ProfilesPage {
             let choose_file = {
                 let path_input = path_input.clone();
                 let name_input = name_input.clone();
-                dialog_button(Button::new("profile-choose-file"))
+                form_button(Button::new("profile-choose-file"))
                     .outline()
                     .text_label(t.profiles.browse)
                     .on_click(move |_, window, cx| {
