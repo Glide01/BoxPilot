@@ -200,31 +200,37 @@ fn short_error(error: &str) -> String {
 /// (0 = off).
 pub const AUTO_UPDATE_PRESETS: [u64; 5] = [0, 60, 360, 720, 1440];
 
-/// An auto-update cadence in words: "Off", "Every hour", "Every 6 hours",
-/// "Every day", or "Every 45 min" when it isn't whole hours.
+/// A preset cadence in words: "Off", "Every hour", "Every 6 hours",
+/// "Every day".
 pub fn auto_update_label(minutes: u64) -> String {
     let t = &s().profiles;
     match minutes {
         0 => t.interval_off.to_string(),
         1440 => t.interval_daily.to_string(),
-        m if m % 60 == 0 => (t.interval_hours)(m / 60),
-        m => (t.interval_minutes)(m),
+        m => (t.interval_hours)(m / 60),
     }
 }
 
-/// The subscription dialog's auto-update choices: the presets, plus
-/// `current` in order when it is none of them (a cadence typed in before
-/// the dropdown existed), so saving the dialog never changes it unasked.
-pub fn auto_update_choices(current: u64) -> Vec<(u64, String)> {
-    let mut minutes = AUTO_UPDATE_PRESETS.to_vec();
-    if !minutes.contains(&current) {
-        minutes.push(current);
-        minutes.sort_unstable();
-    }
-    minutes
+/// The subscription dialog's auto-update choices.
+pub fn auto_update_choices() -> Vec<(u64, String)> {
+    AUTO_UPDATE_PRESETS
         .into_iter()
         .map(|m| (m, auto_update_label(m)))
         .collect()
+}
+
+/// The preset the dialog shows for a profile's cadence: itself, or the
+/// nearest one that is on (the shorter on a tie) for a cadence typed in
+/// before the dropdown existed. Off stays off.
+pub fn snap_auto_update(minutes: u64) -> u64 {
+    if AUTO_UPDATE_PRESETS.contains(&minutes) {
+        return minutes;
+    }
+    AUTO_UPDATE_PRESETS
+        .into_iter()
+        .filter(|&m| m > 0)
+        .min_by_key(|&m| m.abs_diff(minutes))
+        .unwrap_or(minutes)
 }
 
 /// The Settings-page port rule: a port field parses to a non-zero u16 or
@@ -429,25 +435,22 @@ mod tests {
 
     #[test]
     fn auto_update_labels_read_as_cadences() {
-        assert_eq!(auto_update_label(0), "Off");
-        assert_eq!(auto_update_label(60), "Every hour");
-        assert_eq!(auto_update_label(720), "Every 12 hours");
-        assert_eq!(auto_update_label(1440), "Every day");
-        assert_eq!(auto_update_label(45), "Every 45 min");
-        assert_eq!(auto_update_label(90), "Every 90 min");
+        let labels: Vec<String> = auto_update_choices().into_iter().map(|(_, l)| l).collect();
+        let expected = ["Off", "Every hour", "Every 6 hours", "Every 12 hours"];
+        assert_eq!(labels[..4], expected);
+        assert_eq!(labels[4], "Every day");
     }
 
     #[test]
-    fn auto_update_choices_keep_an_off_preset_cadence() {
-        let values = |current| -> Vec<u64> {
-            auto_update_choices(current)
-                .into_iter()
-                .map(|(m, _)| m)
-                .collect()
-        };
-        assert_eq!(values(60), AUTO_UPDATE_PRESETS.to_vec());
-        assert_eq!(values(45), vec![0, 45, 60, 360, 720, 1440]);
-        assert_eq!(values(2880), vec![0, 60, 360, 720, 1440, 2880]);
+    fn off_preset_cadences_snap_to_the_nearest_preset() {
+        for preset in AUTO_UPDATE_PRESETS {
+            assert_eq!(snap_auto_update(preset), preset);
+        }
+        assert_eq!(snap_auto_update(1), 60, "on stays on");
+        assert_eq!(snap_auto_update(45), 60);
+        assert_eq!(snap_auto_update(210), 60, "tie goes to the shorter");
+        assert_eq!(snap_auto_update(300), 360);
+        assert_eq!(snap_auto_update(2880), 1440);
     }
 
     #[test]

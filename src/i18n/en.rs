@@ -100,7 +100,6 @@ pub static EN: Strings = Strings {
             _ => format!("Every {hours} hours"),
         },
         interval_daily: "Every day",
-        interval_minutes: |minutes| format!("Every {minutes} min"),
         update_via_sing_box: "Update through sing-box",
         update_via_sing_box_hint: "Falls back to direct if it fails.",
         config_file: "Config file",

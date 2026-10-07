@@ -31,14 +31,15 @@ use crate::core::singbox_api::Connection;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, page_header, row_hover_bg, segmented, Segment,
+    connect_button, empty_state, full_text_tooltip, page_header, row_hover_bg, segmented,
+    small_input, Segment,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
     scroll::ScrollableElement,
     theme::Theme,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
@@ -543,14 +544,11 @@ impl Render for ConnectionsPage {
             .w_full()
             .child(
                 div().flex_1().min_w(px(200.)).child(
-                    Input::new(&self.filter_input)
-                        .small()
-                        .cleanable(true)
-                        .prefix(
-                            Icon::new(IconName::Search)
-                                .small()
-                                .text_color(theme.muted_foreground),
-                        ),
+                    small_input(&self.filter_input).cleanable(true).prefix(
+                        Icon::new(IconName::Search)
+                            .small()
+                            .text_color(theme.muted_foreground),
+                    ),
                 ),
             );
         const VIEWS: [ConnectionView; 2] = [ConnectionView::Active, ConnectionView::Closed];

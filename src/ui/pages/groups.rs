@@ -27,14 +27,14 @@ use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::locale;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, page_header, segmented, text_centered,
-    IconLabel, Segment,
+    connect_button, empty_state, full_text_tooltip, page_header, segmented, small_input,
+    text_centered, IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
     scroll::ScrollableElement,
     spinner::Spinner,
     theme::Theme,
@@ -629,7 +629,7 @@ impl Render for GroupsPage {
             header = header
                 .child(
                     div().flex_1().min_w(px(200.)).child(
-                        Input::new(&self.search).small().cleanable(true).prefix(
+                        small_input(&self.search).cleanable(true).prefix(
                             Icon::new(IconName::Search)
                                 .small()
                                 .text_color(theme.muted_foreground),

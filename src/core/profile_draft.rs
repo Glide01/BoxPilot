@@ -3,6 +3,7 @@
 //! selection, and the has-content gate all live here instead of inside the
 //! dialog's `on_ok` closure. No gpui dependency.
 
+use crate::core::presentation::snap_auto_update;
 use crate::core::settings::{
     default_auto_update_interval, default_update_via_sing_box, Profile, ProfileSource,
 };
@@ -43,7 +44,8 @@ pub struct ProfileDraft {
     pub name: String,
     pub kind: DraftKind,
     pub url: String,
-    /// The auto-update dropdown's choice, in minutes; 0 = off.
+    /// The auto-update dropdown's choice, in minutes; 0 = off. Always a
+    /// preset: an Edit seeds it with the nearest one.
     pub interval_minutes: u64,
     /// The "Update through sing-box" switch (Remote only).
     pub update_via_sing_box: bool,
@@ -79,9 +81,11 @@ impl ProfileDraft {
                 .and_then(|p| p.remote_url())
                 .unwrap_or_default()
                 .to_string(),
-            interval_minutes: profile
-                .map(|p| p.auto_update_interval())
-                .unwrap_or_else(default_auto_update_interval),
+            interval_minutes: snap_auto_update(
+                profile
+                    .map(|p| p.auto_update_interval())
+                    .unwrap_or_else(default_auto_update_interval),
+            ),
             update_via_sing_box: match profile.map(|p| &p.source) {
                 Some(ProfileSource::Remote {
                     update_via_sing_box,
@@ -168,6 +172,14 @@ mod tests {
             assert_eq!(draft.update_via_sing_box, via);
             assert_eq!(draft.build().source, profile.source);
         }
+    }
+
+    #[test]
+    fn edit_draft_snaps_the_interval_to_a_preset() {
+        let draft = ProfileDraft::from_profile(Some(&remote_profile("https://a/s", 45)));
+        assert_eq!(draft.interval_minutes, 60);
+        let draft = ProfileDraft::from_profile(Some(&remote_profile("https://a/s", 720)));
+        assert_eq!(draft.interval_minutes, 720);
     }
 
     #[test]

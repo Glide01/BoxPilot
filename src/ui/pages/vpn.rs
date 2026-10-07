@@ -25,12 +25,12 @@ use crate::state::vpn::VpnStream;
 use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{empty_state, meta_row, page_header, IconLabel, Lead};
+use crate::ui::widgets::{empty_state, form_input, meta_row, page_header, IconLabel, Lead};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
-    input::{Input, InputState},
+    input::InputState,
     scroll::ScrollableElement,
     select::{Select, SelectState},
     theme::Theme,
@@ -198,7 +198,7 @@ impl FieldInput {
 
     fn element(&self) -> AnyElement {
         match self {
-            FieldInput::Text(input) => Input::new(input).cleanable(false).into_any_element(),
+            FieldInput::Text(input) => form_input(input).cleanable(false).into_any_element(),
             FieldInput::Choice(select, _) => Select::new(select).into_any_element(),
         }
     }
@@ -328,7 +328,7 @@ fn open_openconnect_dialog(
                     for (field, input) in fields.iter().zip(&inputs) {
                         let element = match (&field.kind, input) {
                             (OpenConnectFieldKind::Password, FieldInput::Text(state)) => {
-                                Input::new(state)
+                                form_input(state)
                                     .cleanable(false)
                                     .mask_toggle()
                                     .into_any_element()
@@ -424,7 +424,7 @@ fn open_openconnect_dialog(
                             .child(labeled(
                                 theme,
                                 s().vpn.callback_address.to_string(),
-                                Input::new(&pasted).cleanable(true).into_any_element(),
+                                form_input(&pasted).cleanable(true).into_any_element(),
                             )),
                     );
                 }
@@ -576,12 +576,12 @@ fn open_openvpn_dialog(
                     .child(labeled(
                         theme,
                         s().vpn.username.to_string(),
-                        Input::new(&username).cleanable(false).into_any_element(),
+                        form_input(&username).cleanable(false).into_any_element(),
                     ))
                     .child(labeled(
                         theme,
                         s().vpn.password.to_string(),
-                        Input::new(&password)
+                        form_input(&password)
                             .cleanable(false)
                             .mask_toggle()
                             .into_any_element(),
@@ -595,7 +595,7 @@ fn open_openvpn_dialog(
                 );
             }
             if let Some(secret_prompt) = &prompt.secret {
-                let input = Input::new(&secret).cleanable(false);
+                let input = form_input(&secret).cleanable(false);
                 let input = if secret_prompt.echo {
                     input
                 } else {

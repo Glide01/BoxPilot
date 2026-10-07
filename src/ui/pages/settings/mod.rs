@@ -19,11 +19,11 @@ use crate::core::settings::PROXY_PORT;
 use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::theme::FORM_MAX_WIDTH;
-use crate::ui::widgets::{grouped_card, page_header, section_heading, setting_row};
+use crate::ui::widgets::{grouped_card, page_header, section_heading, setting_row, small_input};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button,
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
     scroll::ScrollableElement,
     switch::Switch,
     ActiveTheme, Disableable, Sizable, StyledExt,
@@ -132,7 +132,7 @@ impl Render for SettingsPage {
                 div()
                     .w(px(96.))
                     .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                    .child(Input::new(&self.port_input).small().cleanable(false)),
+                    .child(small_input(&self.port_input).cleanable(false)),
             )
             .into_any_element()];
         network_rows.extend(lan_rows);

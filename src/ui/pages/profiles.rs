@@ -13,15 +13,15 @@ use crate::state::AppState;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    choice_select, empty_state, freshness_button, full_text_tooltip, grouped_card, minute_ticker,
-    page_header, profile_source_line, row_hover_bg, section_heading, setting_row, usage_meter,
-    IconLabel, CONTROL_LINE_HEIGHT,
+    choice_select, empty_state, form_input, freshness_button, full_text_tooltip, grouped_card,
+    minute_ticker, page_header, profile_source_line, row_hover_bg, section_heading, setting_row,
+    usage_meter, IconLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
-    input::{Input, InputState},
+    input::InputState,
     scroll::ScrollableElement,
     switch::Switch,
     tab::TabBar,
@@ -91,11 +91,6 @@ impl ProfilesPage {
                 .default_value(draft.path.clone())
         });
         let kind_cell = cx.new(|_| draft.kind.index());
-        // The dropdown's entries stay fixed while the dialog is open: a
-        // cadence off the presets keeps its entry even after another pick,
-        // so the user can go back to it (and the list never changes under
-        // the selection).
-        let interval_choices = auto_update_choices(draft.interval_minutes);
         let interval_cell = cx.new(|_| draft.interval_minutes);
         let via_sing_box_cell = cx.new(|_| draft.update_via_sing_box);
 
@@ -112,7 +107,7 @@ impl ProfilesPage {
                 let interval_cell = interval_cell.clone();
                 choice_select(
                     "profile-auto-update",
-                    interval_choices.clone(),
+                    auto_update_choices(),
                     interval,
                     move |minutes, window, cx| {
                         interval_cell.update(cx, |cell, _| *cell = minutes);
@@ -188,14 +183,14 @@ impl ProfilesPage {
 
             let name_field = field(
                 t.profiles.name,
-                Input::new(&name_input).cleanable(false).into_any_element(),
+                form_input(&name_input).cleanable(false).into_any_element(),
             );
 
             // 订阅:链接一栏;更新选项(自动更新、经 sing-box)放进与设置页同款的
             // 分组卡片。本地文件没有更新选项,不显示这一节。
             let url_field = field(
                 t.profiles.subscription_url,
-                Input::new(&url_input).cleanable(true).into_any_element(),
+                form_input(&url_input).cleanable(true).into_any_element(),
             );
             let update_options = div()
                 .v_flex()
@@ -291,7 +286,7 @@ impl ProfilesPage {
                     .h_flex()
                     .gap_2()
                     .w_full()
-                    .child(div().flex_1().child(Input::new(&path_input).cleanable(true)))
+                    .child(div().flex_1().child(form_input(&path_input).cleanable(true)))
                     .child(choose_file)
                     .into_any_element(),
             );

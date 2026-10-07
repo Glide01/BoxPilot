@@ -96,7 +96,6 @@ pub static ZH_CN: Strings = Strings {
             _ => format!("每 {hours} 小时"),
         },
         interval_daily: "每天",
-        interval_minutes: |minutes| format!("每 {minutes} 分钟"),
         update_via_sing_box: "通过 sing-box 更新",
         update_via_sing_box_hint: "失败时自动改为直连。",
         config_file: "配置文件",

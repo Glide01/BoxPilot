@@ -12,13 +12,13 @@ use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
 use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
 use crate::ui::theme::FORM_MAX_WIDTH;
-use crate::ui::widgets::{connect_button, empty_state, page_header, setting_row};
+use crate::ui::widgets::{connect_button, empty_state, page_header, setting_row, small_input};
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
-    input::{Input, InputState},
+    input::InputState,
     progress::Progress,
     scroll::ScrollableElement,
     select::{SearchableVec, Select, SelectItem, SelectState},
@@ -281,7 +281,7 @@ impl ToolsPage {
                     div()
                         .w(px(FIELD_WIDTH))
                         .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                        .child(Input::new(&self.config_url).small().disabled(running)),
+                        .child(small_input(&self.config_url).disabled(running)),
                 ),
             )
             .child(action_row(
@@ -390,7 +390,7 @@ impl ToolsPage {
                     div()
                         .w(px(FIELD_WIDTH))
                         .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                        .child(Input::new(&self.stun_server).small().disabled(running)),
+                        .child(small_input(&self.stun_server).disabled(running)),
                 ),
             )
             .child(action_row(

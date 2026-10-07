@@ -31,11 +31,12 @@ use crate::i18n::s;
 use crate::ui::card_frame;
 use gpui::{
     div, prelude::FluentBuilder, px, Action, AnyElement, App, ClickEvent, Context, Div, ElementId,
-    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
+    Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
     SharedString, Stateful, StatefulInteractiveElement, Styled, Task, TextStyle, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
+    input::{Input, InputState},
     progress::Progress,
     searchable_list::SearchableListItem,
     select::{Select, SelectEvent, SelectState},
@@ -829,6 +830,28 @@ pub fn profile_source_line(theme: &Theme, id: impl Into<ElementId>, info: Profil
         .text_color(theme.muted_foreground)
         .child(source)
         .children(info.note.map(|note| item().flex_shrink_0().child(note)))
+}
+
+/// The line a single-line input gives its text: gpui-component's 1.25rem.
+const INPUT_LINE_HEIGHT: f32 = 20.;
+
+/// Vertical padding that fits [`INPUT_LINE_HEIGHT`] inside an input
+/// `height` tall with a 1px border.
+fn input_py(height: f32) -> Pixels {
+    px((height - 2. - INPUT_LINE_HEIGHT) / 2.)
+}
+
+/// A single-line input whose text isn't clipped. gpui-component pads a
+/// medium input 8px top and bottom inside its 32px, leaving 14px for a 20px
+/// line, and clips the text to that box: Chinese characters lose their
+/// bottom edge (Latin letters mostly fit). This pads it to fit the line.
+pub fn form_input(state: &Entity<InputState>) -> Input {
+    Input::new(state).py(input_py(32.))
+}
+
+/// [`form_input`] at the small size (24px, padded 2px: 18px for the line).
+pub fn small_input(state: &Entity<InputState>) -> Input {
+    Input::new(state).small().py(input_py(24.))
 }
 
 #[cfg(test)]
