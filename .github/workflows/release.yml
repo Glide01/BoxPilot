@@ -322,8 +322,13 @@ jobs:
 
   publish:
     needs: [windows, linux]
-    # PRs only build/test (fork PRs lack write access anyway).
-    if: github.event_name != 'pull_request'
+    # Only the release branches and version tags publish. PRs only build/test
+    # (fork PRs lack write access anyway), and a manual run on any other
+    # branch must not overwrite the rolling ci-latest release.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' ||
+       github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
