@@ -18,9 +18,8 @@ use crate::core::presentation::sanitize_port;
 use crate::core::settings::{PROXY_PORT, TUN_AVAILABLE};
 use crate::i18n::s;
 use crate::state::AppState;
-use crate::ui::theme::FORM_MAX_WIDTH;
 use crate::ui::widgets::{
-    grouped_card, page_header, section_heading, setting_row, small_input, TextLabel,
+    form_column, grouped_card, page_header, section_heading, setting_row, small_input, TextLabel,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -200,12 +199,12 @@ impl Render for SettingsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .child(page_header(theme, t.title))
+            .child(form_column(page_header(theme, t.title)))
             .child(
                 div().flex_1().min_h_0().child(
                     div()
                         .w_full()
-                        .child(cards.max_w(px(FORM_MAX_WIDTH)))
+                        .child(form_column(cards))
                         .overflow_y_scrollbar(),
                 ),
             )

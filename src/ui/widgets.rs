@@ -36,6 +36,7 @@ use crate::core::sub_usage::{expiry_date_utc, SubscriptionUsage, UsageLevel};
 use crate::core::timefmt::{format_relative_time, from_unix_secs, to_unix_secs};
 use crate::i18n::s;
 use crate::ui::card_frame;
+use crate::ui::theme::FORM_MAX_WIDTH;
 use gpui::{
     div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, ClickEvent, Context, Div,
     ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
@@ -257,6 +258,18 @@ impl IconLabel for Button {
             })
             .child(button_text(label))
     }
+}
+
+/// A form page's column (Settings, Tools): the panel's full width up to
+/// [`FORM_MAX_WIDTH`], centred in it past that. The page wraps its title
+/// and its scrolled content each in one, so they share the column's edges.
+pub fn form_column(content: impl IntoElement) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .justify_center()
+        .child(div().w_full().max_w(px(FORM_MAX_WIDTH)).child(content))
 }
 
 /// Page title ("Groups", "Logs", …). Pages compose it into their own header

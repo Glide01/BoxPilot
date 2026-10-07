@@ -81,8 +81,10 @@ pub const PANEL_RADIUS: f32 = 12.;
 pub const PANEL_INSET: f32 = 8.;
 
 /// Widest a form page's column (Settings, Tools) grows: past it, a label
-/// and its control drift apart across a wide window. Left-aligned, so the
-/// page title stays where every other page has it.
+/// and its control drift apart across a wide window. Centred past it, page
+/// title included (`widgets::form_column`), as the system's own settings
+/// windows are, so a wide window keeps even margins rather than an empty
+/// right half.
 pub const FORM_MAX_WIDTH: f32 = 880.;
 
 /// The mode a preference resolves to, given the OS appearance.

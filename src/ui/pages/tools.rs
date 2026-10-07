@@ -11,10 +11,10 @@ use crate::core::network_tools::{
 use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
 use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
-use crate::ui::theme::FORM_MAX_WIDTH;
 use crate::ui::widgets::{
-    choice_select_with, connect_button, empty_state, grouped_card, page_header, plain_select,
-    section_heading, setting_row, small_input, stat, status_label, text_centered, TextLabel,
+    choice_select_with, connect_button, empty_state, form_column, grouped_card, page_header,
+    plain_select, section_heading, setting_row, small_input, stat, status_label, text_centered,
+    TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -494,7 +494,7 @@ impl Render for ToolsPage {
                 .child(
                     div()
                         .w_full()
-                        .child(cards.max_w(px(FORM_MAX_WIDTH)))
+                        .child(form_column(cards))
                         .overflow_y_scrollbar(),
                 )
                 .into_any_element()
@@ -504,7 +504,13 @@ impl Render for ToolsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .child(page_header(cx.theme(), s().tools.title))
+            // In the cards' column while there are cards; with the empty
+            // state, where every other page has it.
+            .child(if active {
+                form_column(page_header(cx.theme(), s().tools.title))
+            } else {
+                page_header(cx.theme(), s().tools.title)
+            })
             .child(body)
     }
 }
