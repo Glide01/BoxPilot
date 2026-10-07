@@ -1,9 +1,10 @@
-//! Profiles 页:订阅 profile 单列列表。每行 = 名称(+Active 徽标)+
-//! URL/间隔副标题 + 相对更新时间 + ⟳ 单行立即更新 + ✎ 编辑;非 active
-//! 行另有 Use。增删改全走弹窗(草稿存弹窗 InputState,Save 才写回),
-//! 删除入口在编辑弹窗左下角。
+//! Profiles 页:订阅 profile 单列列表。每行 = 单选圈 + 名称,同一行右侧是
+//! 更新按钮(⟳ + 多久前更新,即 freshness 与更新动作合一)与 ✎ 编辑;第二行
+//! 来源(订阅域名 / 文件名,悬停看完整),第三行用量条。点别的行即切换。
+//! 增删改全走弹窗(草稿存弹窗 InputState,Save 才写回),删除入口在编辑
+//! 弹窗左下角。
 
-use crate::core::presentation::{profile_row_info, updated_label};
+use crate::core::presentation::{profile_freshness, profile_row_info};
 use crate::core::profile_draft::{is_json_config, DraftKind, ProfileDraft};
 use crate::core::settings::{Profile, StatusLevel};
 use crate::i18n::s;
@@ -12,8 +13,8 @@ use crate::state::AppState;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    capitalize_first, empty_state, full_text_tooltip, minute_ticker, page_header, row_hover_bg,
-    usage_meter,
+    empty_state, freshness_button, full_text_tooltip, minute_ticker, page_header,
+    profile_source_line, row_hover_bg, usage_meter, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -21,25 +22,18 @@ use gpui_component::{
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::{Input, InputState},
     scroll::ScrollableElement,
-    spinner::Spinner,
     tab::TabBar,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
 };
 use std::time::SystemTime;
 
-/// Narrowest the name / source / usage column gets before the freshness
-/// lines beside it start to ellipsize.
-const INFO_MIN_WIDTH: f32 = 220.;
-/// Width of the freshness lines ("Updated 25 min ago" over "Auto-updates
-/// every 60 min"); they ellipsize below it only on a narrow window.
-const FRESHNESS_WIDTH: f32 = 180.;
-/// Letters of a profile's name or source that `INFO_MIN_WIDTH` shows
-/// whole; longer ones get a tooltip with all of it.
-const PROFILE_TEXT_ROOM: usize = 28;
+/// Letters of a profile's name its line shows whole beside the update and
+/// edit buttons in the narrowest window; longer ones get a tooltip.
+const PROFILE_NAME_ROOM: usize = 28;
 
 pub struct ProfilesPage {
     app_state: Entity<AppState>,
-    /// Re-renders once a minute: "updated N min ago" and the usage line's
+    /// Re-renders once a minute: "25 min ago" and the usage line's
     /// expiry countdown move with the clock, not with any entity.
     _ticker: Task<()>,
 }
@@ -340,15 +334,17 @@ impl ProfilesPage {
         profile: &Profile,
         is_active: bool,
         can_delete: bool,
-        updating_id: Option<&str>,
+        state: &AppState,
         theme: &gpui_component::theme::Theme,
     ) -> impl IntoElement {
-        let this_updating = updating_id == Some(profile.id.as_str());
-        let any_updating = updating_id.is_some();
-        let row_info = profile_row_info(&profile.source);
         let now = SystemTime::now();
+        let freshness = profile_freshness(
+            profile,
+            state.updating_profile_id() == Some(profile.id.as_str()),
+            state.fetch_error(&profile.id),
+            now,
+        );
         let t = s();
-        let time_label = updated_label(profile.last_updated_secs, now, t.profiles.never_updated);
 
         let app_state_refresh = self.app_state.clone();
         let app_state_edit = self.app_state.clone();
@@ -360,9 +356,11 @@ impl ProfilesPage {
         let primary = theme.primary;
         let hover_bg = row_hover_bg(theme);
         // A radio mark: which profile sing-box runs with. Clicking anywhere
-        // on another row (outside its buttons) switches to it.
+        // on another row (outside its buttons) switches to it. Centred on
+        // the name's line, not on the whole row.
         let radio = div()
             .flex_none()
+            .mt(px((CONTROL_LINE_HEIGHT - 18.) / 2.))
             .size(px(18.))
             .rounded_full()
             .map(|this| {
@@ -372,6 +370,70 @@ impl ProfilesPage {
                     this.border(px(1.5)).border_color(theme.input)
                 }
             });
+
+        // Name on the left, the update button and edit on the right of the
+        // same line: every row's controls end in one column, level with
+        // its name.
+        let title_line = div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .h(px(CONTROL_LINE_HEIGHT))
+            .child(full_text_tooltip(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.foreground)
+                    .truncate(),
+                ("profile-name", ix),
+                profile.name.clone(),
+                PROFILE_NAME_ROOM,
+            ))
+            .child(
+                div()
+                    .h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .children(freshness.map(|freshness| {
+                        freshness_button(
+                            theme,
+                            ("profile-refresh", ix),
+                            freshness,
+                            None,
+                            move |_, _, cx| {
+                                // Not a click on the row: that would switch.
+                                cx.stop_propagation();
+                                app_state_refresh.update(cx, |state, cx| {
+                                    state.update_profile(
+                                        refresh_id.clone(),
+                                        FetchOrigin::Manual,
+                                        cx,
+                                    );
+                                });
+                            },
+                        )
+                    }))
+                    .child(
+                        Button::new(("profile-edit", ix))
+                            .ghost()
+                            .small()
+                            .icon(Icon::default().path("icons/pencil.svg"))
+                            .tooltip(t.profiles.edit_title)
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                Self::open_profile_dialog(
+                                    app_state_edit.clone(),
+                                    Some(edit_profile.clone()),
+                                    can_delete,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                    ),
+            );
 
         div()
             .id(("profile-row", ix))
@@ -397,125 +459,31 @@ impl ProfilesPage {
                 }
             })
             .h_flex()
-            .items_center()
+            .items_start()
             .gap_3()
             .w_full()
             .child(radio)
-            // Name, source and usage take all the width the freshness
-            // column leaves; they only ellipsize once the window is too
-            // narrow for both, and keep at least `INFO_MIN_WIDTH` while the
-            // freshness lines give way first.
             .child(
                 div()
                     .v_flex()
-                    .gap_1()
                     .flex_1()
-                    .min_w(px(INFO_MIN_WIDTH))
-                    .child(full_text_tooltip(
-                        div()
-                            .min_w_0()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.foreground)
-                            .truncate(),
-                        ("profile-name", ix),
-                        profile.name.clone(),
-                        PROFILE_TEXT_ROOM,
-                    ))
-                    .child(full_text_tooltip(
-                        div()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .truncate(),
+                    .min_w_0()
+                    .child(title_line)
+                    .child(profile_source_line(
+                        theme,
                         ("profile-source", ix),
-                        row_info.source,
-                        PROFILE_TEXT_ROOM,
+                        profile_row_info(&profile.source),
                     ))
-                    // Traffic / expiry the subscription server reported.
+                    // Traffic / expiry the subscription server reported,
+                    // across the row.
                     .children(profile.usage.as_ref().map(|usage| {
-                        div().pt_1().w_full().child(usage_meter(
+                        div().pt_2().w_full().child(usage_meter(
                             theme,
                             ("profile-usage", ix),
                             usage,
                             now,
                         ))
                     })),
-            )
-            .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_1()
-                    .flex_shrink(1.)
-                    .min_w_0()
-                    // Freshness: when it last changed, over how it stays
-                    // fresh.
-                    // One width on every row, so the usage bars beside it
-                    // end in a line.
-                    .child(
-                        div()
-                            .v_flex()
-                            .w(px(FRESHNESS_WIDTH))
-                            .flex_shrink(1.)
-                            .min_w_0()
-                            .items_end()
-                            .gap_0p5()
-                            .mr_2()
-                            .text_xs()
-                            .child(
-                                div()
-                                    .max_w_full()
-                                    .truncate()
-                                    .text_color(theme.foreground.opacity(0.8))
-                                    .child(capitalize_first(&time_label)),
-                            )
-                            .children(row_info.detail.map(|detail| {
-                                div()
-                                    .max_w_full()
-                                    .truncate()
-                                    .text_color(theme.muted_foreground)
-                                    .child(detail)
-                            })),
-                    )
-                    .child(
-                        Button::new(("profile-refresh", ix))
-                            .ghost()
-                            .small()
-                            .map(|this| {
-                                if this_updating {
-                                    this.icon(Spinner::new())
-                                } else {
-                                    this.icon(Icon::default().path("icons/refresh-cw.svg"))
-                                }
-                            })
-                            .tooltip(t.home.update)
-                            .disabled(row_info.source_empty || any_updating)
-                            .on_click(move |_, _, cx| {
-                                // Not a click on the row: that would switch.
-                                cx.stop_propagation();
-                                app_state_refresh.update(cx, |state, cx| {
-                                    state.update_profile(refresh_id.clone(), FetchOrigin::Manual, cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new(("profile-edit", ix))
-                            .ghost()
-                            .small()
-                            .icon(Icon::default().path("icons/pencil.svg"))
-                            .tooltip(t.profiles.edit_title)
-                            .on_click(move |_, window, cx| {
-                                cx.stop_propagation();
-                                Self::open_profile_dialog(
-                                    app_state_edit.clone(),
-                                    Some(edit_profile.clone()),
-                                    can_delete,
-                                    window,
-                                    cx,
-                                );
-                            }),
-                    ),
             )
     }
 }
@@ -525,7 +493,6 @@ impl Render for ProfilesPage {
         let state = self.app_state.read(cx);
         let profiles = state.settings.profiles.clone();
         let active_id = state.settings.active_profile_id.clone();
-        let updating_id = state.updating_profile_id().map(|s| s.to_string());
         let can_delete = true;
         let app_state_add = self.app_state.clone();
         let theme = cx.theme();
@@ -539,7 +506,7 @@ impl Render for ProfilesPage {
                     profile,
                     profile.id == active_id,
                     can_delete,
-                    updating_id.as_deref(),
+                    state,
                     theme,
                 )
                 .into_any_element()

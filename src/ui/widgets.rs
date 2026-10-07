@@ -1,6 +1,7 @@
 //! Shared chrome builders beside `card_frame`: page titles, empty states,
 //! labeled setting rows, grouped lists, segmented controls, setting
-//! dropdowns, quiet status labels and the subscription usage meter. Element
+//! dropdowns, quiet status labels, the subscription usage meter and a
+//! profile's update button and source line (Home and Profiles). Element
 //! builders (only [`choice_select`] keeps state, in the window) — one place
 //! to restyle what every page repeats.
 //!
@@ -20,14 +21,15 @@
 //! Choices: a setting with two options is a switch or a segmented control;
 //! one with three or more is a [`choice_select`] dropdown.
 
-use crate::actions::ToggleProcess;
+use crate::actions::{ToggleProcess, KEY_CONTEXT};
+use crate::core::presentation::{Freshness, FreshnessState, ProfileRowInfo};
 use crate::core::sub_usage::{expiry_date_utc, SubscriptionUsage, UsageLevel};
 use crate::core::timefmt::{format_relative_time, from_unix_secs, to_unix_secs};
 use crate::i18n::s;
 use crate::ui::card_frame;
 use gpui::{
-    div, prelude::FluentBuilder, px, AnyElement, App, Context, Div, ElementId, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, SharedString, Stateful,
+    div, prelude::FluentBuilder, px, Action, AnyElement, App, ClickEvent, Context, Div, ElementId,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Task, Window,
 };
 use gpui_component::{
@@ -35,6 +37,7 @@ use gpui_component::{
     progress::Progress,
     searchable_list::SearchableListItem,
     select::{Select, SelectEvent, SelectState},
+    spinner::Spinner,
     theme::Theme,
     tooltip::Tooltip,
     Icon, IconName, IndexPath, Sizable, StyledExt,
@@ -585,6 +588,87 @@ pub fn usage_meter(
                 .value(fraction * 100.)
         }))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+}
+
+/// Height of a line that holds small buttons beside text (a profile's name
+/// with its update and edit buttons): a small button's height, so the text
+/// and the buttons share one centre line.
+pub const CONTROL_LINE_HEIGHT: f32 = 24.;
+
+/// A profile's update button: how fresh it is and the action that
+/// refreshes it, one quiet control ("⟳ 25 min ago"), the same on Home and
+/// on the Profiles page. A ghost button in muted text, so it sits in a row
+/// like a status line until hovered; the tooltip says when exactly, how it
+/// stays fresh and what a click does (plus `shortcut`'s keys, if given).
+/// Updating, it spins; a failure swaps the icon for a
+/// warning; a stale time turns the warning colour, the icon unchanged.
+pub fn freshness_button(
+    theme: &Theme,
+    id: impl Into<ElementId>,
+    freshness: Freshness,
+    shortcut: Option<&dyn Action>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    let refresh = Icon::default().path("icons/refresh-cw.svg");
+    let label = capitalize_first(&freshness.label);
+    let button = Button::new(id)
+        .ghost()
+        .small()
+        .text_color(theme.muted_foreground);
+    let button = match freshness.state {
+        // Not `loading` / `disabled`: either stops the button tracking the
+        // pointer, and it would come back from the update still painted as
+        // hovered by the click that started it. A click meanwhile is a
+        // no-op (`AppState::update_profile` ignores a profile in flight).
+        FreshnessState::Updating => button.icon(Spinner::new()).label(label),
+        FreshnessState::Failed => button
+            .icon(Icon::new(IconName::TriangleAlert).text_color(theme.warning))
+            .label(label),
+        FreshnessState::Fresh { stale: true } => button
+            .icon(refresh)
+            .child(div().text_color(theme.warning).child(label)),
+        FreshnessState::Never | FreshnessState::Fresh { stale: false } => {
+            button.icon(refresh).label(label)
+        }
+    };
+    let tooltip = freshness.tooltip;
+    let button = match (tooltip.is_empty(), shortcut) {
+        (true, _) => button,
+        (false, Some(action)) => button.tooltip_with_action(tooltip, action, Some(KEY_CONTEXT)),
+        (false, None) => button.tooltip(tooltip),
+    };
+    button.on_click(on_click)
+}
+
+/// A profile's source in one quiet line, like [`meta_row`]: where it comes
+/// from (the subscription's host or the file's name; hover for the whole
+/// URL or path) and, set apart by space, "Auto-update off" or "Local file"
+/// when it applies.
+pub fn profile_source_line(theme: &Theme, id: impl Into<ElementId>, info: ProfileRowInfo) -> Div {
+    let item = || {
+        div()
+            .min_w_0()
+            .flex_shrink(1.)
+            .overflow_hidden()
+            .text_ellipsis()
+            .whitespace_nowrap()
+    };
+    let source = item().id(id).child(info.source);
+    let source = match info.source_full.map(SharedString::from) {
+        Some(full) => source
+            .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+            .into_any_element(),
+        None => source.into_any_element(),
+    };
+    div()
+        .h_flex()
+        .items_center()
+        .gap_3()
+        .min_w_0()
+        .text_xs()
+        .text_color(theme.muted_foreground)
+        .child(source)
+        .children(info.note.map(|note| item().flex_shrink_0().child(note)))
 }
 
 #[cfg(test)]

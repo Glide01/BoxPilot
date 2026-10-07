@@ -86,6 +86,10 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.profiles.add_title,
         t.profiles.interval,
         t.profiles.delete_body,
+        t.profiles.updating,
+        t.profiles.update_failed,
+        t.profiles.click_to_update,
+        t.profiles.click_to_reread,
         t.usage.expires_today,
         t.groups.search_placeholder,
         t.groups.test_all,
@@ -200,9 +204,17 @@ fn formatted_messages_fill_in_their_values() {
 
     assert_eq!(
         (EN.profiles.auto_update_every)(30),
-        "Auto-updates every 30 min"
+        "Auto-updates every 30 min."
     );
-    assert_eq!((ZH_CN.profiles.auto_update_every)(30), "每 30 分钟自动更新");
+    assert_eq!(
+        (ZH_CN.profiles.auto_update_every)(30),
+        "每 30 分钟自动更新。"
+    );
+    assert_eq!(
+        (EN.profiles.updated_on)("2026-10-03", "14:32"),
+        "Updated on 2026-10-03 at 14:32."
+    );
+    assert_eq!((ZH_CN.profiles.updated_today)("14:32"), "今天 14:32 更新。");
 
     assert_eq!((EN.logs.count_of)(3, 10), "3 of 10");
     assert_eq!((ZH_CN.logs.count_of)(3, 10), "3 / 10");

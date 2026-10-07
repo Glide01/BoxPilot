@@ -220,6 +220,17 @@ fn main() {
             });
             wait_idle(&app_state, cx).await;
             check(&app_state, cx, 1, "C reuse-import failure keeps the profile");
+            // …and says why on its update button, without counting as
+            // checked.
+            let kept_error = cx.update(|cx| {
+                let s = app_state.read(cx);
+                s.settings.profiles.first().is_some_and(|p| {
+                    s.fetch_error(&p.id).is_some() && p.last_checked_secs.is_none()
+                })
+            });
+            if !kept_error {
+                fail("C failure reason", "no fetch error kept".to_string());
+            }
 
             let app_dir = cx.update(|cx| app_state.read(cx).app_dir.clone());
             let server = held_server();
@@ -254,6 +265,22 @@ fn main() {
             for id in [&held_id, &queued_id] {
                 if !profile_config_path(&app_dir, id).exists() {
                     fail("D queued fetch runs", format!("no config for {}", id));
+                }
+                let (checked, error) = cx.update(|cx| {
+                    let s = app_state.read(cx);
+                    let checked = s
+                        .settings
+                        .profiles
+                        .iter()
+                        .find(|p| &p.id == id)
+                        .and_then(|p| p.last_checked_secs);
+                    (checked, s.fetch_error(id).map(str::to_string))
+                });
+                if checked.is_none() || error.is_some() {
+                    fail(
+                        "D success stamps checked",
+                        format!("{}: checked {:?}, error {:?}", id, checked, error),
+                    );
                 }
             }
             eprintln!("[harness] ok D queued fetch runs after the held one");

@@ -221,8 +221,6 @@ pub struct Home {
     pub mode_tun: &'static str,
     pub mode_proxy: &'static str,
     pub system_proxy: &'static str,
-    pub update: &'static str,
-    pub not_updated_yet: &'static str,
     /// "Running for 1h 23m".
     pub running_for: Fmt1,
     /// Under "Disconnected": what Connect would start with.
@@ -259,16 +257,33 @@ pub struct Profiles {
     pub delete_body: &'static str,
     pub active: &'static str,
     pub use_profile: &'static str,
-    pub never_updated: &'static str,
     pub empty: &'static str,
-    /// "updated 5 min ago".
-    pub updated: Fmt1,
     pub no_subscription_url: &'static str,
-    /// How a subscription stays fresh: "Auto-updates every 30 min".
+    /// How a subscription stays fresh, a sentence in the update button's
+    /// tooltip: "Auto-updates every 30 min.".
     pub auto_update_every: FmtN,
+    /// The same when it doesn't: "Auto-update is off.".
+    pub auto_update_off_hint: &'static str,
+    /// Beside the source of a subscription that doesn't auto-update.
     pub auto_update_off: &'static str,
-    /// What a local-file profile is, beside its path.
+    /// What a local-file profile is, beside its file name.
     pub local_file: &'static str,
+    /// The update button of a profile never updated: "Update".
+    pub update: &'static str,
+    /// The update button while its profile updates: "Updating…".
+    pub updating: &'static str,
+    /// The update button after its profile's latest update failed.
+    pub update_failed: &'static str,
+    /// Update-button tooltip, when the profile last updated (local time):
+    /// "Updated today at 14:32.".
+    pub updated_today: Fmt1,
+    pub updated_yesterday: Fmt1,
+    /// "Updated on 2026-10-03 at 14:32.".
+    pub updated_on: Fmt2,
+    /// Last line of the update button's tooltip: what a click does.
+    pub click_to_update: &'static str,
+    pub click_to_reread: &'static str,
+    pub click_to_retry: &'static str,
     pub invalid_url: &'static str,
     /// Name for a new profile created without one: "Profile 2".
     pub default_name: Fmt1,

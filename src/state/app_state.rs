@@ -228,6 +228,11 @@ pub struct AppState {
     /// as each one finishes (`run_queued_fetches`) — e.g. the Add dialog's
     /// first fetch during an auto-update.
     queued_fetches: VecDeque<String>,
+    /// Why each profile's latest fetch failed, until one succeeds (or its
+    /// source is edited, or it is deleted). Shown on its update button —
+    /// the only trace an auto-update failure leaves, as it raises no toast.
+    /// Not persisted: a restart starts with a clean slate.
+    fetch_errors: HashMap<String, String>,
     /// The subscription-usage level each profile was last warned about this
     /// session (`warn_usage`): one toast per profile and level, again only
     /// after it changes. Seeded by the startup status.
@@ -566,6 +571,10 @@ impl AppState {
                                 state.release_auto_update(fetch, cx);
                                 let usage_changed = landed.is_ok()
                                     && state.record_usage(&profile_id, usage);
+                                state.record_fetch_result(
+                                    &profile_id,
+                                    landed.as_ref().map(|_| ()).map_err(String::as_str),
+                                );
                                 match landed {
                                     Ok(true) => {
                                         state.stamp_profile_updated(&profile_id);
@@ -582,19 +591,19 @@ impl AppState {
                                         }
                                     }
                                     Ok(false) => {
-                                        // Silent: no config was written.
-                                        // The usage reading may still have
-                                        // moved.
-                                        if usage_changed {
-                                            state.save_settings();
-                                            cx.notify();
-                                        }
+                                        // Silent: no config was written. It
+                                        // is checked as of now, though, and
+                                        // the usage reading may have moved.
+                                        state.save_settings();
+                                        cx.notify();
                                     }
                                     Err(err) => {
                                         // No toast — auto-update can fail
                                         // repeatedly when offline; we don't
-                                        // want to spam the user.
+                                        // want to spam the user. The update
+                                        // button shows it instead.
                                         eprintln!("Auto-update failed: {}", err);
+                                        cx.notify();
                                     }
                                 }
                                 if usage_changed {
@@ -704,6 +713,7 @@ impl AppState {
                 fetch_seq: 0,
                 latest_fetch: HashMap::new(),
                 queued_fetches: VecDeque::new(),
+                fetch_errors: HashMap::new(),
                 usage_warned,
                 update_check: UpdateCheck::Idle,
                 last_update_check: None,
@@ -723,6 +733,34 @@ impl AppState {
             UpdateStatus::Updating { profile_id, .. }
             | UpdateStatus::AutoUpdating { profile_id, .. } => Some(profile_id),
             UpdateStatus::Idle => None,
+        }
+    }
+
+    /// Why `profile_id`'s latest fetch failed; `None` once one succeeded.
+    pub fn fetch_error(&self, profile_id: &str) -> Option<&str> {
+        self.fetch_errors.get(profile_id).map(String::as_str)
+    }
+
+    /// Record how a fetch of `profile_id` ended: success clears its error
+    /// and stamps it checked (fresh as of now, changed or not), failure
+    /// keeps the reason. The caller persists via `save_settings`.
+    fn record_fetch_result(&mut self, profile_id: &str, result: Result<(), &str>) {
+        match result {
+            Ok(()) => {
+                self.fetch_errors.remove(profile_id);
+                if let Some(profile) = self
+                    .settings
+                    .profiles
+                    .iter_mut()
+                    .find(|p| p.id == profile_id)
+                {
+                    profile.last_checked_secs = to_unix_secs(SystemTime::now());
+                }
+            }
+            Err(reason) => {
+                self.fetch_errors
+                    .insert(profile_id.to_string(), reason.to_string());
+            }
         }
     }
 
@@ -1515,6 +1553,10 @@ impl AppState {
                 }
                 let (landed, usage) = split_fetched(result);
                 let usage_changed = landed.is_ok() && state.record_usage(&profile_id, usage);
+                state.record_fetch_result(
+                    &profile_id,
+                    landed.as_ref().map(|_| ()).map_err(String::as_str),
+                );
                 let (level, message) = match landed {
                     Ok(true) => {
                         // Content changed → stamp the "last updated" time, then
@@ -1584,6 +1626,10 @@ impl AppState {
         if !name.is_empty() {
             profile.name = name;
         }
+        // A new URL or file: the old one's failure no longer says anything.
+        if profile.source != source {
+            self.fetch_errors.remove(&id);
+        }
         profile.source = source;
         self.save_settings();
         cx.notify();
@@ -1613,6 +1659,7 @@ impl AppState {
             name,
             source,
             last_updated_secs: None,
+            last_checked_secs: None,
             usage: None,
         });
         self.save_settings();
@@ -1664,6 +1711,7 @@ impl AppState {
         }
         self.queued_fetches.retain(|queued| queued != id);
         self.latest_fetch.remove(id);
+        self.fetch_errors.remove(id);
     }
 
     /// Delete a profile and its fetched config file, and drop any fetch of
@@ -1749,6 +1797,7 @@ impl AppState {
         self.settings.normalize_profiles();
         self.latest_fetch.remove(profile_id);
         self.queued_fetches.retain(|queued| queued != profile_id);
+        self.fetch_errors.remove(profile_id);
         let _ = fs::remove_file(profile_config_path(&self.app_dir, profile_id));
         self.save_settings();
     }
@@ -1806,6 +1855,7 @@ impl AppState {
                         auto_update_interval_minutes: default_auto_update_interval(),
                     },
                     last_updated_secs: None,
+                    last_checked_secs: None,
                     usage: None,
                 });
                 self.save_settings();

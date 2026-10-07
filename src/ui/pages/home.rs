@@ -4,20 +4,23 @@
 //! - 运行状态卡(仅运行中):内存 / 连接数 / 累计上传下载 + 近两分钟流量图。
 //! - 快捷设置:代理模式、系统代理、Clash 模式(仅运行中且 ≥2 个模式)同在
 //!   一张分组卡里,行间细线分隔。
-//! - 配置卡:当前 profile 名(点开是切换 profile 的菜单)、更新时间(本地文件
-//!   另注明)、Update 按钮与用量条(订阅服务器报了才有)。
+//! - 配置卡:与 Profiles 页的行同一结构 —— 首行左边当前 profile 名(点开是
+//!   切换 profile 的菜单),右边更新按钮(⟳ + 多久前更新);次行来源(订阅
+//!   域名 / 本地文件);末行用量条(订阅服务器报了才有)。
 
-use crate::actions::{ShowProfiles, ToggleProcess, KEY_CONTEXT};
+use crate::actions::{ShowProfiles, ToggleProcess, UpdateSubscription, KEY_CONTEXT};
 use crate::core::bytefmt::format_bytes;
-use crate::core::presentation::{profile_row_info, runtime_info, updated_label, ConnectionStatus};
-use crate::core::settings::ProfileSource;
+use crate::core::presentation::{
+    profile_freshness, profile_row_info, runtime_info, ConnectionStatus,
+};
 use crate::i18n::s;
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
-    capitalize_first, empty_state, empty_state_button, grouped_card, may_truncate, meta_row,
-    minute_ticker, section_heading, setting_row, shorten, stat, usage_meter,
+    empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
+    minute_ticker, profile_source_line, section_heading, setting_row, shorten, stat, usage_meter,
+    CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -29,7 +32,7 @@ use gpui_component::{
     tab::TabBar,
     theme::Theme,
     tooltip::Tooltip,
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, ThemeStyled,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt, ThemeStyled,
 };
 use std::time::SystemTime;
 
@@ -40,7 +43,7 @@ use std::time::SystemTime;
 const POWER_BUTTON_DIAMETER: f32 = 56.;
 const POWER_ICON_SIZE: f32 = 22.;
 /// Letters of the profile's name the profile card shows whole beside its
-/// Update button in the narrowest window; longer ones get a tooltip.
+/// update button in the narrowest window; longer ones get a tooltip.
 const PROFILE_NAME_ROOM: usize = 40;
 /// Widest the profile switcher's menu grows, and the letters of a name
 /// that fit in it (longer ones are shortened: menu items clip).
@@ -64,8 +67,8 @@ pub struct HomePage {
     /// The live traffic chart in the stats card, its own (cached) view so
     /// its per-mouse-move hover repaints only the chart.
     traffic_chart: Entity<TrafficChart>,
-    /// Re-renders once a minute: the subscription card's "updated N min
-    /// ago" and expiry countdown move with the clock, and while sing-box is
+    /// Re-renders once a minute: the profile card's "25 min ago" and
+    /// expiry countdown move with the clock, and while sing-box is
     /// stopped no status sample ticks the page.
     _ticker: Task<()>,
 }
@@ -156,7 +159,6 @@ impl Render for HomePage {
         let process = state.process.read(cx);
 
         let status = ConnectionStatus::from_flags(state.is_starting(cx), process.is_running());
-        let is_updating = state.is_updating();
         let proxy_mode = state.settings.proxy_mode;
         let system_proxy = state.settings.set_system_proxy;
         let status_title = status.label();
@@ -183,20 +185,16 @@ impl Render for HomePage {
         let active = state.settings.active_profile();
         let profile_name = active.map(|p| p.name.clone()).unwrap_or_default();
         let now = SystemTime::now();
-        let sub_label = capitalize_first(&updated_label(
-            active.and_then(|p| p.last_updated_secs),
-            now,
-            t.home.not_updated_yet,
-        ));
+        let freshness = active.and_then(|p| {
+            profile_freshness(
+                p,
+                state.updating_profile_id() == Some(p.id.as_str()),
+                state.fetch_error(&p.id),
+                now,
+            )
+        });
         let usage = active.and_then(|p| p.usage);
-        // A local file has no usage or auto-update to show: say what it is,
-        // so the card doesn't look like a subscription with data missing.
         let source_info = active.map(|p| profile_row_info(&p.source));
-        let is_local = active.is_some_and(|p| matches!(p.source, ProfileSource::Local { .. }));
-        let source_empty = source_info.as_ref().is_some_and(|info| info.source_empty);
-        let local_note = is_local
-            .then(|| source_info.and_then(|info| info.detail))
-            .flatten();
         let profiles: Vec<(String, String)> = state
             .settings
             .profiles
@@ -493,58 +491,61 @@ impl Render for HomePage {
                 },
             );
 
+        // The same object as a row of the Profiles page: name line with the
+        // update button at its end, the source under it, then usage.
+        let update_button = freshness.map(|freshness| {
+            freshness_button(
+                theme,
+                "home-update",
+                freshness,
+                Some(&UpdateSubscription),
+                move |_, _, cx| {
+                    app_state_update.update(cx, |state, cx| state.update_subscription(cx));
+                },
+            )
+        });
         let profile_card = card_frame(theme)
             .child(
                 div()
-                    .h_flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .w_full()
+                    .v_flex()
+                    .gap_0p5()
                     .child(
-                        // 名字过长时截断,不把 Update 按钮挤出卡片。
                         div()
-                            .v_flex()
-                            .gap_0p5()
-                            .flex_1()
-                            .min_w_0()
+                            .h_flex()
+                            .items_center()
+                            .gap_3()
+                            .w_full()
                             .child(
                                 // Absolutely placed, the switcher is as wide
                                 // as its name (shrink-to-fit) up to the
                                 // column's width, where the name ellipsizes;
                                 // in the flow it would either stretch across
-                                // the card or refuse to shrink.
-                                div().relative().w_full().h(px(24.)).child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .left(px(-8.))
-                                        .max_w_full()
-                                        .child(profile_switcher),
-                                ),
+                                // the card or refuse to shrink. Pulled left
+                                // by its padding, so the name lines up with
+                                // the source under it.
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h(px(CONTROL_LINE_HEIGHT))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .left(px(-8.))
+                                            .max_w_full()
+                                            .child(profile_switcher),
+                                    ),
                             )
-                            .child(meta_row(
-                                theme,
-                                std::iter::once(sub_label).chain(local_note),
-                            )),
+                            // Pulled right by its padding, so its text ends
+                            // where the usage line under it does.
+                            .children(
+                                update_button
+                                    .map(|button| div().flex_none().mr(px(-8.)).child(button)),
+                            ),
                     )
-                    .child(
-                        Button::new("home-update")
-                            .outline()
-                            .small()
-                            .label(t.home.update)
-                            .map(|this| {
-                                if is_updating {
-                                    this.icon(Spinner::new())
-                                } else {
-                                    this.icon(Icon::default().path("icons/refresh-cw.svg"))
-                                }
-                            })
-                            .disabled(is_updating || source_empty)
-                            .on_click(move |_, _, cx| {
-                                app_state_update
-                                    .update(cx, |state, cx| state.update_subscription(cx));
-                            }),
+                    .children(
+                        source_info.map(|info| profile_source_line(theme, "home-source", info)),
                     ),
             )
             .children(usage.map(|usage| usage_meter(theme, "home-usage", &usage, now)));

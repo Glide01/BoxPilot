@@ -1,12 +1,16 @@
 //! Pure presentation derivations shared by the views: status → label mapping,
-//! "updated N ago" labels, port-field sanitizing, profile-row subtitles,
+//! a profile's freshness (its update button), port-field sanitizing,
+//! profile-row subtitles,
 //! redacted subscription URLs, log counts. Everything here is a plain
 //! function of state — the render fns just place the results in layout. No
 //! gpui dependency.
 
-use crate::core::settings::ProfileSource;
+use crate::core::settings::{Profile, ProfileSource};
+use crate::core::timefmt::{
+    format_relative_time, format_uptime, from_unix_secs, local_day_and_time, to_unix_secs,
+    uptime_since, LocalDay,
+};
 use crate::i18n::{s, Strings};
-use crate::core::timefmt::{format_relative_time, format_uptime, from_unix_secs, uptime_since};
 use std::fmt::Write;
 use std::time::SystemTime;
 
@@ -69,12 +73,127 @@ impl ConnectionStatus {
     }
 }
 
-/// "updated N ago" label from a profile's last-content-change stamp.
-/// `fallback` is page wording for `None` ("not updated yet" / "never updated").
-pub fn updated_label(last_updated_secs: Option<u64>, now: SystemTime, fallback: &str) -> String {
-    last_updated_secs
-        .map(|secs| (s().profiles.updated)(&format_relative_time(from_unix_secs(secs), now)))
-        .unwrap_or_else(|| fallback.to_string())
+/// A profile older than this reads as stale (if also older than
+/// `STALE_INTERVALS` of its auto-updates): a day, so a subscription with
+/// auto-update off, or an app closed overnight, isn't flagged too soon.
+pub const STALE_AFTER_SECS: u64 = 86_400;
+/// Auto-update intervals a profile may miss before it reads as stale.
+pub const STALE_INTERVALS: u64 = 3;
+/// Characters of a fetch error the update button's tooltip shows.
+const ERROR_ROOM: usize = 160;
+
+/// Where a profile's update button stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreshnessState {
+    /// Its fetch / re-read is in flight.
+    Updating,
+    /// Its latest fetch failed (the reason is in the tooltip).
+    Failed,
+    /// Never fetched: the button just says "Update".
+    Never,
+    /// Fetched; the label says how long ago. `stale` = a subscription
+    /// noticeably older than it should be (see [`STALE_AFTER_SECS`]).
+    Fresh { stale: bool },
+}
+
+/// A profile's update button: freshness and the update action in one
+/// control, the same on Home and the Profiles page. The label is the state
+/// ("25 min ago", "Updating…"), the tooltip the details and what a click
+/// does, one sentence per line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Freshness {
+    pub state: FreshnessState,
+    pub label: String,
+    pub tooltip: String,
+}
+
+/// The update button of `profile`; `None` without a source (nothing to
+/// update — its source line says so). `updating` = its fetch is in flight,
+/// `error` = why its latest one failed.
+pub fn profile_freshness(
+    profile: &Profile,
+    updating: bool,
+    error: Option<&str>,
+    now: SystemTime,
+) -> Option<Freshness> {
+    if profile.source.is_empty_source() {
+        return None;
+    }
+    let t = &s().profiles;
+    // Installs from before `last_checked_secs` have only the content stamp.
+    let synced = profile.last_checked_secs.max(profile.last_updated_secs);
+    let synced_line = synced.map(|secs| {
+        let (day, time) = local_day_and_time(secs, now);
+        match day {
+            LocalDay::Today => (t.updated_today)(&time),
+            LocalDay::Yesterday => (t.updated_yesterday)(&time),
+            LocalDay::Date(date) => (t.updated_on)(&date, &time),
+        }
+    });
+    let (interval_line, click) = match &profile.source {
+        ProfileSource::Remote {
+            auto_update_interval_minutes: 0,
+            ..
+        } => (Some(t.auto_update_off_hint.to_string()), t.click_to_update),
+        ProfileSource::Remote {
+            auto_update_interval_minutes: minutes,
+            ..
+        } => (Some((t.auto_update_every)(*minutes)), t.click_to_update),
+        ProfileSource::Local { .. } => (None, t.click_to_reread),
+    };
+    let join =
+        |lines: Vec<Option<String>>| lines.into_iter().flatten().collect::<Vec<_>>().join("\n");
+
+    let (state, label, tooltip) = if updating {
+        (
+            FreshnessState::Updating,
+            t.updating.to_string(),
+            join(vec![synced_line]),
+        )
+    } else if let Some(error) = error {
+        (
+            FreshnessState::Failed,
+            t.update_failed.to_string(),
+            join(vec![
+                Some(short_error(error)),
+                synced_line,
+                Some(t.click_to_retry.to_string()),
+            ]),
+        )
+    } else if let Some(secs) = synced {
+        let age = to_unix_secs(now).unwrap_or(0).saturating_sub(secs);
+        let interval_secs = profile.auto_update_interval() * 60;
+        let stale = !profile.is_local()
+            && age > STALE_AFTER_SECS.max(interval_secs.saturating_mul(STALE_INTERVALS));
+        (
+            FreshnessState::Fresh { stale },
+            format_relative_time(from_unix_secs(secs), now),
+            join(vec![synced_line, interval_line, Some(click.to_string())]),
+        )
+    } else {
+        (
+            FreshnessState::Never,
+            t.update.to_string(),
+            join(vec![interval_line, Some(click.to_string())]),
+        )
+    };
+    Some(Freshness {
+        state,
+        label,
+        tooltip,
+    })
+}
+
+/// A fetch error's first line, cut to `ERROR_ROOM` characters.
+fn short_error(error: &str) -> String {
+    let line = error.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= ERROR_ROOM {
+        return line.to_string();
+    }
+    let mut out: String = line.chars().take(ERROR_ROOM - 1).collect();
+    out.truncate(out.trim_end().len());
+    out.push('…');
+    out
 }
 
 /// The Settings-page port rule: a port field parses to a non-zero u16 or
@@ -87,58 +206,78 @@ pub fn sanitize_port(raw: &str, default: u16) -> u16 {
     }
 }
 
-/// What a profile row shows about its source: where it comes from (the
-/// redacted URL or the file path), how it stays fresh, and the empty-source
-/// flag that disables its ⟳ button. Source and detail are separate lines of
-/// the row, never joined into one string.
+/// What a profile's meta line says about its source: where it comes from,
+/// short, with the whole of it for a tooltip, and a note when it is not a
+/// subscription kept up to date on its own. Separate items of the line,
+/// never joined into one string. (The auto-update interval itself lives in
+/// the update button's tooltip.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileRowInfo {
-    /// The redacted subscription URL or the file path; the "no URL / no
-    /// file" wording when there is none.
+    /// The subscription's host (`sub.example.com`) or the file's name; the
+    /// "no URL / no file" wording when there is none.
     pub source: String,
-    /// "Auto-updates every 30 min", "Auto-update off" or "Local file";
-    /// `None` without a source.
-    pub detail: Option<String>,
+    /// The redacted URL or the full path, when it says more than `source`.
+    pub source_full: Option<String>,
+    /// "Auto-update off" or "Local file"; `None` for an auto-updating
+    /// subscription and without a source.
+    pub note: Option<String>,
     pub source_empty: bool,
 }
 
 pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
     let t = s();
     let source_empty = source.is_empty_source();
-    let (source, detail) = match source {
+    let (short, full, note) = match source {
+        ProfileSource::Remote { .. } if source_empty => {
+            (t.profiles.no_subscription_url.to_string(), None, None)
+        }
         ProfileSource::Remote {
             url,
             auto_update_interval_minutes,
         } => {
-            if source_empty {
-                (t.profiles.no_subscription_url.to_string(), None)
-            } else if *auto_update_interval_minutes > 0 {
-                (
-                    redact_url(url),
-                    Some((t.profiles.auto_update_every)(
-                        *auto_update_interval_minutes,
-                    )),
-                )
-            } else {
-                (
-                    redact_url(url),
-                    Some(t.profiles.auto_update_off.to_string()),
-                )
+            let note = (*auto_update_interval_minutes == 0)
+                .then(|| t.profiles.auto_update_off.to_string());
+            match url_host(url) {
+                Some(host) => (host, Some(redact_url(url)), note),
+                None => (t.profiles.invalid_url.to_string(), None, note),
             }
         }
+        ProfileSource::Local { .. } if source_empty => {
+            (t.profiles.no_file_selected.to_string(), None, None)
+        }
         ProfileSource::Local { path } => {
-            if source_empty {
-                (t.profiles.no_file_selected.to_string(), None)
-            } else {
-                (path.clone(), Some(t.profiles.local_file.to_string()))
-            }
+            let path = path.trim();
+            // Either separator: a profile synced from Windows reads the
+            // same on Linux.
+            let name = path
+                .rsplit(['/', '\\'])
+                .find(|part| !part.is_empty())
+                .unwrap_or(path);
+            (
+                name.to_string(),
+                Some(path.to_string()),
+                Some(t.profiles.local_file.to_string()),
+            )
         }
     };
     ProfileRowInfo {
-        source,
-        detail,
+        source_full: full.filter(|full| *full != short),
+        source: short,
+        note,
         source_empty,
     }
+}
+
+/// A subscription URL's host, with its port when it names one:
+/// `sub.example.com`, `127.0.0.1:8080`. `None` for anything that isn't a
+/// URL with a host. Never carries a credential (see [`redact_url`]).
+pub fn url_host(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    let host = url.host_str().filter(|h| !h.is_empty())?;
+    Some(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    })
 }
 
 /// What `redact_url` shows for something that isn't a URL with a host (in
@@ -296,18 +435,131 @@ mod tests {
         assert_eq!(ConnectionStatus::Starting.power_action_label(), "Starting…");
     }
 
+    fn profile(source: ProfileSource, checked_ago: Option<u64>) -> Profile {
+        Profile {
+            id: "p1".into(),
+            name: "Work".into(),
+            source,
+            last_updated_secs: None,
+            last_checked_secs: checked_ago.map(|ago| NOW - ago),
+            usage: None,
+        }
+    }
+
+    const NOW: u64 = 1_000_000_000;
+
+    fn remote(minutes: u64) -> ProfileSource {
+        ProfileSource::Remote {
+            url: "https://sub.example.com/s".into(),
+            auto_update_interval_minutes: minutes,
+        }
+    }
+
+    fn freshness(profile: &Profile, updating: bool, error: Option<&str>) -> Freshness {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(NOW);
+        profile_freshness(profile, updating, error, now).unwrap()
+    }
+
     #[test]
-    fn updated_label_formats_or_falls_back() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-        let five_min_ago = 1_000_000_000 - 300;
-        assert_eq!(
-            updated_label(Some(five_min_ago), now, "never updated"),
-            "updated 5 min ago"
+    fn freshness_says_how_long_ago_and_what_a_click_does() {
+        let fresh = freshness(&profile(remote(60), Some(300)), false, None);
+        assert_eq!(fresh.state, FreshnessState::Fresh { stale: false });
+        assert_eq!(fresh.label, "5 min ago");
+        let lines: Vec<&str> = fresh.tooltip.lines().collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("Updated "), "{lines:?}");
+        assert_eq!(lines[1], "Auto-updates every 60 min.");
+        assert_eq!(lines[2], "Click to update now.");
+        assert!(!fresh.tooltip.contains('·'));
+
+        let off = freshness(&profile(remote(0), Some(300)), false, None);
+        assert!(off.tooltip.contains("Auto-update is off."));
+
+        let local = freshness(
+            &profile(
+                ProfileSource::Local {
+                    path: "/a/b.json".into(),
+                },
+                Some(300),
+            ),
+            false,
+            None,
+        );
+        assert_eq!(local.tooltip.lines().count(), 2);
+        assert!(local.tooltip.ends_with("Click to read the file again."));
+    }
+
+    #[test]
+    fn freshness_falls_back_to_the_content_stamp() {
+        let mut old = profile(remote(60), None);
+        old.last_updated_secs = Some(NOW - 7200);
+        assert_eq!(freshness(&old, false, None).label, "2 hr ago");
+        // The newer of the two wins.
+        old.last_checked_secs = Some(NOW - 60);
+        assert_eq!(freshness(&old, false, None).label, "1 min ago");
+    }
+
+    #[test]
+    fn freshness_goes_stale_after_a_day_and_three_intervals() {
+        let state =
+            |minutes, ago| freshness(&profile(remote(minutes), Some(ago)), false, None).state;
+        let stale = FreshnessState::Fresh { stale: true };
+        let fine = FreshnessState::Fresh { stale: false };
+        assert_eq!(state(60, 20 * 3600), fine, "within a day");
+        assert_eq!(state(60, 25 * 3600), stale);
+        assert_eq!(state(0, 25 * 3600), stale, "auto-update off");
+        assert_eq!(state(720, 30 * 3600), fine, "within three intervals");
+        assert_eq!(state(720, 37 * 3600), stale);
+        let local = profile(
+            ProfileSource::Local {
+                path: "/a.json".into(),
+            },
+            Some(9 * 86_400),
         );
         assert_eq!(
-            updated_label(None, now, "not updated yet"),
-            "not updated yet"
+            freshness(&local, false, None).state,
+            fine,
+            "a file has no schedule"
         );
+    }
+
+    #[test]
+    fn freshness_shows_updating_failed_and_never() {
+        let p = profile(remote(60), Some(300));
+        let updating = freshness(&p, true, Some("old error"));
+        assert_eq!(updating.state, FreshnessState::Updating);
+        assert_eq!(updating.label, "Updating…");
+
+        let failed = freshness(&p, false, Some("HTTP 503\nbody"));
+        assert_eq!(failed.state, FreshnessState::Failed);
+        assert_eq!(failed.label, "Update failed");
+        let lines: Vec<&str> = failed.tooltip.lines().collect();
+        assert_eq!(lines[0], "HTTP 503");
+        assert!(lines[1].starts_with("Updated "));
+        assert_eq!(lines[2], "Click to try again.");
+
+        let long = freshness(&p, false, Some("x".repeat(500).as_str()));
+        assert!(long.tooltip.lines().next().unwrap().ends_with('…'));
+        assert!(long.tooltip.len() < 300);
+
+        let never = freshness(&profile(remote(60), None), false, None);
+        assert_eq!(never.state, FreshnessState::Never);
+        assert_eq!(never.label, "Update");
+        assert_eq!(
+            never.tooltip,
+            "Auto-updates every 60 min.\nClick to update now."
+        );
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(NOW);
+        let empty = profile(remote(60), None);
+        let empty = Profile {
+            source: ProfileSource::Remote {
+                url: " ".into(),
+                auto_update_interval_minutes: 60,
+            },
+            ..empty
+        };
+        assert_eq!(profile_freshness(&empty, false, None, now), None);
     }
 
     #[test]
@@ -325,35 +577,48 @@ mod tests {
             url: "https://a/s".into(),
             auto_update_interval_minutes: 30,
         });
-        assert_eq!(on.source, "https://a/s");
-        assert_eq!(on.detail.as_deref(), Some("Auto-updates every 30 min"));
+        assert_eq!(on.source, "a");
+        assert_eq!(on.source_full.as_deref(), Some("https://a/s"));
+        assert_eq!(on.note, None);
         assert!(!on.source_empty);
 
         let off = profile_row_info(&ProfileSource::Remote {
             url: "https://a/s".into(),
             auto_update_interval_minutes: 0,
         });
-        assert_eq!(off.source, "https://a/s");
-        assert_eq!(off.detail.as_deref(), Some("Auto-update off"));
+        assert_eq!(off.source, "a");
+        assert_eq!(off.note.as_deref(), Some("Auto-update off"));
+
+        let invalid = profile_row_info(&ProfileSource::Remote {
+            url: "not a url".into(),
+            auto_update_interval_minutes: 30,
+        });
+        assert_eq!(invalid.source, "Invalid URL");
+        assert_eq!(invalid.source_full, None);
 
         let empty_remote = profile_row_info(&ProfileSource::Remote {
             url: "  ".into(),
             auto_update_interval_minutes: 60,
         });
         assert_eq!(empty_remote.source, "No subscription URL");
-        assert_eq!(empty_remote.detail, None);
+        assert_eq!(empty_remote.note, None);
         assert!(empty_remote.source_empty);
 
         let local = profile_row_info(&ProfileSource::Local {
             path: "C:\\box.json".into(),
         });
-        assert_eq!(local.source, "C:\\box.json");
-        assert_eq!(local.detail.as_deref(), Some("Local file"));
+        assert_eq!(local.source, "box.json");
+        assert_eq!(local.source_full.as_deref(), Some("C:\\box.json"));
+        assert_eq!(local.note.as_deref(), Some("Local file"));
         assert!(!local.source_empty);
+        let unix = profile_row_info(&ProfileSource::Local {
+            path: "/home/me/configs/box.json".into(),
+        });
+        assert_eq!(unix.source, "box.json");
 
         let empty_local = profile_row_info(&ProfileSource::Local { path: "".into() });
         assert_eq!(empty_local.source, "No file selected");
-        assert_eq!(empty_local.detail, None);
+        assert_eq!(empty_local.note, None);
         assert!(empty_local.source_empty);
     }
 
@@ -363,10 +628,28 @@ mod tests {
             url: "https://sub.example.com/api/v1/client/subscribe?token=secret".into(),
             auto_update_interval_minutes: 30,
         });
+        assert_eq!(row.source, "sub.example.com");
         assert_eq!(
-            row.source,
-            "https://sub.example.com/api/v1/client/subscribe?…"
+            row.source_full.as_deref(),
+            Some("https://sub.example.com/api/v1/client/subscribe?…")
         );
+    }
+
+    #[test]
+    fn url_host_keeps_an_explicit_port_and_drops_credentials() {
+        assert_eq!(
+            url_host(" https://user:pw@sub.example.com/s?token=x ").as_deref(),
+            Some("sub.example.com")
+        );
+        assert_eq!(
+            url_host("http://127.0.0.1:8001/sub.json").as_deref(),
+            Some("127.0.0.1:8001")
+        );
+        assert_eq!(
+            url_host("https://sub.example.com:443/s").as_deref(),
+            Some("sub.example.com")
+        );
+        assert_eq!(url_host("nonsense"), None);
     }
 
     #[test]

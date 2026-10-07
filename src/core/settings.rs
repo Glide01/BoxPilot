@@ -74,10 +74,17 @@ pub struct Profile {
     pub source: ProfileSource,
     /// Unix-epoch seconds of the last time this profile's config content
     /// actually changed (a fetch/import that wrote new bytes). `None` = never
-    /// updated. Drives the "updated N ago" label — read from here rather than
+    /// updated. Tells the config viewer to reload, and stands in for
+    /// `last_checked_secs` on older installs — read from here rather than
     /// the config file's mtime, which a sing-box start would otherwise bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_updated_secs: Option<u64>,
+    /// Unix-epoch seconds of the last fetch/import that succeeded, whether
+    /// or not it changed anything: how fresh the profile is known to be.
+    /// Drives the "25 min ago" on its update button. `None` = never
+    /// (or an install that predates it; `last_updated_secs` stands in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checked_secs: Option<u64>,
     /// Traffic / expiry from the subscription's `subscription-userinfo`
     /// header at the last fetch. `None` = never reported (or a Local profile).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +103,8 @@ struct ProfileDe {
     source: Option<ProfileSource>,
     #[serde(default)]
     last_updated_secs: Option<u64>,
+    #[serde(default)]
+    last_checked_secs: Option<u64>,
     #[serde(default)]
     usage: Option<SubscriptionUsage>,
     // Legacy flat fields (releases before ProfileSource existed).
@@ -118,6 +127,7 @@ impl From<ProfileDe> for Profile {
             name: de.name,
             source,
             last_updated_secs: de.last_updated_secs,
+            last_checked_secs: de.last_checked_secs,
             usage: de.usage,
         }
     }
@@ -608,6 +618,7 @@ mod tests {
                     auto_update_interval_minutes: 60,
                 },
                 last_updated_secs: None,
+                last_checked_secs: None,
                 usage: None,
             },
             Profile {
@@ -618,6 +629,7 @@ mod tests {
                     auto_update_interval_minutes: 60,
                 },
                 last_updated_secs: None,
+                last_checked_secs: None,
                 usage: None,
             },
         ];
@@ -635,6 +647,7 @@ mod tests {
                 auto_update_interval_minutes: 60,
             },
             last_updated_secs: None,
+            last_checked_secs: None,
             usage: None,
         }
     }
@@ -828,6 +841,7 @@ mod tests {
                         auto_update_interval_minutes: 30,
                     },
                     last_updated_secs: Some(1_700_000_000),
+                    last_checked_secs: None,
                     usage: Some(SubscriptionUsage {
                         upload: 1_024,
                         download: 2_048,
@@ -843,6 +857,7 @@ mod tests {
                         path: "/home/u/box.json".into(),
                     },
                     last_updated_secs: None,
+                    last_checked_secs: None,
                     usage: None,
                 },
             ],
@@ -896,6 +911,7 @@ mod tests {
                 path: "/home/u/box.json".into(),
             },
             last_updated_secs: None,
+            last_checked_secs: None,
             usage: None,
         };
         let back: Profile =
@@ -917,6 +933,7 @@ mod tests {
                 auto_update_interval_minutes: 15,
             },
             last_updated_secs: None,
+            last_checked_secs: None,
             usage: None,
         };
         let json = serde_json::to_string(&profile).unwrap();
@@ -927,28 +944,31 @@ mod tests {
         assert!(!back.is_local());
     }
 
-    /// `last_updated_secs` is absent in every pre-existing settings file and
-    /// must default to `None`; when `None` it is omitted from the serialized
-    /// form (skip_serializing_if), and a present value round-trips.
+    /// `last_updated_secs` / `last_checked_secs` are absent in every
+    /// pre-existing settings file and must default to `None`; when `None`
+    /// they are omitted from the serialized form (skip_serializing_if), and
+    /// present values round-trip.
     #[test]
     fn last_updated_secs_defaults_and_round_trips() {
         let without = r#"{"id":"p1","name":"S","source":{"kind":"remote","url":"https://a/s","auto_update_interval_minutes":60}}"#;
         let profile: Profile = serde_json::from_str(without).unwrap();
         assert_eq!(profile.last_updated_secs, None);
+        assert_eq!(profile.last_checked_secs, None);
+        let json = serde_json::to_string(&profile).unwrap();
         assert!(
-            !serde_json::to_string(&profile)
-                .unwrap()
-                .contains("last_updated_secs"),
+            !json.contains("last_updated_secs") && !json.contains("last_checked_secs"),
             "None must be skipped in the serialized form"
         );
 
         let stamped = Profile {
             last_updated_secs: Some(1_700_000_000),
+            last_checked_secs: Some(1_700_000_600),
             ..profile
         };
         let back: Profile =
             serde_json::from_str(&serde_json::to_string(&stamped).unwrap()).unwrap();
         assert_eq!(back.last_updated_secs, Some(1_700_000_000));
+        assert_eq!(back.last_checked_secs, Some(1_700_000_600));
     }
 
     #[test]

@@ -95,9 +95,76 @@ where
     }
 }
 
+/// Which day a moment fell on, seen from now in the local time zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalDay {
+    Today,
+    Yesterday,
+    /// Earlier (or, after a clock change, later): `2026-10-03`.
+    Date(String),
+}
+
+/// The local day `then_secs` (unix seconds) fell on relative to `now`, and
+/// its time of day (`14:32`): "updated today at 14:32".
+pub fn local_day_and_time(then_secs: u64, now: SystemTime) -> (LocalDay, String) {
+    let now_secs = to_unix_secs(now).unwrap_or(0);
+    day_and_time_in(then_secs, now_secs, &chrono::Local)
+}
+
+/// `local_day_and_time` in an explicit zone (tests pin one).
+fn day_and_time_in<Tz: chrono::TimeZone>(
+    then_secs: u64,
+    now_secs: u64,
+    zone: &Tz,
+) -> (LocalDay, String) {
+    let at = |secs: u64| {
+        chrono::DateTime::from_timestamp(secs.min(i64::MAX as u64) as i64, 0)
+            .unwrap_or_default()
+            .with_timezone(zone)
+    };
+    let (then, now) = (at(then_secs), at(now_secs));
+    let (then_day, today) = (then.date_naive(), now.date_naive());
+    let day = if then_day == today {
+        LocalDay::Today
+    } else if today.pred_opt() == Some(then_day) {
+        LocalDay::Yesterday
+    } else {
+        LocalDay::Date(then_day.format("%Y-%m-%d").to_string())
+    };
+    (day, then.naive_local().format("%H:%M").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_and_time_name_today_and_yesterday_in_the_zone() {
+        // 2026-10-03 06:05:09 UTC.
+        let now = 1_791_007_509;
+        let utc8 = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        assert_eq!(
+            day_and_time_in(now - 60, now, &utc8),
+            (LocalDay::Today, "14:04".to_string())
+        );
+        // 22:00 UTC the day before: already today in UTC+8.
+        let late = now - 8 * 3600 - 5 * 60;
+        assert_eq!(
+            day_and_time_in(late, now, &chrono::Utc).0,
+            LocalDay::Yesterday
+        );
+        assert_eq!(
+            day_and_time_in(late, now, &utc8),
+            (LocalDay::Today, "06:00".to_string())
+        );
+        assert_eq!(
+            day_and_time_in(now - 3 * 86_400, now, &utc8),
+            (
+                LocalDay::Date("2026-09-30".to_string()),
+                "14:05".to_string()
+            )
+        );
+    }
 
     #[test]
     fn datetime_is_shown_in_the_given_zone() {
