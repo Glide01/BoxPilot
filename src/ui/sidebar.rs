@@ -1,10 +1,12 @@
-//! Left navigation column: app title header, the page items, and a footer
-//! holding a live up/down network-speed row (only while connected) above the
-//! connection-status row (dot + label). Pure function — `RootView` supplies the
-//! active page, status, speeds, badges, and the navigation callback.
+//! Left navigation column: the app's icon and name, the page items, and a
+//! status tile at the bottom (dot + status, then the live up/down speeds
+//! while connected or the active profile's name otherwise). Pure function —
+//! `RootView` supplies the active page, status, detail line, badges, and the
+//! navigation callback.
 
 use crate::i18n::s;
 use crate::ui::pages::ActivePage;
+use crate::ui::theme::CARD_RADIUS;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -16,10 +18,34 @@ use gpui_component::{
 fn footer_speed(icon: &'static str, value: String, color: Hsla) -> impl IntoElement {
     div()
         .h_flex()
+        .flex_1()
+        .min_w_0()
         .items_center()
         .gap_1()
-        .child(Icon::default().path(icon).with_size(px(12.)).text_color(color))
-        .child(div().text_xs().text_color(color).child(value))
+        .child(
+            Icon::default()
+                .path(icon)
+                .with_size(px(12.))
+                .flex_none()
+                .text_color(color),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(color)
+                .child(value),
+        )
+}
+
+/// What the footer's status tile shows under the status: the live speeds
+/// while connected, else the profile sing-box would start with.
+pub enum StatusDetail {
+    /// (download, upload), formatted.
+    Speed(String, String),
+    Profile(String),
+    None,
 }
 
 /// Sidebar entries offered only while the running config needs them.
@@ -40,16 +66,15 @@ pub struct Badges {
     pub settings: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn sidebar(
     active: ActivePage,
     dot_color: Hsla,
     status_label: &'static str,
-    // (download, upload) 已格式化速率;仅在已连接时为 `Some`,否则隐藏网速行。
-    speed: Option<(String, String)>,
-    speed_color: Hsla,
+    detail: StatusDetail,
+    colors: SidebarColors,
     optional: OptionalPages,
     badges: Badges,
-    badge_color: Hsla,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let nav = &s().nav;
@@ -78,15 +103,25 @@ pub fn sidebar(
     // hover style, and gpui-component drops that style on the active item:
     // the item clicked while hovered would otherwise keep a stale hover flag
     // and show hover text colours after it stops being active.
+    let badge_color = colors.badge;
     Sidebar::new(("nav", active as usize))
         .collapsible(false)
-        .w(px(190.))
+        .w(px(208.))
         .header(
             SidebarHeader::new().child(
                 div()
-                    .text_base()
-                    .font_weight(FontWeight::BOLD)
-                    .child("BoxPilot"),
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .py_1()
+                    .child(img("brand/icon.png").size(px(24.)).flex_none())
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("BoxPilot"),
+                    ),
             ),
         )
         .child(SidebarMenu::new().children(items.map(|(page, label, icon)| {
@@ -95,14 +130,19 @@ pub fn sidebar(
                 ActivePage::Settings => badges.settings,
                 _ => false,
             };
+            let selected = active == page;
             SidebarMenuItem::new(label)
-                .icon(icon)
-                .active(active == page)
+                .icon(if selected {
+                    icon.text_color(colors.accent)
+                } else {
+                    icon
+                })
+                .active(selected)
                 .when(badge, |item| {
                     item.suffix(move |_, _| {
                         div()
                             .flex_shrink_0()
-                            .size_2()
+                            .size(px(6.))
                             .rounded_full()
                             .bg(badge_color)
                     })
@@ -111,24 +151,60 @@ pub fn sidebar(
         })))
         .footer(
             SidebarFooter::new().child(
+                // 状态卡:状态点 + 标签,下一行是实时网速(已连接)或当前 profile。
                 div()
                     .v_flex()
                     .w_full()
                     .gap_1()
-                    // 网速行(仅已连接显示),↓/↑ 上下堆叠,在连接状态行上方。
-                    .when_some(speed, |this, (down, up)| {
-                        this.child(footer_speed("icons/arrow-down.svg", down, speed_color))
-                            .child(footer_speed("icons/arrow-up.svg", up, speed_color))
-                    })
-                    // 连接状态行:状态点 + 标签。
+                    .p_3()
+                    .rounded(px(CARD_RADIUS))
+                    .bg(colors.tile)
+                    .border_1()
+                    .border_color(colors.tile_border)
                     .child(
                         div()
                             .h_flex()
                             .items_center()
                             .gap_2()
-                            .child(div().w_2().h_2().rounded_full().bg(dot_color))
-                            .child(div().text_sm().child(status_label)),
-                    ),
+                            .child(div().size(px(8.)).rounded_full().bg(dot_color))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(status_label),
+                            ),
+                    )
+                    .map(|tile| match detail {
+                        StatusDetail::Speed(down, up) => tile.child(
+                            div()
+                                .h_flex()
+                                .items_center()
+                                .gap_3()
+                                .child(footer_speed("icons/arrow-down.svg", down, colors.muted))
+                                .child(footer_speed("icons/arrow-up.svg", up, colors.muted)),
+                        ),
+                        StatusDetail::Profile(name) => tile.child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.muted)
+                                .truncate()
+                                .child(name),
+                        ),
+                        StatusDetail::None => tile,
+                    }),
             ),
         )
+}
+
+/// The colours the sidebar takes from the theme.
+#[derive(Clone, Copy)]
+pub struct SidebarColors {
+    /// The selected entry's icon, and the update dot.
+    pub accent: Hsla,
+    pub badge: Hsla,
+    /// Secondary text in the status tile.
+    pub muted: Hsla,
+    /// The status tile.
+    pub tile: Hsla,
+    pub tile_border: Hsla,
 }

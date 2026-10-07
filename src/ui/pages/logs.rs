@@ -4,7 +4,7 @@ use crate::core::singbox_api::LogLevel;
 use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::card_frame;
-use crate::ui::widgets::{empty_card, page_header};
+use crate::ui::widgets::{empty_state, page_header, segmented, Segment};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -229,25 +229,6 @@ impl BadgeColors {
     }
 }
 
-fn level_pill(
-    id: &'static str,
-    label: &'static str,
-    active: bool,
-    is_default: bool,
-    on_click: impl Fn(&mut App) + 'static,
-) -> Button {
-    let mut b = Button::new(id).label(label).small();
-    if active {
-        b = b.primary();
-    } else {
-        b = b.ghost();
-    }
-    if is_default {
-        b = b.tooltip(s().logs.configured_level);
-    }
-    b.on_click(move |_, _, cx| on_click(cx))
-}
-
 impl Render for LogsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Catch up on what arrived while hidden — before `painted` flips,
@@ -286,21 +267,35 @@ impl Render for LogsPage {
                     .child(count_label),
             );
 
-        let mut controls = div().h_flex().items_center().gap_2();
-        for (id, label, level) in LEVEL_CHOICES {
-            let logs_for_pill = logs_entity.clone();
-            controls = controls.child(level_pill(
-                id,
-                label,
-                threshold == level,
-                default_threshold == level,
-                move |cx| {
-                    logs_for_pill.update(cx, |b, cx| b.set_threshold(level, cx));
+        // The level sing-box's config asks for says so in its tooltip.
+        let levels = LEVEL_CHOICES
+            .iter()
+            .map(|(_, label, level)| {
+                let segment = Segment::new(*label);
+                if *level == default_threshold {
+                    segment.tooltip(s().logs.configured_level)
+                } else {
+                    segment
+                }
+            })
+            .collect();
+        let logs_for_levels = logs_entity.clone();
+        let controls = div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .child(segmented(
+                theme,
+                "log-levels",
+                levels,
+                LEVEL_CHOICES
+                    .iter()
+                    .position(|(_, _, level)| *level == threshold),
+                move |ix, _, cx| {
+                    let level = LEVEL_CHOICES[ix].2;
+                    logs_for_levels.update(cx, |b, cx| b.set_threshold(level, cx));
                 },
-            ));
-        }
-        let controls = controls
-            .child(div().w_px().h_4().bg(theme.border).mx_1())
+            ))
             .child(
                 Button::new("logs-clear")
                     .ghost()
@@ -322,7 +317,7 @@ impl Render for LogsPage {
             .child(controls);
 
         let body = if total == 0 {
-            empty_card(
+            empty_state(
                 theme,
                 IconName::SquareTerminal,
                 s().logs.empty_title,

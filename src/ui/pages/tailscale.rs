@@ -21,7 +21,7 @@ use crate::state::tailscale::{CertificateFetched, PingSession, TailscaleAction};
 use crate::state::{AppState, TailscaleState};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{empty_card, page_header, pill, PillTone};
+use crate::ui::widgets::{empty_state, meta_row, page_header, status_label};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -92,7 +92,7 @@ impl Render for TailscalePage {
         let now = SystemTime::now();
 
         let body = if state.endpoints.is_empty() {
-            empty_card(
+            empty_state(
                 theme,
                 IconName::Frame,
                 s().tailscale.empty_title,
@@ -438,7 +438,7 @@ fn ping_card(ei: usize, ping: &PingSession, entity: &Entity<TailscaleState>, the
             (s().tailscale.ping_title)(&ping.peer_name, &ping.peer_ip),
         ))
         .when(ping.active, |this| {
-            this.child(pill(theme, PillTone::Muted, s().tailscale.running))
+            this.child(status_label(theme.success, s().tailscale.running))
         })
         .child(div().flex_1())
         .child(action);
@@ -455,10 +455,28 @@ fn ping_card(ei: usize, ping: &PingSession, entity: &Entity<TailscaleState>, the
         } else {
             theme.muted_foreground
         };
+        let summary = ping_summary(result);
         div()
+            .h_flex()
+            .items_baseline()
+            .gap_3()
             .text_sm()
             .text_color(color)
-            .child(ping_summary(result))
+            .children(summary.latency.map(|latency| {
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(latency)
+            }))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .when(result.error.is_none(), |this| {
+                        this.text_color(theme.muted_foreground)
+                    })
+                    .child(summary.path),
+            )
     }));
     if let Some(error) = &ping.error {
         card = card.child(
@@ -545,12 +563,9 @@ fn taildrop_card(
     )
 }
 
-fn sender_suffix(sender: &str) -> String {
-    if sender.is_empty() {
-        String::new()
-    } else {
-        (s().tailscale.from_sender)(sender)
-    }
+/// "from laptop", or nothing for an unknown sender.
+fn sender_label(sender: &str) -> Option<String> {
+    (!sender.is_empty()).then(|| (s().tailscale.from_sender)(sender))
 }
 
 fn receiving_row(
@@ -608,12 +623,10 @@ fn receiving_row(
                 .child(cancel),
         )
         .child(progress)
-        .child(muted(
+        .child(meta_row(
             theme,
-            (s().tailscale.receiving)(
-                &receiving_progress_label(file),
-                &sender_suffix(&file.sender_name),
-            ),
+            std::iter::once((s().tailscale.receiving)(&receiving_progress_label(file)))
+                .chain(sender_label(&file.sender_name)),
         ))
 }
 
@@ -664,13 +677,7 @@ fn file_row(
     };
     let when = file
         .modified_at
-        .map(|secs| {
-            format!(
-                " · {}",
-                format_relative_time(from_unix_secs(secs.max(0) as u64), now)
-            )
-        })
-        .unwrap_or_default();
+        .map(|secs| format_relative_time(from_unix_secs(secs.max(0) as u64), now));
     div()
         .h_flex()
         .items_center()
@@ -690,14 +697,11 @@ fn file_row(
                         .text_color(theme.foreground)
                         .child(file.name.clone()),
                 )
-                .child(muted(
+                .child(meta_row(
                     theme,
-                    format!(
-                        "{}{}{}",
-                        format_bytes(file.size),
-                        sender_suffix(&file.sender_name),
-                        when
-                    ),
+                    std::iter::once(format_bytes(file.size))
+                        .chain(sender_label(&file.sender_name))
+                        .chain(when),
                 )),
         )
         .child(save)
@@ -998,6 +1002,16 @@ fn devices_card(
     card
 }
 
+/// A peer's role in words beside its name ("Exit node", "Shared").
+fn peer_tag(color: Hsla, text: &'static str) -> Div {
+    div()
+        .flex_shrink_0()
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .child(text)
+}
+
 fn peer_row(
     ei: usize,
     key: String,
@@ -1076,40 +1090,26 @@ fn peer_row(
                                 })
                                 .child(name),
                         )
+                        // Roles as quiet words beside the name: the exit
+                        // node in use in the accent, an expired key in the
+                        // warning colour, the rest muted.
                         .when(peer.exit_node, |this| {
-                            this.child(pill(
-                                theme,
-                                PillTone::Primary,
-                                s().tailscale.badge_exit_node,
-                            ))
+                            this.child(peer_tag(theme.primary, s().tailscale.badge_exit_node))
                         })
                         .when(!peer.exit_node && peer.exit_node_option, |this| {
-                            this.child(pill(
-                                theme,
-                                PillTone::Muted,
+                            this.child(peer_tag(
+                                theme.muted_foreground,
                                 s().tailscale.badge_exit_option,
                             ))
                         })
                         .when(peer.sharee_node, |this| {
-                            this.child(pill(theme, PillTone::Muted, s().tailscale.badge_shared))
+                            this.child(peer_tag(theme.muted_foreground, s().tailscale.badge_shared))
                         })
                         .when(peer.expired, |this| {
-                            this.child(pill(
-                                theme,
-                                PillTone::Muted,
-                                s().tailscale.badge_key_expired,
-                            ))
+                            this.child(peer_tag(theme.warning, s().tailscale.badge_key_expired))
                         }),
                 )
-                .child(
-                    div()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(details.join(" · ")),
-                ),
+                .child(meta_row(theme, details)),
         )
         .child(muted(theme, traffic_label(peer)).flex_shrink_0())
         .children(ping)

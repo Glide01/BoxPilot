@@ -25,11 +25,12 @@ use crate::core::singbox_api::{classify_delay, DelayLevel, GroupKind, ProxyGroup
 use crate::i18n::s;
 use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::locale;
-use crate::ui::widgets::{empty_card, page_header, pill, PillTone};
+use crate::ui::theme::CARD_RADIUS;
+use crate::ui::widgets::{connect_button, empty_state, page_header, segmented, Segment};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    button::{Button, ButtonVariants},
+    button::Button,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
     spinner::Spinner,
@@ -196,7 +197,7 @@ impl GroupsPage {
                     .border_r_1()
                     .border_color(theme.border)
                     .bg(theme.background)
-                    .when(last, |line| line.border_b_1().rounded_b_md())
+                    .when(last, |line| line.border_b_1().rounded_b(px(CARD_RADIUS)))
                     .h_flex()
                     .items_start()
                     .gap(px(CARD_GAP))
@@ -309,9 +310,6 @@ impl GroupsPage {
                     .text_color(theme.foreground)
                     .child(SharedString::from(group.name.clone())),
             )
-            .when(group.kind == GroupKind::UrlTest, |area| {
-                area.child(pill(theme, PillTone::Muted, s().groups.auto))
-            })
             .child(
                 div()
                     .flex_shrink_0()
@@ -319,16 +317,49 @@ impl GroupsPage {
                     .text_color(theme.muted_foreground)
                     .child(count),
             )
+            // The node in use, after an arrow; urltest groups pick it
+            // themselves, which a gauge says (with a tooltip) instead of a
+            // badge.
             .child(
                 div()
+                    .h_flex()
+                    .items_center()
+                    .gap_1p5()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
+                    .ml_2()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(SharedString::from(group.now.clone())),
+                    .child(
+                        Icon::new(IconName::ArrowRight)
+                            .xsmall()
+                            .flex_none()
+                            .text_color(theme.muted_foreground.opacity(0.7)),
+                    )
+                    .when(group.kind == GroupKind::UrlTest, |row| {
+                        row.child(
+                            div()
+                                .id(("group-auto", gi))
+                                .flex_none()
+                                .child(
+                                    Icon::empty()
+                                        .path("icons/gauge.svg")
+                                        .xsmall()
+                                        .text_color(theme.primary),
+                                )
+                                .tooltip(|window, cx| {
+                                    Tooltip::new(s().groups.auto).build(window, cx)
+                                }),
+                        )
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(SharedString::from(group.now.clone())),
+                    ),
             );
 
         div()
@@ -345,9 +376,9 @@ impl GroupsPage {
             .bg(theme.background)
             .map(|row| {
                 if expanded {
-                    row.rounded_t_md()
+                    row.rounded_t(px(CARD_RADIUS))
                 } else {
-                    row.border_b_1().rounded_md()
+                    row.border_b_1().rounded(px(CARD_RADIUS))
                 }
             })
             .child(toggle_area)
@@ -450,15 +481,15 @@ fn node_card(card: NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Theme) 
         .min_w_0()
         .h(px(CARD_HEIGHT))
         .px_3()
-        .rounded_md()
+        .rounded(px(8.))
         .border_1()
         .border_color(if card.selected {
-            theme.primary
+            theme.primary.opacity(0.6)
         } else {
             theme.border
         })
         .bg(if card.selected {
-            theme.primary.opacity(0.08)
+            theme.primary.opacity(0.06)
         } else {
             theme.background
         })
@@ -534,21 +565,6 @@ fn delay_badge(card: &NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Them
     }
 }
 
-fn toggle_pill(
-    id: &'static str,
-    label: &'static str,
-    active: bool,
-    on_click: impl Fn(&mut Window, &mut App) + 'static,
-) -> Button {
-    let button = Button::new(id).label(label).small();
-    let button = if active {
-        button.primary()
-    } else {
-        button.ghost()
-    };
-    button.on_click(move |_, window, cx| on_click(window, cx))
-}
-
 impl Render for GroupsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_rows(cx);
@@ -586,36 +602,39 @@ impl Render for GroupsPage {
                         .text_color(theme.muted_foreground)
                         .child(t.sort),
                 );
-            for (id, label, sort) in [
-                ("groups-sort-default", t.sort_default, NodeSort::Default),
-                ("groups-sort-delay", t.sort_delay, NodeSort::Delay),
-            ] {
-                let page = weak_page.clone();
-                header = header.child(toggle_pill(id, label, self.sort == sort, move |_, cx| {
-                    page.update(cx, |this, cx| this.set_sort(sort, cx)).ok();
-                }));
-            }
+            const SORTS: [NodeSort; 2] = [NodeSort::Default, NodeSort::Delay];
+            let page = weak_page.clone();
+            header = header.child(segmented(
+                theme,
+                "groups-sort",
+                vec![Segment::new(t.sort_default), Segment::new(t.sort_delay)],
+                SORTS.iter().position(|sort| *sort == self.sort),
+                move |ix, _, cx| {
+                    page.update(cx, |this, cx| this.set_sort(SORTS[ix], cx))
+                        .ok();
+                },
+            ));
             let proxy_groups = self.proxy_groups.clone();
-            header = header
-                .child(div().w_px().h_4().bg(theme.border).mx_1())
-                .child(
-                    Button::new("groups-test-all")
-                        .outline()
-                        .small()
-                        .label(t.test_all)
-                        .when(testing_all, |button| button.icon(Spinner::new()))
-                        .loading(testing_all)
-                        .disabled(!live)
-                        .on_click(move |_, _, cx| {
-                            proxy_groups.update(cx, |state, cx| state.test_all(cx));
-                        }),
-                );
+            header = header.child(
+                Button::new("groups-test-all")
+                    .outline()
+                    .small()
+                    .label(t.test_all)
+                    .when(testing_all, |button| button.icon(Spinner::new()))
+                    .loading(testing_all)
+                    .disabled(!live)
+                    .on_click(move |_, _, cx| {
+                        proxy_groups.update(cx, |state, cx| state.test_all(cx));
+                    }),
+            );
         }
 
         let body = if !has_groups {
-            empty_card(theme, IconName::Globe, t.empty_title, t.empty_hint).into_any_element()
+            empty_state(theme, IconName::Globe, t.empty_title, t.empty_hint)
+                .when(!live, |this| this.child(connect_button("groups-connect")))
+                .into_any_element()
         } else if self.layout.rows.is_empty() {
-            empty_card(theme, IconName::Search, t.no_match_title, t.no_match_hint)
+            empty_state(theme, IconName::Search, t.no_match_title, t.no_match_hint)
                 .into_any_element()
         } else {
             let list = v_virtual_list(

@@ -11,7 +11,7 @@ use crate::core::network_tools::{
 use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
 use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
-use crate::ui::widgets::{empty_card, page_header, setting_row};
+use crate::ui::widgets::{connect_button, empty_state, page_header, setting_row};
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -25,7 +25,7 @@ use gpui_component::{
     switch::Switch,
     tab::{Tab, TabBar},
     theme::Theme,
-    ActiveTheme, Disableable, IconName, IndexPath, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IndexPath, Sizable, StyledExt,
 };
 
 /// Width of the right-hand controls (pickers and text fields).
@@ -468,12 +468,13 @@ impl Render for ToolsPage {
         let stun = tools.stun.clone();
 
         let body = if !active {
-            empty_card(
+            empty_state(
                 cx.theme(),
-                IconName::Network,
+                Icon::empty().path("icons/gauge.svg"),
                 s().tools.not_running_title,
                 s().tools.not_running_hint,
             )
+            .child(connect_button("tools-connect"))
             .into_any_element()
         } else {
             let cards = div()
@@ -497,10 +498,12 @@ impl Render for ToolsPage {
     }
 }
 
+/// A card's title ("Network quality").
 fn section_label(theme: &Theme, text: &'static str) -> Div {
     div()
-        .text_xs()
-        .text_color(theme.muted_foreground)
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.foreground)
         .child(text)
 }
 

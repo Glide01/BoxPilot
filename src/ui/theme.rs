@@ -10,18 +10,29 @@
 
 use crate::core::settings::ThemePreference;
 use crate::state::AppState;
-use gpui::{rgb, App, Entity, Hsla, Subscription, Window, WindowAppearance};
+use gpui::{px, rgb, App, Entity, Hsla, Subscription, Window, WindowAppearance};
 use gpui_component::{Theme, ThemeMode};
 
-/// The accent colours BoxPilot lays over gpui-component's base theme.
+/// The colours BoxPilot lays over gpui-component's base theme: the blue
+/// accent, and the two surfaces of the window — the chrome the sidebar sits
+/// on and the raised content panel every page draws in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AccentPalette {
     pub primary: Hsla,
     pub primary_hover: Hsla,
     pub primary_active: Hsla,
-    /// Text / icons on `primary` (buttons, the Home power button, pills).
+    /// Text / icons on `primary` (buttons, the Home power button).
     pub primary_foreground: Hsla,
-    /// The selected sidebar entry.
+    /// The window chrome behind the sidebar and around the content panel.
+    pub sidebar: Hsla,
+    /// The content panel, cards, inputs and popovers.
+    pub background: Hsla,
+    pub border: Hsla,
+    /// The track of segmented controls: set into the panel, so the chosen
+    /// segment (drawn in `background`) reads as raised in both modes.
+    pub segmented_track: Hsla,
+    /// The selected sidebar entry: a raised tile in the content panel's
+    /// colour, its text in the foreground colour (the icon takes the accent).
     pub sidebar_accent: Hsla,
     pub sidebar_accent_foreground: Hsla,
 }
@@ -37,8 +48,12 @@ pub fn accent_palette(dark: bool) -> AccentPalette {
             primary_hover: rgb(0x60A5FA).into(),  // blue-400
             primary_active: rgb(0x2563EB).into(), // blue-600
             primary_foreground: rgb(0xFFFFFF).into(),
-            sidebar_accent: rgb(0x172554).into(), // blue-950
-            sidebar_accent_foreground: rgb(0xBFDBFE).into(), // blue-200
+            sidebar: rgb(0x0B0B0C).into(),
+            background: rgb(0x19191C).into(),
+            border: rgb(0x2A2A2E).into(),
+            segmented_track: rgb(0x0E0E10).into(),
+            sidebar_accent: rgb(0x1F1F23).into(),
+            sidebar_accent_foreground: rgb(0xFAFAFA).into(),
         }
     } else {
         AccentPalette {
@@ -46,11 +61,20 @@ pub fn accent_palette(dark: bool) -> AccentPalette {
             primary_hover: rgb(0x1D4ED8).into(),  // blue-700
             primary_active: rgb(0x1E40AF).into(), // blue-800
             primary_foreground: rgb(0xFFFFFF).into(),
-            sidebar_accent: rgb(0xEAF1FE).into(),
-            sidebar_accent_foreground: rgb(0x1D4ED8).into(), // blue-700
+            sidebar: rgb(0xF4F4F5).into(), // zinc-100
+            background: rgb(0xFFFFFF).into(),
+            border: rgb(0xE4E4E7).into(),          // zinc-200
+            segmented_track: rgb(0xF4F4F5).into(), // zinc-100
+            sidebar_accent: rgb(0xFFFFFF).into(),
+            sidebar_accent_foreground: rgb(0x0A0A0A).into(),
         }
     }
 }
+
+/// Corner radius of cards and other panels inside a page.
+pub const CARD_RADIUS: f32 = 10.;
+/// Corner radius of the content panel the pages sit in.
+pub const PANEL_RADIUS: f32 = 12.;
 
 /// The mode a preference resolves to, given the OS appearance.
 pub fn resolve(pref: ThemePreference, system: WindowAppearance) -> ThemeMode {
@@ -81,8 +105,21 @@ pub fn apply(pref: ThemePreference, window: Option<&mut Window>, cx: &mut App) {
         theme.primary_hover = accents.primary_hover;
         theme.primary_active = accents.primary_active;
         theme.primary_foreground = accents.primary_foreground;
+        // Primary buttons have colours of their own, which the base theme
+        // derives from its (black / white) primary when it loads — not from
+        // the accent laid over it here.
+        theme.button_primary = accents.primary;
+        theme.button_primary_hover = accents.primary_hover;
+        theme.button_primary_active = accents.primary_active;
+        theme.button_primary_foreground = accents.primary_foreground;
+        theme.sidebar = accents.sidebar;
+        theme.sidebar_border = accents.sidebar;
+        theme.background = accents.background;
+        theme.border = accents.border;
+        theme.tab_bar_segmented = accents.segmented_track;
         theme.sidebar_accent = accents.sidebar_accent;
         theme.sidebar_accent_foreground = accents.sidebar_accent_foreground;
+        theme.radius_lg = px(PANEL_RADIUS);
     });
 
     if let Some(window) = window {
@@ -173,8 +210,12 @@ mod tests {
         assert_eq!(light.primary, hex(0x2563EB));
         assert_eq!(light.primary_hover, hex(0x1D4ED8));
         assert_eq!(light.primary_active, hex(0x1E40AF));
-        assert_eq!(light.sidebar_accent, hex(0xEAF1FE));
-        assert_eq!(light.sidebar_accent_foreground, hex(0x1D4ED8));
+        // The selected sidebar entry is a tile in the content panel's colour.
+        assert_eq!(light.sidebar_accent, light.background);
+        assert!(
+            light.sidebar.l < light.background.l,
+            "chrome sits below the panel"
+        );
     }
 
     #[test]
@@ -183,13 +224,20 @@ mod tests {
         assert_eq!(dark.primary, hex(0x3B82F6));
         assert_eq!(dark.primary_hover, hex(0x60A5FA));
         assert_eq!(dark.primary_active, hex(0x2563EB));
-        assert_eq!(dark.sidebar_accent, hex(0x172554));
-        assert_eq!(dark.sidebar_accent_foreground, hex(0xBFDBFE));
         // Text on the accent stays light, and the selected sidebar entry
         // reads light-on-dark.
         assert!(dark.primary_foreground.l > 0.9);
         assert!(dark.sidebar_accent.l < 0.3);
         assert!(dark.sidebar_accent_foreground.l > 0.8);
+        // The panel is raised above the chrome, the selected entry above
+        // the chrome too.
+        assert!(dark.background.l > dark.sidebar.l);
+        assert!(dark.sidebar_accent.l > dark.sidebar.l);
+        // The chosen segment (panel colour) stands out from its track.
+        for palette in [dark, accent_palette(false)] {
+            assert_ne!(palette.segmented_track, palette.background);
+        }
+        assert!(dark.segmented_track.l < dark.background.l);
         // Hover lightens in dark mode (darkens in light).
         assert!(dark.primary_hover.l > dark.primary.l);
         let light = accent_palette(false);

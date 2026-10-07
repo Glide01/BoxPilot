@@ -15,7 +15,7 @@ use crate::core::connections_view::host_label;
 use crate::core::timefmt::format_local_datetime;
 use crate::i18n::s;
 use crate::state::Connections;
-use crate::ui::widgets::{pill, PillTone};
+use crate::ui::widgets::status_label;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -134,9 +134,9 @@ impl ConnectionDetailsPanel {
         let t = &s().connection_details;
         let state = closed.map(|closed| {
             if closed {
-                pill(theme, PillTone::Muted, t.closed)
+                status_label(theme.muted_foreground, t.closed)
             } else {
-                pill(theme, PillTone::Primary, t.active)
+                status_label(theme.success, t.active)
             }
         });
         div()
@@ -158,7 +158,7 @@ impl ConnectionDetailsPanel {
                     .text_color(theme.foreground)
                     .child(title.to_string()),
             )
-            .children(state.map(|pill| pill.mt_0p5()))
+            .children(state.map(|state| state.mt_1()))
             .child(
                 Button::new("conn-details-dismiss")
                     .ghost()

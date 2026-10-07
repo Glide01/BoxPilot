@@ -25,7 +25,7 @@ use crate::state::vpn::VpnStream;
 use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{empty_card, page_header, pill, PillTone};
+use crate::ui::widgets::{empty_state, meta_row, page_header};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -757,7 +757,13 @@ impl VpnPage {
                     .text_color(theme.foreground)
                     .child(card.tag.clone()),
             )
-            .child(pill(theme, PillTone::Muted, card.protocol.label()))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(card.protocol.label()),
+            )
             .child(
                 div()
                     .flex_1()
@@ -806,12 +812,7 @@ fn device_row(theme: &Theme, device: &UsbSharedDevice) -> Div {
                         .text_color(theme.foreground)
                         .child(device.display_name().to_string()),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(details.join(" · ")),
-                ),
+                .child(meta_row(theme, details)),
         )
         .child(
             div()
@@ -835,7 +836,12 @@ fn usbip_card(theme: &Theme, tag: &str, body: Div) -> Div {
                         .text_color(theme.foreground)
                         .child(tag.to_string()),
                 )
-                .child(pill(theme, PillTone::Muted, s().vpn.usbip_server)),
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(s().vpn.usbip_server),
+                ),
         )
         .child(body)
 }
@@ -868,7 +874,7 @@ impl Render for VpnPage {
                 .size_full()
                 .gap_4()
                 .child(title)
-                .child(empty_card(
+                .child(empty_state(
                     theme,
                     IconName::Globe,
                     s().vpn.empty_title,

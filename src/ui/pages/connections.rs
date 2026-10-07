@@ -30,7 +30,7 @@ use crate::core::connections_view::{
 use crate::core::singbox_api::Connection;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
-use crate::ui::widgets::{empty_card, page_header};
+use crate::ui::widgets::{connect_button, empty_state, meta_row, page_header, segmented, Segment};
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -268,21 +268,6 @@ fn clipped(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-fn toggle_pill(
-    id: &'static str,
-    label: impl Into<SharedString>,
-    active: bool,
-    on_click: impl Fn(&mut Window, &mut App) + 'static,
-) -> Button {
-    let button = Button::new(id).label(label).small();
-    let button = if active {
-        button.primary()
-    } else {
-        button.ghost()
-    };
-    button.on_click(move |_, window, cx| on_click(window, cx))
-}
-
 /// One list row. Every row has the same structure (closed rows keep an
 /// empty slot where the close button goes) so heights stay uniform.
 fn connection_row(
@@ -316,28 +301,34 @@ fn connection_row(
         );
     }
 
-    let details = format!(
-        "{} · {} · {}",
-        network_label(connection),
-        inbound_label(connection),
-        rule_label(connection)
-    );
+    // Chain first (accented while open), then network, inbound and rule,
+    // set apart by space.
     let subtitle = div()
         .h_flex()
         .items_center()
-        .gap_2()
+        .gap_3()
         .text_xs()
         .child(
             clipped(chain_label(connection))
                 .flex_shrink_0()
-                .max_w(relative(0.55))
+                .max_w(relative(0.5))
                 .text_color(if closed {
                     theme.muted_foreground
                 } else {
                     theme.primary
                 }),
         )
-        .child(clipped(details).flex_1().text_color(theme.muted_foreground));
+        .child(
+            meta_row(
+                theme,
+                [
+                    network_label(connection),
+                    inbound_label(connection).to_string(),
+                    rule_label(connection).to_string(),
+                ],
+            )
+            .flex_1(),
+        );
 
     let rate = if closed {
         s().connections.closed.to_string()
@@ -446,27 +437,30 @@ impl Render for ConnectionsPage {
         let theme = cx.theme();
         let t = &s().connections;
 
-        let summary_label = format!(
-            "{} · ↑ {}  ↓ {} · {} ↑ {}  ↓ {}",
+        // Live totals beside the title: open count, current rates, and the
+        // traffic so far — three groups set apart by space.
+        let summary_items = [
             (t.open_count)(summary.open as u64),
-            format_speed(summary.up_rate),
-            format_speed(summary.down_rate),
-            t.total,
-            format_bytes(summary.up_total),
-            format_bytes(summary.down_total),
-        );
+            format!(
+                "↑ {}  ↓ {}",
+                format_speed(summary.up_rate),
+                format_speed(summary.down_rate)
+            ),
+            format!(
+                "{} ↑ {}  ↓ {}",
+                t.total,
+                format_bytes(summary.up_total),
+                format_bytes(summary.down_total)
+            ),
+        ];
         let title_block = div()
             .h_flex()
             .items_center()
-            .gap_2()
+            .gap_4()
             .min_w_0()
             .child(page_header(theme, t.title))
             .when(live, |this| {
-                this.child(
-                    clipped(summary_label)
-                        .text_sm()
-                        .text_color(theme.muted_foreground),
-                )
+                this.child(meta_row(theme, summary_items).gap_4().text_sm())
             });
         let close_all = {
             let connections = connections.clone();
@@ -507,43 +501,47 @@ impl Render for ConnectionsPage {
                         ),
                 ),
             );
-        for (id, label, view) in [
-            (
-                "connections-active",
-                (t.active_tab)(summary.open as u64),
-                ConnectionView::Active,
-            ),
-            (
-                "connections-closed",
-                (t.closed_tab)(summary.closed as u64),
-                ConnectionView::Closed,
-            ),
-        ] {
-            let page = page.clone();
-            controls = controls.child(toggle_pill(id, label, self.view == view, move |_, cx| {
-                page.update(cx, |this, cx| this.set_view(view, cx)).ok();
-            }));
-        }
-        controls = controls.child(div().w_px().h_4().bg(theme.border).mx_1());
-        for (id, label, sort) in [
-            ("connections-newest", t.newest, ConnectionSort::Newest),
-            ("connections-traffic", t.traffic, ConnectionSort::Traffic),
-        ] {
-            let page = page.clone();
-            controls = controls.child(toggle_pill(id, label, self.sort == sort, move |_, cx| {
-                page.update(cx, |this, cx| this.set_sort(sort, cx)).ok();
-            }));
-        }
+        const VIEWS: [ConnectionView; 2] = [ConnectionView::Active, ConnectionView::Closed];
+        let view_page = page.clone();
+        controls = controls.child(segmented(
+            theme,
+            "connections-view",
+            vec![
+                Segment::new((t.active_tab)(summary.open as u64)),
+                Segment::new((t.closed_tab)(summary.closed as u64)),
+            ],
+            VIEWS.iter().position(|view| *view == self.view),
+            move |ix, _, cx| {
+                view_page
+                    .update(cx, |this, cx| this.set_view(VIEWS[ix], cx))
+                    .ok();
+            },
+        ));
+        const SORTS: [ConnectionSort; 2] = [ConnectionSort::Newest, ConnectionSort::Traffic];
+        let sort_page = page.clone();
+        controls = controls.child(segmented(
+            theme,
+            "connections-sort",
+            vec![Segment::new(t.newest), Segment::new(t.traffic)],
+            SORTS.iter().position(|sort| *sort == self.sort),
+            move |ix, _, cx| {
+                sort_page
+                    .update(cx, |this, cx| this.set_sort(SORTS[ix], cx))
+                    .ok();
+            },
+        ));
 
         let body = if !live {
-            empty_card(theme, IconName::Network, t.empty_title, t.empty_hint).into_any_element()
+            empty_state(theme, IconName::Network, t.empty_title, t.empty_hint)
+                .child(connect_button("connections-connect"))
+                .into_any_element()
         } else if self.rows.is_empty() {
             let (title, hint) = match (query_empty, self.view) {
                 (false, _) => (t.no_match_title, t.no_match_hint),
                 (true, ConnectionView::Active) => (t.no_active_title, t.no_active_hint),
                 (true, ConnectionView::Closed) => (t.no_closed_title, t.no_closed_hint),
             };
-            empty_card(theme, IconName::Network, title, hint).into_any_element()
+            empty_state(theme, IconName::Network, title, hint).into_any_element()
         } else {
             let rows = self.rows.clone();
             let list_connections = connections.clone();

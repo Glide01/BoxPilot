@@ -177,12 +177,23 @@ pub fn peer_presence_label(peer: &TailscalePeer, now: SystemTime) -> String {
     }
 }
 
-/// One ping result line: "23.4 ms · direct (1.2.3.4:41641)", "… · DERP
-/// (fra)", "… · peer relay (…)", or "Failed: …".
-pub fn ping_summary(ping: &TailscalePing) -> String {
+/// One ping result, as two parts the page lays out side by side: the
+/// latency ("23.4 ms") and the path it took ("direct (1.2.3.4:41641)",
+/// "DERP (fra)", "peer relay (…)"). A failed ping has no latency, only
+/// "Failed: …" as its path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PingSummary {
+    pub latency: Option<String>,
+    pub path: String,
+}
+
+pub fn ping_summary(ping: &TailscalePing) -> PingSummary {
     let t = &s().tailscale;
     if let Some(error) = &ping.error {
-        return (t.ping_failed)(error);
+        return PingSummary {
+            latency: None,
+            path: (t.ping_failed)(error),
+        };
     }
     let path = if ping.is_direct {
         if ping.endpoint.is_empty() {
@@ -199,7 +210,10 @@ pub fn ping_summary(ping: &TailscalePing) -> String {
     } else {
         t.relayed.to_string()
     };
-    format!("{:.1} ms · {}", ping.latency_ms, path)
+    PingSummary {
+        latency: Some(format!("{:.1} ms", ping.latency_ms)),
+        path,
+    }
 }
 
 /// A byte count: `512 B`, `1.5 KB`, `12.0 MB`, `2.3 GB` (binary steps).
@@ -217,10 +231,11 @@ pub fn format_bytes(bytes: u64) -> String {
     format!("{:.1} {}", value, UNITS[unit])
 }
 
-/// "↓ 1.5 MB · ↑ 200 B" for a peer's traffic counters.
+/// "↓ 1.5 MB  ↑ 200 B" for a peer's traffic counters: the arrows set the
+/// two apart.
 pub fn traffic_label(peer: &TailscalePeer) -> String {
     format!(
-        "↓ {} · ↑ {}",
+        "↓ {}  ↑ {}",
         format_bytes(peer.rx_bytes),
         format_bytes(peer.tx_bytes)
     )
@@ -519,26 +534,39 @@ mod tests {
 
     #[test]
     fn ping_summary_names_the_path() {
+        let path = |p: &TailscalePing| ping_summary(p).path;
         let mut p = ping();
         p.is_direct = true;
         p.endpoint = "203.0.113.5:41641".into();
-        assert_eq!(ping_summary(&p), "23.4 ms · direct (203.0.113.5:41641)");
+        assert_eq!(
+            ping_summary(&p),
+            PingSummary {
+                latency: Some("23.4 ms".into()),
+                path: "direct (203.0.113.5:41641)".into(),
+            }
+        );
 
         let mut p = ping();
         p.derp_region_id = 4;
         p.derp_region_code = "fra".into();
-        assert_eq!(ping_summary(&p), "23.4 ms · DERP (fra)");
+        assert_eq!(path(&p), "DERP (fra)");
         p.derp_region_code.clear();
-        assert_eq!(ping_summary(&p), "23.4 ms · DERP (region 4)");
+        assert_eq!(path(&p), "DERP (region 4)");
 
         let mut p = ping();
         p.peer_relay = "100.64.0.3:7777".into();
         p.derp_region_code = "fra".into();
-        assert_eq!(ping_summary(&p), "23.4 ms · peer relay (100.64.0.3:7777)");
+        assert_eq!(path(&p), "peer relay (100.64.0.3:7777)");
 
         let mut p = ping();
         p.error = Some("timeout".into());
-        assert_eq!(ping_summary(&p), "Failed: timeout");
+        assert_eq!(
+            ping_summary(&p),
+            PingSummary {
+                latency: None,
+                path: "Failed: timeout".into(),
+            }
+        );
     }
 
     #[test]
@@ -554,7 +582,7 @@ mod tests {
         let mut p = peer("p", true);
         p.rx_bytes = 2048;
         p.tx_bytes = 10;
-        assert_eq!(traffic_label(&p), "↓ 2.0 KB · ↑ 10 B");
+        assert_eq!(traffic_label(&p), "↓ 2.0 KB  ↑ 10 B");
     }
 
     #[test]

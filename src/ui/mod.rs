@@ -19,14 +19,14 @@ pub mod widgets;
 
 pub use root::RootView;
 
-use gpui::{div, Div, Styled};
+use gpui::{div, px, Div, Styled};
 use gpui_component::{theme::Theme, StyledExt};
 
 /// Shared chrome for every card panel.
 pub fn card_frame(theme: &Theme) -> Div {
     div()
         .p_4()
-        .rounded_md()
+        .rounded(px(self::theme::CARD_RADIUS))
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)

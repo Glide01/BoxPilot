@@ -162,8 +162,6 @@ pub struct Common {
     pub view: &'static str,
     pub download: &'static str,
     pub upload: &'static str,
-    /// Joins a label and its detail on one line: " · ".
-    pub sep: &'static str,
     /// Between what failed and why: "Failed to save the file: <reason>".
     pub colon: &'static str,
 }
@@ -227,6 +225,13 @@ pub struct Home {
     pub not_updated_yet: &'static str,
     /// "Running for 1h 23m".
     pub running_for: Fmt1,
+    /// Under "Disconnected": what Connect would start with.
+    pub ready_with: Fmt1,
+    /// Heading of the Home card holding Proxy Mode / System Proxy / Clash
+    /// Mode.
+    pub quick_settings: &'static str,
+    /// Heading of the Home card for the active profile.
+    pub subscription: &'static str,
 }
 
 pub struct Profiles {
@@ -254,10 +259,11 @@ pub struct Profiles {
     /// "updated 5 min ago".
     pub updated: Fmt1,
     pub no_subscription_url: &'static str,
-    /// "<url> · auto-update 30m".
-    pub auto_update_every: fn(&str, u64) -> String,
-    pub auto_update_off: Fmt1,
-    pub local_file: Fmt1,
+    /// How a subscription stays fresh: "Auto-updates every 30 min".
+    pub auto_update_every: FmtN,
+    pub auto_update_off: &'static str,
+    /// What a local-file profile is, beside its path.
+    pub local_file: &'static str,
     pub invalid_url: &'static str,
     /// Name for a new profile created without one: "Profile 2".
     pub default_name: Fmt1,
@@ -476,7 +482,9 @@ pub struct Tailscale {
     pub no_files_share: &'static str,
     pub no_files: &'static str,
     /// "Receiving <progress><sender suffix>".
-    pub receiving: Fmt2,
+    /// "Receiving 1.0 MB of 4.0 MB (25%)".
+    pub receiving: Fmt1,
+    /// "from laptop", shown beside a Taildrop file.
     pub from_sender: Fmt1,
     pub save_dialog_failed: Fmt1,
     pub delete_title: Fmt1,

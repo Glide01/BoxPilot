@@ -10,7 +10,8 @@ use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
     TailscalePage, ToolsPage, VpnPage,
 };
-use crate::ui::sidebar::{sidebar, Badges, OptionalPages};
+use crate::ui::sidebar::{sidebar, Badges, OptionalPages, SidebarColors, StatusDetail};
+use crate::ui::theme::PANEL_RADIUS;
 use crate::ui::toast::{self, Toasts};
 use gpui::*;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt};
@@ -32,6 +33,9 @@ pub struct RootView {
     /// Last `AppState::update_available().is_some()` — the Settings
     /// sidebar dot; re-rendered on its edges only, like `starting`.
     update_badge: bool,
+    /// Last active profile name — the status tile's second line while
+    /// disconnected; re-rendered when it changes, like `starting`.
+    profile_name: Option<String>,
     active_page: ActivePage,
     home: Entity<HomePage>,
     groups: Entity<GroupsPage>,
@@ -117,9 +121,14 @@ impl RootView {
             let state = state.read(cx);
             let starting = state.is_starting(cx);
             let update_badge = state.update_available().is_some();
-            if starting != this.starting || update_badge != this.update_badge {
+            let profile_name = state.settings.active_profile().map(|p| p.name.clone());
+            if starting != this.starting
+                || update_badge != this.update_badge
+                || profile_name != this.profile_name
+            {
                 this.starting = starting;
                 this.update_badge = update_badge;
+                this.profile_name = profile_name;
                 cx.notify();
             }
         })
@@ -182,12 +191,18 @@ impl RootView {
         focus_handle.focus(window, cx);
         let starting = app_state.read(cx).is_starting(cx);
         let update_badge = app_state.read(cx).update_available().is_some();
+        let profile_name = app_state
+            .read(cx)
+            .settings
+            .active_profile()
+            .map(|p| p.name.clone());
 
         Self {
             app_state,
             focus_handle,
             starting,
             update_badge,
+            profile_name,
             active_page: ActivePage::Home,
             home,
             groups,
@@ -302,15 +317,26 @@ impl Render for RootView {
             ConnectionStatus::Disconnected => theme.muted_foreground,
         };
         let status_label = status.label();
-        let bg = theme.muted;
+        let chrome = theme.sidebar;
         let fg = theme.foreground;
-        let speed_color = theme.muted_foreground;
-        let badge_color = theme.primary;
-        // 网速行只在已连接时显示;读 traffic 实体格式化 ↓/↑ 速率。
-        let speed = is_running.then(|| {
+        let colors = SidebarColors {
+            accent: theme.primary,
+            badge: theme.primary,
+            muted: theme.muted_foreground,
+            tile: theme.background,
+            tile_border: theme.border,
+        };
+        let (panel_bg, panel_border) = (theme.background, theme.border);
+        // 状态卡第二行:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
+        let detail = if is_running {
             let traffic = self.app_state.read(cx).traffic.read(cx);
-            (format_speed(traffic.down), format_speed(traffic.up))
-        });
+            StatusDetail::Speed(format_speed(traffic.down), format_speed(traffic.up))
+        } else {
+            match &self.profile_name {
+                Some(name) if !is_starting => StatusDetail::Profile(name.clone()),
+                _ => StatusDetail::None,
+            }
+        };
 
         let view = cx.entity().downgrade();
         let on_nav = move |page: ActivePage, _: &mut Window, cx: &mut App| {
@@ -345,14 +371,14 @@ impl Render for RootView {
             .flex()
             .flex_row()
             .size_full()
-            .bg(bg)
+            .bg(chrome)
             .text_color(fg)
             .child(sidebar(
                 self.active_page,
                 dot_color,
                 status_label,
-                speed,
-                speed_color,
+                detail,
+                colors,
                 OptionalPages {
                     tailscale: self.tailscale_visible,
                     vpn: self.vpn_visible,
@@ -360,19 +386,29 @@ impl Render for RootView {
                 Badges {
                     settings: self.update_badge,
                 },
-                badge_color,
                 on_nav,
             ))
             // Cached: the page re-renders only when it notifies (each page
             // observes the entities it reads), not on every root re-render —
             // the sidebar's speed line alone re-renders the root once a
             // second while connected.
+            // The page sits in a raised panel inset from the window chrome.
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
+                    .my_2()
+                    .mr_2()
                     .v_flex()
-                    .p_6()
+                    .rounded(px(PANEL_RADIUS))
+                    .border_1()
+                    .border_color(panel_border)
+                    .bg(panel_bg)
+                    .shadow_xs()
+                    .overflow_hidden()
+                    .px_6()
+                    .pt_5()
+                    .pb_6()
                     .child(page.cached(StyleRefinement::default().size_full())),
             )
             .child(self.toasts.clone())

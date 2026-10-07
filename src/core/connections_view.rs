@@ -138,12 +138,12 @@ fn destination_port(destination: &str) -> Option<&str> {
     (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())).then_some(port)
 }
 
-/// `tcp` or `tcp · tls` (network, then the sniffed protocol if any).
+/// `tcp` or `tcp/tls` (network, then the sniffed protocol if any).
 pub fn network_label(connection: &Connection) -> String {
     if connection.protocol.is_empty() {
         connection.network.clone()
     } else {
-        format!("{} · {}", connection.network, connection.protocol)
+        format!("{}/{}", connection.network, connection.protocol)
     }
 }
 
@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(network_label(&c), "tcp");
         c.network = "udp".into();
         c.protocol = "quic".into();
-        assert_eq!(network_label(&c), "udp · quic");
+        assert_eq!(network_label(&c), "udp/quic");
     }
 
     #[test]

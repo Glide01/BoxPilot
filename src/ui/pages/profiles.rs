@@ -9,8 +9,9 @@ use crate::core::settings::{Profile, StatusLevel};
 use crate::i18n::s;
 use crate::state::app_state::FetchOrigin;
 use crate::state::AppState;
-use crate::ui::widgets::{minute_ticker, page_header, pill, usage_meter, PillTone};
+use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
+use crate::ui::widgets::{capitalize_first, empty_state, minute_ticker, page_header, usage_meter};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -343,21 +344,49 @@ impl ProfilesPage {
         let use_id = profile.id.clone();
         let edit_profile = profile.clone();
 
+        let primary = theme.primary;
+        let hover_bg = theme.muted.opacity(0.5);
+        // A radio mark: which profile sing-box runs with. Clicking anywhere
+        // on another row (outside its buttons) switches to it.
+        let radio = div()
+            .flex_none()
+            .size(px(18.))
+            .rounded_full()
+            .map(|this| {
+                if is_active {
+                    this.border(px(5.)).border_color(primary).bg(theme.background)
+                } else {
+                    this.border(px(1.5)).border_color(theme.input)
+                }
+            });
+
         div()
-            .p_3()
-            .rounded_md()
+            .id(("profile-row", ix))
+            .px_4()
+            .py_3()
+            .rounded(px(CARD_RADIUS))
             .border_1()
             .border_color(theme.border)
             .bg(theme.background)
-            .when(is_active, |this| {
-                this.border_color(theme.primary)
-                    .bg(theme.primary.opacity(0.06))
+            .map(|this| {
+                if is_active {
+                    this.border_color(primary.opacity(0.5))
+                        .bg(primary.opacity(0.04))
+                } else {
+                    this.cursor_pointer()
+                        .hover(move |s| s.bg(hover_bg))
+                        .on_click(move |_, _, cx| {
+                            app_state_use.update(cx, |state, cx| {
+                                state.set_active_profile(use_id.clone(), cx);
+                            });
+                        })
+                }
             })
             .h_flex()
             .items_center()
-            .justify_between()
-            .gap_2()
+            .gap_3()
             .w_full()
+            .child(radio)
             .child(
                 div()
                     .v_flex()
@@ -366,45 +395,53 @@ impl ProfilesPage {
                     .min_w_0()
                     .child(
                         div()
-                            .h_flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.foreground)
-                                    .truncate()
-                                    .child(profile.name.clone()),
-                            )
-                            .when(is_active, |this| {
-                                this.child(pill(theme, PillTone::Primary, t.profiles.active))
-                            }),
+                            .min_w_0()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.foreground)
+                            .truncate()
+                            .child(profile.name.clone()),
                     )
                     .child(
                         div()
+                            .min_w_0()
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .truncate()
-                            .child(row_info.subtitle),
+                            .child(row_info.source),
                     )
                     // Traffic / expiry the subscription server reported.
                     .children(profile.usage.as_ref().map(|usage| {
-                        usage_meter(theme, ("profile-usage", ix), usage, now, px(120.))
+                        div()
+                            .pt_1()
+                            .max_w(px(420.))
+                            .child(usage_meter(theme, ("profile-usage", ix), usage, now))
                     })),
             )
             .child(
                 div()
                     .h_flex()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .flex_none()
+                    // Freshness: when it last changed, over how it stays
+                    // fresh.
                     .child(
                         div()
+                            .v_flex()
+                            .items_end()
+                            .gap_0p5()
+                            .mr_2()
                             .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(time_label),
+                            .whitespace_nowrap()
+                            .child(
+                                div()
+                                    .text_color(theme.foreground.opacity(0.8))
+                                    .child(capitalize_first(&time_label)),
+                            )
+                            .children(row_info.detail.map(|detail| {
+                                div().text_color(theme.muted_foreground).child(detail)
+                            })),
                     )
                     .child(
                         Button::new(("profile-refresh", ix))
@@ -417,8 +454,11 @@ impl ProfilesPage {
                                     this.icon(Icon::default().path("icons/refresh-cw.svg"))
                                 }
                             })
+                            .tooltip(t.home.update)
                             .disabled(row_info.source_empty || any_updating)
                             .on_click(move |_, _, cx| {
+                                // Not a click on the row: that would switch.
+                                cx.stop_propagation();
                                 app_state_refresh.update(cx, |state, cx| {
                                     state.update_profile(refresh_id.clone(), FetchOrigin::Manual, cx);
                                 });
@@ -429,7 +469,9 @@ impl ProfilesPage {
                             .ghost()
                             .small()
                             .icon(Icon::default().path("icons/pencil.svg"))
+                            .tooltip(t.profiles.edit_title)
                             .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
                                 Self::open_profile_dialog(
                                     app_state_edit.clone(),
                                     Some(edit_profile.clone()),
@@ -438,20 +480,7 @@ impl ProfilesPage {
                                     cx,
                                 );
                             }),
-                    )
-                    .when(!is_active, |this| {
-                        this.child(
-                            Button::new(("profile-use", ix))
-                                .outline()
-                                .small()
-                                .label(t.profiles.use_profile)
-                                .on_click(move |_, _, cx| {
-                                    app_state_use.update(cx, |state, cx| {
-                                        state.set_active_profile(use_id.clone(), cx);
-                                    });
-                                }),
-                        )
-                    }),
+                    ),
             )
     }
 }
@@ -494,7 +523,7 @@ impl Render for ProfilesPage {
                     .child(page_header(theme, s().profiles.title))
                     .child(
                         Button::new("profile-add")
-                            .outline()
+                            .primary()
                             .small()
                             .icon(Icon::new(IconName::Plus))
                             .label(s().profiles.add)
@@ -510,19 +539,13 @@ impl Render for ProfilesPage {
                     ),
             )
             .child(if profiles.is_empty() {
-                div()
-                    .v_flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.muted_foreground)
-                            .child(s().profiles.empty),
-                    )
-                    .into_any_element()
+                empty_state(
+                    theme,
+                    Icon::new(IconName::GalleryVerticalEnd),
+                    s().profiles.empty,
+                    s().home.no_subscription_hint,
+                )
+                .into_any_element()
             } else {
                 let list = div().v_flex().gap_2().w_full().children(rows);
                 div()

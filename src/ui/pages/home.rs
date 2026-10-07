@@ -1,15 +1,22 @@
-//! 主页:焦点式大圆连接按钮(运行中下附运行时长 + sing-box 版本)+ 运行
-//! 状态条(内存 / 连接数 / 累计上传下载 + 近两分钟实时流量图,仅运行中)+
-//! Clash 模式切换(仅运行中且 ≥2 个模式)+ 设置行(代理模式 / 系统代理)+ 订阅条。
+//! 主页,自上而下:
+//! - 状态卡:圆形电源按钮 + 状态标题;其下一行在断开时说明将用哪个 profile
+//!   连接,运行中分列运行时长与 sing-box 版本(不用 " · " 拼接)。
+//! - 运行状态卡(仅运行中):内存 / 连接数 / 累计上传下载 + 近两分钟流量图。
+//! - 快捷设置:代理模式、系统代理、Clash 模式(仅运行中且 ≥2 个模式)同在
+//!   一张分组卡里,行间细线分隔。
+//! - 订阅卡:当前 profile 名、更新时间、Update 按钮与用量条。
 
 use crate::actions::{ToggleProcess, KEY_CONTEXT};
 use crate::core::bytefmt::format_bytes;
-use crate::core::presentation::{runtime_subtitle, updated_label, ConnectionStatus};
+use crate::core::presentation::{runtime_info, updated_label, ConnectionStatus};
 use crate::i18n::s;
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
 use crate::ui::traffic_chart::{self, TrafficChart};
-use crate::ui::widgets::{minute_ticker, setting_row, usage_meter};
+use crate::ui::widgets::{
+    capitalize_first, empty_state, grouped_card, meta_row, minute_ticker, section_heading,
+    setting_row, stat, usage_meter,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -19,13 +26,13 @@ use gpui_component::{
     tab::TabBar,
     theme::Theme,
     tooltip::Tooltip,
-    ActiveTheme, Disableable, Icon, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
 };
 use std::time::SystemTime;
 
 /// 电源按钮直径与图标尺寸(px)。
-const POWER_BUTTON_DIAMETER: f32 = 96.;
-const POWER_ICON_SIZE: f32 = 36.;
+const POWER_BUTTON_DIAMETER: f32 = 76.;
+const POWER_ICON_SIZE: f32 = 30.;
 
 /// `color` raised `amount` in lightness (HSL), for the top of a gradient.
 fn lighter(color: Hsla, amount: f32) -> Hsla {
@@ -66,32 +73,9 @@ impl HomePage {
     }
 }
 
-/// One cell of the runtime stats strip: small caption over the value.
-fn stat_cell(theme: &Theme, label: &'static str, value: String) -> Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .v_flex()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(label),
-        )
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.foreground)
-                .whitespace_nowrap()
-                .child(value),
-        )
-}
-
-/// Clash mode switcher card. `None` unless there is a choice to offer
-/// (running, ≥2 modes).
-fn clash_mode_card(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Option<Div> {
+/// The Clash mode row of the quick settings card. `None` unless there is a
+/// choice to offer (running, ≥2 modes).
+fn clash_mode_row(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Option<AnyElement> {
     let state = clash_mode.read(cx);
     if !state.is_switchable() {
         return None;
@@ -100,8 +84,8 @@ fn clash_mode_card(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Op
     let selected = state.current_index();
     let tab_modes = modes.clone();
     Some(
-        card_frame(theme).child(
-            setting_row(theme, s().home.clash_mode, None).child(
+        setting_row(theme, s().home.clash_mode, None)
+            .child(
                 TabBar::new("clash-mode")
                     .segmented()
                     .when_some(selected, |this, ix| this.selected_index(ix))
@@ -112,8 +96,8 @@ fn clash_mode_card(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Op
                         clash_mode.update(cx, |state, cx| state.select(mode, cx));
                     })
                     .children(tab_modes),
-            ),
-        ),
+            )
+            .into_any_element(),
     )
 }
 
@@ -125,34 +109,18 @@ impl Render for HomePage {
         if !state.settings.has_profiles() {
             let app_state_add = self.app_state.clone();
             let theme = cx.theme();
-            return div()
-                .v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .child(
-                    Icon::default()
-                        .path("icons/power.svg")
-                        .with_size(px(48.))
-                        .text_color(theme.muted_foreground),
-                )
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.foreground)
-                        .child(t.home.no_subscription_title),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.muted_foreground)
-                        .child(t.home.no_subscription_hint),
-                )
-                .child(
+            return empty_state(
+                theme,
+                Icon::default().path("icons/power.svg"),
+                t.home.no_subscription_title,
+                t.home.no_subscription_hint,
+            )
+            .size_full()
+            .child(
+                div().mt_3().child(
                     Button::new("home-add-subscription")
                         .primary()
+                        .icon(Icon::new(IconName::Plus))
                         .label(t.home.add_subscription)
                         .on_click(move |_, window, cx| {
                             super::profiles::ProfilesPage::open_profile_dialog(
@@ -163,8 +131,9 @@ impl Render for HomePage {
                                 cx,
                             );
                         }),
-                )
-                .into_any_element();
+                ),
+            )
+            .into_any_element();
         }
 
         let process = state.process.read(cx);
@@ -178,14 +147,14 @@ impl Render for HomePage {
 
         let traffic = state.traffic.read(cx);
         let runtime = traffic.status;
-        let subtitle = if connected {
-            runtime_subtitle(
+        let info = if connected {
+            runtime_info(
                 traffic.started_at,
                 traffic.version.as_deref(),
                 SystemTime::now(),
             )
         } else {
-            None
+            Default::default()
         };
         let clash_mode = state.clash_mode.clone();
         let traffic_chart = AnyView::from(self.traffic_chart.clone()).cached(
@@ -197,11 +166,11 @@ impl Render for HomePage {
         let active = state.settings.active_profile();
         let profile_name = active.map(|p| p.name.clone()).unwrap_or_default();
         let now = SystemTime::now();
-        let sub_label = updated_label(
+        let sub_label = capitalize_first(&updated_label(
             active.and_then(|p| p.last_updated_secs),
             now,
             t.home.not_updated_yet,
-        );
+        ));
         let usage = active.and_then(|p| p.usage);
 
         let app_state_toggle = self.app_state.clone();
@@ -218,6 +187,7 @@ impl Render for HomePage {
         // click connected.
         let power_base = div()
             .id(("power-button", status as usize))
+            .flex_none()
             .size(px(POWER_BUTTON_DIAMETER))
             .rounded_full()
             .flex()
@@ -244,9 +214,9 @@ impl Render for HomePage {
                     linear_color_stop(theme.primary, 1.),
                 ))
                 .shadow(vec![BoxShadow {
-                    color: theme.primary.opacity(0.4),
-                    offset: point(px(0.), px(8.)),
-                    blur_radius: px(24.),
+                    color: theme.primary.opacity(0.35),
+                    offset: point(px(0.), px(6.)),
+                    blur_radius: px(18.),
                     spread_radius: px(0.),
                     inset: false,
                 }])
@@ -261,12 +231,12 @@ impl Render for HomePage {
                 .border_2()
                 .border_color(theme.border)
                 .shadow_sm()
-                .hover(|s| s.border_color(theme.muted_foreground))
+                .hover(|s| s.border_color(theme.primary).text_color(theme.primary))
+                .text_color(theme.muted_foreground)
                 .child(
                     Icon::default()
                         .path("icons/power.svg")
-                        .with_size(px(POWER_ICON_SIZE))
-                        .text_color(theme.muted_foreground),
+                        .with_size(px(POWER_ICON_SIZE)),
                 ),
         };
 
@@ -291,180 +261,186 @@ impl Render for HomePage {
                     .build(window, cx)
             });
 
-        div()
-            .v_flex()
-            .size_full()
-            .gap_4()
-            // —— Hero 区:按钮 + 状态标题 ——
-            // 下方留白封顶(max_h_24),多余空间归到上方,避免标题与
-            // 设置行之间出现大块死空间。
+        // 状态标题下的一行:断开时说明 Connect 会用哪个 profile;运行中把
+        // 运行时长与 sing-box 版本分开摆放(间距分隔,不用 " · ")。
+        let status_detail = match status {
+            ConnectionStatus::Disconnected if !profile_name.is_empty() => Some(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .truncate()
+                    .child((t.home.ready_with)(&profile_name))
+                    .into_any_element(),
+            ),
+            ConnectionStatus::Connected if info.uptime.is_some() || info.version.is_some() => Some(
+                meta_row(theme, info.uptime.into_iter().chain(info.version))
+                    .gap_4()
+                    .text_sm()
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
+
+        let hero = card_frame(theme)
+            .p_5()
+            // Connected: a faint wash of the accent says so at a glance.
+            .when(connected, |card| {
+                card.bg(theme.primary.opacity(0.05))
+                    .border_color(theme.primary.opacity(0.25))
+            })
             .child(
                 div()
-                    .flex_1()
-                    .v_flex()
+                    .h_flex()
                     .items_center()
-                    .gap_4()
-                    .child(div().flex_1())
+                    .gap_5()
                     .child(power_button)
                     .child(
-                        // 状态标题(网速行已移至侧边栏底部连接状态上方);
-                        // 运行中下附"Running for … · sing-box x.y.z"。
                         div()
                             .v_flex()
-                            .items_center()
+                            .flex_1()
+                            .min_w_0()
                             .gap_1()
                             .child(
                                 div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::BOLD)
+                                    .text_2xl()
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.foreground)
                                     .child(status_title),
                             )
-                            .children(subtitle.map(|text| {
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.muted_foreground)
-                                    .child(text)
-                            })),
-                    )
-                    .child(div().flex_1().max_h_24()),
-            )
-            // —— 运行状态条(仅运行中):内存 / 连接数 / 累计上传 / 累计下载,
-            // 下接近两分钟上下行速率图(同一张卡,省一层卡片边距) ——
-            .when(connected, |this| {
-                this.child(
-                    card_frame(theme)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .gap_4()
-                                .w_full()
-                                .child(stat_cell(
-                                    theme,
-                                    t.home.memory,
-                                    format_bytes(runtime.memory),
-                                ))
-                                .child(stat_cell(
-                                    theme,
-                                    t.home.connections,
-                                    runtime.connections_in.to_string(),
-                                ))
-                                .child(stat_cell(
-                                    theme,
-                                    t.home.uploaded,
-                                    format_bytes(runtime.uplink_total),
-                                ))
-                                .child(stat_cell(
-                                    theme,
-                                    t.home.downloaded,
-                                    format_bytes(runtime.downlink_total),
-                                )),
-                        )
-                        .child(traffic_chart),
+                            .children(status_detail),
+                    ),
+            );
+
+        // —— 运行状态卡(仅运行中):内存 / 连接数 / 累计上传 / 累计下载,
+        // 下接近两分钟上下行速率图。
+        let stats = connected.then(|| {
+            card_frame(theme)
+                .gap_4()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_4()
+                        .w_full()
+                        .child(stat(theme, t.home.memory, format_bytes(runtime.memory)))
+                        .child(stat(
+                            theme,
+                            t.home.connections,
+                            runtime.connections_in.to_string(),
+                        ))
+                        .child(stat(
+                            theme,
+                            t.home.uploaded,
+                            format_bytes(runtime.uplink_total),
+                        ))
+                        .child(stat(
+                            theme,
+                            t.home.downloaded,
+                            format_bytes(runtime.downlink_total),
+                        )),
                 )
-            })
-            // —— Clash 模式(仅运行中且 ≥2 个模式;停止时 ClashMode 已清空) ——
-            .children(clash_mode_card(theme, clash_mode, cx))
-            // —— 设置行:代理模式 + 系统代理(两张等宽小卡) ——
-            // 注意:不要用 h_flex()(自带 items_center,卡片不等高时不拉伸)。
+                .child(traffic_chart)
+        });
+
+        // —— 快捷设置:代理模式 / 系统代理 / Clash 模式,一张分组卡 ——
+        let mut quick_rows = vec![
+            setting_row(theme, t.home.proxy_mode, None)
+                .child(
+                    TabBar::new("proxy-mode")
+                        .segmented()
+                        .selected_index(if proxy_mode { 1 } else { 0 })
+                        .on_click(move |ix: &usize, _, cx| {
+                            let value = *ix == 1;
+                            app_state_mode.update(cx, |state, cx| state.set_proxy_mode(value, cx));
+                        })
+                        .children(vec![t.home.mode_tun, t.home.mode_proxy]),
+                )
+                .into_any_element(),
+            setting_row(theme, t.home.system_proxy, None)
+                .child(Switch::new("system-proxy").checked(system_proxy).on_click(
+                    move |checked: &bool, _, cx| {
+                        let value = *checked;
+                        app_state_system.update(cx, |state, cx| state.set_system_proxy(value, cx));
+                    },
+                ))
+                .into_any_element(),
+        ];
+        quick_rows.extend(clash_mode_row(theme, clash_mode, cx));
+
+        // —— 订阅卡:名字 + 更新时间,Update 按钮,用量条(服务器报了才有) ——
+        let subscription = card_frame(theme)
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .gap_4()
+                    .h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
                     .w_full()
                     .child(
-                        // justify_center:两卡被拉到等高时,行内容垂直居中
-                        // (右卡比左卡矮一截,否则内容贴顶)。
-                        card_frame(theme).flex_1().justify_center().child(
-                            setting_row(theme, t.home.proxy_mode, None).child(
-                                TabBar::new("proxy-mode")
-                                    .segmented()
-                                    .selected_index(if proxy_mode { 1 } else { 0 })
-                                    .on_click(move |ix: &usize, _, cx| {
-                                        let value = *ix == 1;
-                                        app_state_mode.update(cx, |state, cx| {
-                                            state.set_proxy_mode(value, cx)
-                                        });
-                                    })
-                                    .children(vec![t.home.mode_tun, t.home.mode_proxy]),
+                        // 名字过长时截断,不把 Update 按钮挤出卡片。
+                        div()
+                            .v_flex()
+                            .gap_0p5()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.foreground)
+                                    .truncate()
+                                    .child(profile_name),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .truncate()
+                                    .child(sub_label),
                             ),
-                        ),
                     )
-                    .child(card_frame(theme).flex_1().justify_center().child(
-                        setting_row(theme, t.home.system_proxy, None).child(
-                            Switch::new("system-proxy").checked(system_proxy).on_click(
-                                move |checked: &bool, _, cx| {
-                                    let value = *checked;
-                                    app_state_system
-                                        .update(cx, |state, cx| state.set_system_proxy(value, cx));
-                                },
-                            ),
-                        ),
-                    )),
+                    .child(
+                        Button::new("home-update")
+                            .outline()
+                            .small()
+                            .label(t.home.update)
+                            .map(|this| {
+                                if is_updating {
+                                    this.icon(Spinner::new())
+                                } else {
+                                    this.icon(Icon::default().path("icons/refresh-cw.svg"))
+                                }
+                            })
+                            .disabled(is_updating)
+                            .on_click(move |_, _, cx| {
+                                app_state_update
+                                    .update(cx, |state, cx| state.update_subscription(cx));
+                            }),
+                    ),
             )
-            // —— 订阅条(逻辑与改版前一致) ——
+            .children(usage.map(|usage| usage_meter(theme, "home-usage", &usage, now)));
+
+        div()
+            .v_flex()
+            .size_full()
+            .gap_5()
+            .child(hero)
+            .children(stats)
             .child(
-                card_frame(theme).child(
-                    div()
-                        .h_flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .w_full()
-                        .child(
-                            // 名字过长时截断,不把 Update 按钮挤出卡片。
-                            // 订阅服务器报了流量/到期时,下面再加一行用量。
-                            div()
-                                .v_flex()
-                                .gap_1()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .h_flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .w_full()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .text_sm()
-                                                .text_color(theme.foreground)
-                                                .truncate()
-                                                .child(profile_name),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .text_xs()
-                                                .text_color(theme.muted_foreground)
-                                                .whitespace_nowrap()
-                                                .child(format!("· {}", sub_label)),
-                                        ),
-                                )
-                                .children(usage.map(|usage| {
-                                    usage_meter(theme, "home-usage", &usage, now, px(160.))
-                                })),
-                        )
-                        .child(
-                            Button::new("home-update")
-                                .outline()
-                                .small()
-                                .label(t.home.update)
-                                .when(is_updating, |this| this.icon(Spinner::new()))
-                                .disabled(is_updating)
-                                .on_click(move |_, _, cx| {
-                                    app_state_update
-                                        .update(cx, |state, cx| state.update_subscription(cx));
-                                }),
-                        ),
-                ),
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .child(section_heading(theme, t.home.quick_settings))
+                    .child(grouped_card(theme, quick_rows)),
             )
-            // 窗口矮(最小 500 高、已连接时多出状态条和 Clash 模式卡)时
-            // 整页滚动;够高时内容 min_h_full,Hero 区照旧吃掉剩余空间。
+            .child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .child(section_heading(theme, t.home.subscription))
+                    .child(subscription),
+            )
+            // 窗口矮时整页滚动。
             .overflow_y_scrollbar()
             .into_any_element()
     }

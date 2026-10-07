@@ -21,8 +21,8 @@ use crate::core::settings::powershell_proxy_command;
 use crate::core::settings::{posix_proxy_command, StatusLevel, PROXY_PORT};
 use crate::i18n::s;
 use crate::state::AppState;
-use crate::ui::widgets::{page_header, setting_row};
-use crate::ui::{card_frame, toast};
+use crate::ui::toast;
+use crate::ui::widgets::{grouped_card, page_header, section_heading, setting_row};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button,
@@ -114,13 +114,6 @@ impl Render for SettingsPage {
         let theme = cx.theme();
         let t = &s().settings;
 
-        let section_label = |text: &'static str| {
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(text)
-        };
-
         let copy_btn = |id: &'static str, label: &'static str, cmd: String| {
             let toast_msg = (t.copied_command)(label);
             let tooltip = cmd.clone();
@@ -162,91 +155,83 @@ impl Render for SettingsPage {
                 fish_proxy_command(proxy_port),
             ));
 
+        // One headed group per topic: a small heading above a card of rows
+        // with hairlines between them.
+        let section = |title: &'static str, rows: Vec<AnyElement>| {
+            div()
+                .v_flex()
+                .gap_2()
+                .child(section_heading(theme, title))
+                .child(grouped_card(theme, rows))
+        };
+        let value_label = |text: SharedString| {
+            div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(text)
+        };
+
+        let mut network_rows = vec![setting_row(theme, t.local_proxy_port, None)
+            .child(
+                div()
+                    .w(px(96.))
+                    .on_mouse_down_out(|_, window, cx| window.blur(cx))
+                    .child(Input::new(&self.port_input).small().cleanable(false)),
+            )
+            .into_any_element()];
+        network_rows.extend(lan_rows);
+
+        let tun_rows = vec![setting_row(theme, t.ipv6, Some(t.ipv6_hint))
+            .child(
+                Switch::new("tun-ipv6")
+                    .checked(tun_ipv6)
+                    .on_click(move |checked: &bool, _, cx| {
+                        let value = *checked;
+                        app_state_ipv6.update(cx, |state, cx| state.set_tun_ipv6(value, cx));
+                    }),
+            )
+            .into_any_element()];
+
+        let shell_rows = vec![shell_buttons.into_any_element()];
+
+        let mut troubleshooting_rows = diagnostics_rows;
+        troubleshooting_rows.push(
+            setting_row(theme, t.clear_cache, Some(t.clear_cache_hint))
+                .child(
+                    Button::new("clear-cache")
+                        .outline()
+                        .small()
+                        .label(t.clear_cache)
+                        .disabled(!can_clear)
+                        .on_click(move |_, _, cx| {
+                            app_state_clear.update(cx, |state, cx| state.clear_cache(cx));
+                        }),
+                )
+                .into_any_element(),
+        );
+
+        let mut about_rows = vec![setting_row(theme, "BoxPilot", None)
+            .child(value_label(env!("CARGO_PKG_VERSION").into()))
+            .into_any_element()];
+        about_rows.extend(update_rows);
+        about_rows.push(
+            setting_row(theme, "sing-box", None)
+                .child(value_label(sing_box_version.into()))
+                .into_any_element(),
+        );
+
         let cards = div()
             .v_flex()
-            .gap_4()
+            .gap_6()
+            .pb_2()
             .when(!general_rows.is_empty(), |cards| {
-                cards.child(
-                    card_frame(theme)
-                        .child(section_label(t.general))
-                        .children(general_rows),
-                )
+                cards.child(section(t.general, general_rows))
             })
-            .child(
-                card_frame(theme)
-                    .child(section_label(t.network))
-                    .child(
-                        setting_row(theme, t.local_proxy_port, None).child(
-                            div()
-                                .w(px(96.))
-                                .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                                .child(Input::new(&self.port_input).cleanable(false)),
-                        ),
-                    )
-                    .children(lan_rows),
-            )
-            .child(
-                card_frame(theme).child(section_label(t.tun)).child(
-                    setting_row(theme, t.ipv6, Some(t.ipv6_hint)).child(
-                        Switch::new("tun-ipv6")
-                            .checked(tun_ipv6)
-                            .on_click(move |checked: &bool, _, cx| {
-                                let value = *checked;
-                                app_state_ipv6
-                                    .update(cx, |state, cx| state.set_tun_ipv6(value, cx));
-                            }),
-                    ),
-                ),
-            )
-            .child(
-                card_frame(theme)
-                    .child(section_label(t.shell_environment))
-                    .child(shell_buttons),
-            )
-            .child(
-                card_frame(theme).child(
-                    setting_row(theme, t.clear_cache, Some(t.clear_cache_hint))
-                    .child(
-                        Button::new("clear-cache")
-                            .outline()
-                            .small()
-                            .label(t.clear_cache)
-                            .disabled(!can_clear)
-                            .on_click(move |_, _, cx| {
-                                app_state_clear
-                                    .update(cx, |state, cx| state.clear_cache(cx));
-                            }),
-                    ),
-                ),
-            )
-            .when(!diagnostics_rows.is_empty(), |cards| {
-                cards.child(
-                    card_frame(theme)
-                        .child(section_label(t.troubleshooting))
-                        .children(diagnostics_rows),
-                )
-            })
-            .child(
-                card_frame(theme)
-                    .child(section_label(t.about))
-                    .child(
-                        setting_row(theme, "BoxPilot", None).child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.muted_foreground)
-                                .child(env!("CARGO_PKG_VERSION")),
-                        ),
-                    )
-                    .children(update_rows)
-                    .child(
-                        setting_row(theme, "sing-box", None).child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.muted_foreground)
-                                .child(sing_box_version),
-                        ),
-                    ),
-            );
+            .child(section(t.network, network_rows))
+            .child(section(t.tun, tun_rows))
+            .child(section(t.shell_environment, shell_rows))
+            .child(section(t.troubleshooting, troubleshooting_rows))
+            .child(section(t.about, about_rows));
 
         div()
             .v_flex()

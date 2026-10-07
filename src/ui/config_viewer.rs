@@ -12,7 +12,7 @@ use crate::core::config_view::{load, ConfigRequest, ConfigSource, ConfigView, Co
 use crate::core::paths::profile_config_path;
 use crate::i18n::s;
 use crate::state::AppState;
-use crate::ui::widgets::{pill, PillTone};
+use crate::ui::widgets::status_label;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -230,7 +230,7 @@ impl ConfigViewer {
         cx.notify();
     }
 
-    /// Source badge + hint, and the Hide credentials switch. Only with a
+    /// Source status (dot + word) + hint, and the Hide credentials switch. Only with a
     /// config to show.
     fn header(&self, cx: &mut Context<Self>) -> Option<Div> {
         let Content::Loaded(view) = &self.content else {
@@ -239,8 +239,11 @@ impl ConfigViewer {
         let theme = cx.theme();
         let t = &s().config_viewer;
         let (badge, hint) = match view.source {
-            ConfigSource::Running => (pill(theme, PillTone::Primary, t.running), t.running_hint),
-            ConfigSource::Preview => (pill(theme, PillTone::Muted, t.preview), t.preview_hint),
+            ConfigSource::Running => (status_label(theme.success, t.running), t.running_hint),
+            ConfigSource::Preview => (
+                status_label(theme.muted_foreground, t.preview),
+                t.preview_hint,
+            ),
         };
         let row = div()
             .h_flex()

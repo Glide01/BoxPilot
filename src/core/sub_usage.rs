@@ -125,10 +125,10 @@ impl SubscriptionUsage {
         }
     }
 
-    /// "12.0 GB / 100.0 GB · expires in 12 days", "3.5 GB used",
-    /// "100.0 GB / 100.0 GB · expired 2 days ago".
-    pub fn usage_label(&self, now_secs: u64) -> String {
-        let traffic = if self.total > 0 {
+    /// The traffic half of the usage line: "12.0 GB / 100.0 GB" with a
+    /// known allowance, else "3.5 GB used".
+    pub fn traffic_label(&self) -> String {
+        if self.total > 0 {
             format!(
                 "{} / {}",
                 format_bytes(self.used()),
@@ -136,15 +136,12 @@ impl SubscriptionUsage {
             )
         } else {
             (s().usage.used)(&format_bytes(self.used()))
-        };
-        match self.expiry_phrase(now_secs) {
-            Some(expiry) => format!("{}{}{}", traffic, s().common.sep, expiry),
-            None => traffic,
         }
     }
 
-    /// "expires in 3 days" / "expires today" / "expired 2 days ago".
-    fn expiry_phrase(&self, now_secs: u64) -> Option<String> {
+    /// The expiry half, shown apart from the traffic: "expires in 3 days" /
+    /// "expires today" / "expired 2 days ago". `None` without an expiry.
+    pub fn expiry_label(&self, now_secs: u64) -> Option<String> {
         let days = self.days_left(now_secs)?;
         let t = &s().usage;
         Some(if self.is_expired(now_secs) {
@@ -176,7 +173,7 @@ impl SubscriptionUsage {
         }
         // Expired counts too: `days_left` is ≤ 0 then.
         if self.days_left(now_secs).is_some_and(|d| d <= WARN_DAYS) {
-            reasons.push(self.expiry_phrase(now_secs)?);
+            reasons.push(self.expiry_label(now_secs)?);
         }
         Some(reasons.join(s().usage.reason_sep))
     }
@@ -349,31 +346,26 @@ mod tests {
     #[test]
     fn labels_cover_traffic_and_expiry() {
         let day = DAY_SECS as u64;
+        let capped = usage(12 * GB, 100 * GB, Some(NOW + 12 * day + 60));
+        assert_eq!(capped.traffic_label(), "12.0 GB / 100.0 GB");
         assert_eq!(
-            usage(12 * GB, 100 * GB, Some(NOW + 12 * day + 60)).usage_label(NOW),
-            "12.0 GB / 100.0 GB · expires in 12 days"
+            capped.expiry_label(NOW).as_deref(),
+            Some("expires in 12 days")
         );
-        assert_eq!(usage(GB / 2, 0, None).usage_label(NOW), "512.0 MB used");
-        assert_eq!(
-            usage(0, 0, Some(NOW + day + 1)).usage_label(NOW),
-            "0 B used · expires in 1 day"
-        );
-        assert_eq!(
-            usage(0, 0, Some(NOW + 60)).usage_label(NOW),
-            "0 B used · expires today"
-        );
-        assert_eq!(
-            usage(0, 0, Some(NOW - 60)).usage_label(NOW),
-            "0 B used · expired today"
-        );
-        assert_eq!(
-            usage(0, 0, Some(NOW - day - 60)).usage_label(NOW),
-            "0 B used · expired 1 day ago"
-        );
-        assert_eq!(
-            usage(0, 0, Some(NOW - 5 * day)).usage_label(NOW),
-            "0 B used · expired 5 days ago"
-        );
+        let open = usage(GB / 2, 0, None);
+        assert_eq!(open.traffic_label(), "512.0 MB used");
+        assert_eq!(open.expiry_label(NOW), None);
+        for (expire, label) in [
+            (NOW + day + 1, "expires in 1 day"),
+            (NOW + 60, "expires today"),
+            (NOW - 60, "expired today"),
+            (NOW - day - 60, "expired 1 day ago"),
+            (NOW - 5 * day, "expired 5 days ago"),
+        ] {
+            let u = usage(0, 0, Some(expire));
+            assert_eq!(u.traffic_label(), "0 B used");
+            assert_eq!(u.expiry_label(NOW).as_deref(), Some(label));
+        }
     }
 
     #[test]

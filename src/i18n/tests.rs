@@ -195,13 +195,10 @@ fn formatted_messages_fill_in_their_values() {
     );
 
     assert_eq!(
-        (EN.profiles.auto_update_every)("https://a/s", 30),
-        "https://a/s · auto-update 30m"
+        (EN.profiles.auto_update_every)(30),
+        "Auto-updates every 30 min"
     );
-    assert_eq!(
-        (ZH_CN.profiles.auto_update_every)("https://a/s", 30),
-        "https://a/s · 每 30 分钟自动更新"
-    );
+    assert_eq!((ZH_CN.profiles.auto_update_every)(30), "每 30 分钟自动更新");
 
     assert_eq!((EN.connections.active_tab)(3), "Active (3)");
     assert_eq!((ZH_CN.connections.active_tab)(3), "活动 (3)");

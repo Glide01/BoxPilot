@@ -87,39 +87,56 @@ pub fn sanitize_port(raw: &str, default: u16) -> u16 {
     }
 }
 
-/// Profile-row subtitle + the empty-source flag that disables its ⟳ button.
+/// What a profile row shows about its source: where it comes from (the
+/// redacted URL or the file path), how it stays fresh, and the empty-source
+/// flag that disables its ⟳ button. Source and detail are separate lines of
+/// the row, never joined into one string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileRowInfo {
-    pub subtitle: String,
+    /// The redacted subscription URL or the file path; the "no URL / no
+    /// file" wording when there is none.
+    pub source: String,
+    /// "Auto-updates every 30 min", "Auto-update off" or "Local file";
+    /// `None` without a source.
+    pub detail: Option<String>,
     pub source_empty: bool,
 }
 
 pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
     let t = s();
     let source_empty = source.is_empty_source();
-    let subtitle = match source {
+    let (source, detail) = match source {
         ProfileSource::Remote {
             url,
             auto_update_interval_minutes,
         } => {
             if source_empty {
-                t.profiles.no_subscription_url.to_string()
+                (t.profiles.no_subscription_url.to_string(), None)
             } else if *auto_update_interval_minutes > 0 {
-                (t.profiles.auto_update_every)(&redact_url(url), *auto_update_interval_minutes)
+                (
+                    redact_url(url),
+                    Some((t.profiles.auto_update_every)(
+                        *auto_update_interval_minutes,
+                    )),
+                )
             } else {
-                (t.profiles.auto_update_off)(&redact_url(url))
+                (
+                    redact_url(url),
+                    Some(t.profiles.auto_update_off.to_string()),
+                )
             }
         }
         ProfileSource::Local { path } => {
             if source_empty {
-                t.profiles.no_file_selected.to_string()
+                (t.profiles.no_file_selected.to_string(), None)
             } else {
-                (t.profiles.local_file)(path)
+                (path.clone(), Some(t.profiles.local_file.to_string()))
             }
         }
     };
     ProfileRowInfo {
-        subtitle,
+        source,
+        detail,
         source_empty,
     }
 }
@@ -213,24 +230,28 @@ pub fn log_count_label(visible: usize, total: usize) -> String {
     }
 }
 
-/// Home hero subtitle while connected: "Running for 1h 23m · sing-box
-/// 1.14.2". Either half is left out until its API call has answered
-/// (`started_at_millis` from `GetStartedAt`, `version` from `GetVersion` —
-/// the *running* sing-box, which Settings' probed version need not be);
-/// `None` when neither has.
-pub fn runtime_subtitle(
+/// What Home says about the running sing-box: "Running for 1h 23m" and
+/// "sing-box 1.14.2", shown as separate lines. Either is `None` until its
+/// API call has answered (`started_at_millis` from `GetStartedAt`,
+/// `version` from `GetVersion` — the *running* sing-box, which Settings'
+/// probed version need not be).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeInfo {
+    pub uptime: Option<String>,
+    pub version: Option<String>,
+}
+
+pub fn runtime_info(
     started_at_millis: Option<i64>,
     version: Option<&str>,
     now: SystemTime,
-) -> Option<String> {
-    let uptime = started_at_millis
-        .map(|started| (s().home.running_for)(&format_uptime(uptime_since(started, now))));
-    let version = version
-        .filter(|v| !v.is_empty())
-        .map(|v| format!("sing-box {}", v));
-    match (uptime, version) {
-        (Some(uptime), Some(version)) => Some(format!("{} · {}", uptime, version)),
-        (uptime, version) => uptime.or(version),
+) -> RuntimeInfo {
+    RuntimeInfo {
+        uptime: started_at_millis
+            .map(|started| (s().home.running_for)(&format_uptime(uptime_since(started, now)))),
+        version: version
+            .filter(|v| !v.is_empty())
+            .map(|v| format!("sing-box {}", v)),
     }
 }
 
@@ -308,30 +329,35 @@ mod tests {
             url: "https://a/s".into(),
             auto_update_interval_minutes: 30,
         });
-        assert_eq!(on.subtitle, "https://a/s · auto-update 30m");
+        assert_eq!(on.source, "https://a/s");
+        assert_eq!(on.detail.as_deref(), Some("Auto-updates every 30 min"));
         assert!(!on.source_empty);
 
         let off = profile_row_info(&ProfileSource::Remote {
             url: "https://a/s".into(),
             auto_update_interval_minutes: 0,
         });
-        assert_eq!(off.subtitle, "https://a/s · auto-update off");
+        assert_eq!(off.source, "https://a/s");
+        assert_eq!(off.detail.as_deref(), Some("Auto-update off"));
 
         let empty_remote = profile_row_info(&ProfileSource::Remote {
             url: "  ".into(),
             auto_update_interval_minutes: 60,
         });
-        assert_eq!(empty_remote.subtitle, "No subscription URL");
+        assert_eq!(empty_remote.source, "No subscription URL");
+        assert_eq!(empty_remote.detail, None);
         assert!(empty_remote.source_empty);
 
         let local = profile_row_info(&ProfileSource::Local {
             path: "C:\\box.json".into(),
         });
-        assert_eq!(local.subtitle, "Local file · C:\\box.json");
+        assert_eq!(local.source, "C:\\box.json");
+        assert_eq!(local.detail.as_deref(), Some("Local file"));
         assert!(!local.source_empty);
 
         let empty_local = profile_row_info(&ProfileSource::Local { path: "".into() });
-        assert_eq!(empty_local.subtitle, "No file selected");
+        assert_eq!(empty_local.source, "No file selected");
+        assert_eq!(empty_local.detail, None);
         assert!(empty_local.source_empty);
     }
 
@@ -342,8 +368,8 @@ mod tests {
             auto_update_interval_minutes: 30,
         });
         assert_eq!(
-            row.subtitle,
-            "https://sub.example.com/api/v1/client/subscribe?… · auto-update 30m"
+            row.source,
+            "https://sub.example.com/api/v1/client/subscribe?…"
         );
     }
 
@@ -472,22 +498,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_subtitle_joins_uptime_and_version() {
+    fn runtime_info_keeps_uptime_and_version_apart() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_759_405_000);
         let started = Some(1_759_405_000_000 - (3600 + 23 * 60) * 1000);
         assert_eq!(
-            runtime_subtitle(started, Some("1.14.2"), now).as_deref(),
-            Some("Running for 1h 23m · sing-box 1.14.2")
+            runtime_info(started, Some("1.14.2"), now),
+            RuntimeInfo {
+                uptime: Some("Running for 1h 23m".into()),
+                version: Some("sing-box 1.14.2".into()),
+            }
         );
-        assert_eq!(
-            runtime_subtitle(started, None, now).as_deref(),
-            Some("Running for 1h 23m")
-        );
-        assert_eq!(
-            runtime_subtitle(None, Some("1.14.2"), now).as_deref(),
-            Some("sing-box 1.14.2")
-        );
-        assert_eq!(runtime_subtitle(None, Some(""), now), None);
-        assert_eq!(runtime_subtitle(None, None, now), None);
+        assert_eq!(runtime_info(started, None, now).version, None);
+        assert_eq!(runtime_info(None, Some("1.14.2"), now).uptime, None);
+        assert_eq!(runtime_info(None, Some(""), now), RuntimeInfo::default());
+        assert_eq!(runtime_info(None, None, now), RuntimeInfo::default());
     }
 }
