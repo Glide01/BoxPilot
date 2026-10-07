@@ -104,6 +104,11 @@ pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
 pub const TUN_IPV4_ADDRESS: &str = "172.18.0.1/30";
 /// Added to the TUN interface only when `RuntimeOptions::tun_ipv6` is on.
 const TUN_IPV6_ADDRESS: &str = "fdfe:dcba:9876::1/126";
+/// The TUN inbound's `strict_route`. Off on Linux: there sing-box enforces
+/// it with its own nftables / ip rules, which cut off whatever isn't routed
+/// through the tunnel (Docker and libvirt bridges, other VPNs, hosts on the
+/// LAN). Elsewhere it keeps traffic from leaking around the tunnel.
+const TUN_STRICT_ROUTE: bool = !cfg!(target_os = "linux");
 
 /// Everything `prepare_config` needs to turn a canonical config into the form
 /// sing-box actually runs. Grouped into one struct so the injected shape can
@@ -303,7 +308,7 @@ pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String,
             "tag": "tun0",
             "address": address,
             "auto_route": true,
-            "strict_route": true,
+            "strict_route": TUN_STRICT_ROUTE,
             "stack": "mixed"
         });
         serde_json::Value::Array(vec![tun_inbound, mixed_inbound])
@@ -1117,7 +1122,8 @@ mod tests {
         assert_eq!(inbounds.len(), 2);
         assert_eq!(inbounds[0]["type"], "tun");
         assert_eq!(inbounds[0]["auto_route"], true);
-        assert_eq!(inbounds[0]["strict_route"], true);
+        // Off on Linux only (TUN_STRICT_ROUTE).
+        assert_eq!(inbounds[0]["strict_route"], !cfg!(target_os = "linux"));
         assert_eq!(inbounds[1]["type"], "mixed");
     }
 
