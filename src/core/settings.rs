@@ -818,9 +818,12 @@ mod tests {
         assert!(loaded.persist);
         assert!(loaded.problem.is_none());
         let settings = loaded.settings;
+        // The defaults, as this platform allows them (Proxy mode without TUN).
+        let mut expected = AppSettings::default();
+        expected.restrict_proxy_mode(TUN_AVAILABLE);
         assert_eq!(
             serde_json::to_string(&settings).unwrap(),
-            serde_json::to_string(&AppSettings::default()).unwrap()
+            serde_json::to_string(&expected).unwrap()
         );
         let _ = fs::remove_dir_all(&dir);
     }
