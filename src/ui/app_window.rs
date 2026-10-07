@@ -14,7 +14,7 @@ use crate::core::settings::{CloseAction, StatusEvent, StatusLevel};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
 use crate::state::{ActivateRequested, AppState};
-use crate::ui::{theme, toast, tray, RootView};
+use crate::ui::{theme, title_bar, toast, tray, RootView};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -198,27 +198,40 @@ fn open(cx: &mut App) {
         return;
     };
     let app_state = main.app_state.clone();
-    let bounds = main.last_bounds.clone().unwrap_or_else(|| {
-        WindowBounds::Windowed(Bounds::centered(None, size(px(860.), px(620.)), cx))
+    // Sizes are of the client area. On Windows that now includes our own
+    // title bar, which used to sit outside it: add it so the window opens
+    // with as much room for the page as before.
+    let bar_height = if cfg!(target_os = "windows") {
+        title_bar::TITLE_BAR_HEIGHT
+    } else {
+        px(0.)
+    };
+    let bounds = main.last_bounds.unwrap_or_else(|| {
+        WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(860.), px(620.) + bar_height),
+            cx,
+        ))
     });
 
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(bounds),
-            window_min_size: Some(size(px(720.), px(500.))),
+            window_min_size: Some(size(px(720.), px(500.) + bar_height)),
             // Wayland only raises a window that has an app id, and the
             // `.desktop` file is matched by it. Ignored elsewhere.
             app_id: Some("boxpilot".into()),
-            titlebar: Some(TitlebarOptions {
-                title: Some("BoxPilot".into()),
-                ..Default::default()
-            }),
+            // Windows: no native title bar, `RootView` draws its own
+            // (`ui::title_bar`). Linux keeps asking for server-side
+            // decorations (gpui's default) and draws its own only where the
+            // compositor has none.
+            titlebar: Some(title_bar::titlebar_options()),
             ..Default::default()
         },
         |window, cx| {
             window.on_window_should_close(cx, should_close);
             // Resolve System against this window's own appearance (the
-            // reliable source on Linux), set its title bar, and follow OS
+            // reliable source on Linux), set its frame, and follow OS
             // switches for as long as the window lives.
             let theme_pref = app_state.read(cx).settings.theme;
             theme::apply(theme_pref, Some(window), cx);
@@ -285,6 +298,15 @@ fn should_close(window: &mut Window, cx: &mut App) -> bool {
             }
             false
         }
+    }
+}
+
+/// The close button BoxPilot draws itself (a client-decorated Linux
+/// window; on Windows the OS turns ours into its own close request). Same
+/// path as the platform's: `should_close` decides.
+pub fn request_close(window: &mut Window, cx: &mut App) {
+    if should_close(window, cx) {
+        window.remove_window();
     }
 }
 

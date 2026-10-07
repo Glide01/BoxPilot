@@ -88,7 +88,7 @@ pub fn resolve(pref: ThemePreference, system: WindowAppearance) -> ThemeMode {
 /// Load the theme for `pref` (System resolved against `window`'s
 /// appearance when there is a window — the more reliable source on Linux —
 /// else the app's) with BoxPilot's accents, and match `window`'s native
-/// title bar to it. Every window is refreshed.
+/// frame to it. Every window is refreshed.
 pub fn apply(pref: ThemePreference, window: Option<&mut Window>, cx: &mut App) {
     let system = window
         .as_ref()
@@ -156,7 +156,8 @@ pub fn watch_system(
     })
 }
 
-/// Windows draws the title bar itself, light or dark after the OS setting
+/// Windows draws the window frame (border, and the system menu; the title
+/// bar itself is ours, `ui::title_bar`) light or dark after the OS setting
 /// (gpui sets that at creation and on each OS switch). When the app forces
 /// the other mode, switch it with `DWMWA_USE_IMMERSIVE_DARK_MODE` so the
 /// frame matches the content.
@@ -188,8 +189,8 @@ fn native_title_bar(window: &Window, mode: ThemeMode) {
     };
 }
 
-/// Linux: the title bar is the compositor's (or gpui's own client-side
-/// decorations, drawn from the theme), nothing to do.
+/// Linux: the title bar is the compositor's (or, without server-side
+/// decorations, ours, drawn from the theme), nothing to do.
 #[cfg(not(target_os = "windows"))]
 fn native_title_bar(_window: &Window, _mode: ThemeMode) {}
 

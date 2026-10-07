@@ -12,6 +12,7 @@ pub mod pages;
 pub mod root;
 pub mod sidebar;
 pub mod theme;
+pub mod title_bar;
 pub mod toast;
 pub mod traffic_chart;
 pub mod tray;

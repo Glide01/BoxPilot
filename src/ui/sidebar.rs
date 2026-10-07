@@ -1,6 +1,7 @@
-//! Left navigation column: the app's icon and name, the page items, and a
-//! status tile at the bottom (dot + status, then the live up/down speeds
-//! while connected or the active profile's name otherwise). Pure function —
+//! Left navigation column: the app's icon and name (unless the title bar
+//! shows them), the page items, and a status tile at the bottom (dot +
+//! status, then the live up/down speeds while connected or the active
+//! profile's name otherwise). Pure function —
 //! `RootView` supplies the active page, status, detail line, badges, and the
 //! navigation callback.
 
@@ -66,8 +67,25 @@ pub struct Badges {
     pub settings: bool,
 }
 
+/// The app's icon and name: at the top of the sidebar, or `compact` in
+/// BoxPilot's own title bar.
+pub fn brand(compact: bool) -> Div {
+    let (icon, name) = if compact {
+        (px(18.), div().text_sm())
+    } else {
+        (px(24.), div().text_base())
+    };
+    div()
+        .h_flex()
+        .items_center()
+        .gap_2()
+        .child(img("brand/icon.png").size(icon).flex_none())
+        .child(name.font_weight(FontWeight::SEMIBOLD).child("BoxPilot"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn sidebar(
+    show_brand: bool,
     active: ActivePage,
     dot_color: Hsla,
     status_label: &'static str,
@@ -107,23 +125,10 @@ pub fn sidebar(
     Sidebar::new(("nav", active as usize))
         .collapsible(false)
         .w(px(208.))
-        .header(
-            SidebarHeader::new().child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .py_1()
-                    .child(img("brand/icon.png").size(px(24.)).flex_none())
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("BoxPilot"),
-                    ),
-            ),
-        )
+        // With BoxPilot's own title bar the name is up there instead.
+        .when(show_brand, |sidebar| {
+            sidebar.header(SidebarHeader::new().child(brand(false).px_1().py_1()))
+        })
         .child(SidebarMenu::new().children(items.map(|(page, label, icon)| {
             let on_nav = on_nav.clone();
             let badge = match page {

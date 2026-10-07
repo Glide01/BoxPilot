@@ -10,9 +10,11 @@ use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
     TailscalePage, ToolsPage, VpnPage,
 };
-use crate::ui::sidebar::{sidebar, Badges, OptionalPages, SidebarColors, StatusDetail};
+use crate::ui::sidebar::{brand, sidebar, Badges, OptionalPages, SidebarColors, StatusDetail};
 use crate::ui::theme::PANEL_RADIUS;
+use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt};
 
@@ -306,7 +308,7 @@ impl RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_starting = self.app_state.read(cx).is_starting(cx);
         let is_running = self.app_state.read(cx).process.read(cx).is_running();
         let theme = cx.theme();
@@ -361,19 +363,24 @@ impl Render for RootView {
             ActivePage::Settings => self.settings.clone().into(),
         };
 
-        div()
-            .key_context(KEY_CONTEXT)
-            .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::on_update_sub))
-            .on_action(cx.listener(Self::on_toggle_process))
-            // 注意:不要用 gpui-component 的 `.h_flex()` —— 它附带
-            // `items_center`,会把整列内容垂直居中而不是拉伸到全高。
+        // Our own title bar (Windows; Linux without server-side
+        // decorations): the chrome runs up to the window's top edge, the
+        // name moves from the sidebar into the bar, and the panel starts
+        // below it.
+        let client_drawn = title_bar::is_client_drawn(window);
+        let title_bar =
+            client_drawn.then(|| title_bar::title_bar(brand(true).pl(px(19.)), window, cx));
+
+        // 注意:不要用 gpui-component 的 `.h_flex()` —— 它附带
+        // `items_center`,会把整列内容垂直居中而不是拉伸到全高。
+        let body = div()
             .flex()
             .flex_row()
-            .size_full()
-            .bg(chrome)
-            .text_color(fg)
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .child(sidebar(
+                !client_drawn,
                 self.active_page,
                 dot_color,
                 status_label,
@@ -397,7 +404,8 @@ impl Render for RootView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .my_2()
+                    .when(client_drawn, |panel| panel.mt_1().mb_2())
+                    .when(!client_drawn, |panel| panel.my_2())
                     .mr_2()
                     .v_flex()
                     .rounded(px(PANEL_RADIUS))
@@ -410,7 +418,20 @@ impl Render for RootView {
                     .pt_5()
                     .pb_6()
                     .child(page.cached(StyleRefinement::default().size_full())),
-            )
+            );
+
+        div()
+            .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::on_update_sub))
+            .on_action(cx.listener(Self::on_toggle_process))
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(chrome)
+            .text_color(fg)
+            .children(title_bar)
+            .child(body)
             .child(self.toasts.clone())
     }
 }
