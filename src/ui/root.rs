@@ -14,7 +14,7 @@ use crate::ui::pages::{
     TailscalePage, ToolsPage, VpnPage,
 };
 use crate::ui::sidebar::{brand, sidebar, Badges, OptionalPages, SidebarColors, StatusDetail};
-use crate::ui::theme::PANEL_RADIUS;
+use crate::ui::theme::{PANEL_INSET, PANEL_RADIUS};
 use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
 use gpui::prelude::FluentBuilder;
@@ -442,9 +442,9 @@ impl Render for RootView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .when(client_drawn, |panel| panel.mt_1().mb_2())
-                    .when(!client_drawn, |panel| panel.my_2())
-                    .mr_2()
+                    .when(client_drawn, |panel| panel.mt_1().mb(px(PANEL_INSET)))
+                    .when(!client_drawn, |panel| panel.my(px(PANEL_INSET)))
+                    .mr(px(PANEL_INSET))
                     .v_flex()
                     .rounded(px(PANEL_RADIUS))
                     .border_1()

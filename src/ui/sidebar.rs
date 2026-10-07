@@ -7,13 +7,17 @@
 
 use crate::i18n::s;
 use crate::ui::pages::ActivePage;
-use crate::ui::theme::CARD_RADIUS;
+use crate::ui::theme::{CARD_RADIUS, PANEL_INSET};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    sidebar::{Sidebar, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarHeader, SidebarMenu, SidebarMenuItem},
     Icon, IconName, Sizable, StyledExt,
 };
+
+/// Bottom padding gpui-component's `Sidebar` puts under its footer slot
+/// (`pb_3`).
+const SIDEBAR_FOOTER_PADDING_BOTTOM: f32 = 12.;
 
 /// 侧边栏底部单个网速读数:方向箭头 + 格式化速率(如 ↓ 1.2 MB/s)。
 fn footer_speed(icon: &'static str, value: String, color: Hsla) -> impl IntoElement {
@@ -154,50 +158,57 @@ pub fn sidebar(
                 })
                 .on_click(move |_, window, cx| on_nav(page, window, cx))
         })))
+        // The tile goes in as the footer itself, not in a `SidebarFooter`:
+        // that adds 8px of padding (so the tile sat inset from the nav
+        // items) and a hover background, which made the tile look
+        // clickable. The footer slot is inset 12px like the items; the
+        // negative margin takes its 12px bottom padding down to the
+        // `PANEL_INSET` the content panel keeps from the window's bottom
+        // edge (with or without our title bar), so the tile ends on the
+        // panel's line.
         .footer(
-            SidebarFooter::new().child(
-                // 状态卡:状态点 + 标签,下一行是实时网速(已连接)或当前 profile。
-                div()
-                    .v_flex()
-                    .w_full()
-                    .gap_1()
-                    .p_3()
-                    .rounded(px(CARD_RADIUS))
-                    .bg(colors.tile)
-                    .border_1()
-                    .border_color(colors.tile_border)
-                    .child(
+            // 状态卡:状态点 + 标签,下一行是实时网速(已连接)或当前 profile。
+            div()
+                .v_flex()
+                .w_full()
+                .mb(px(PANEL_INSET - SIDEBAR_FOOTER_PADDING_BOTTOM))
+                .gap_1()
+                .p_3()
+                .rounded(px(CARD_RADIUS))
+                .bg(colors.tile)
+                .border_1()
+                .border_color(colors.tile_border)
+                .child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().size(px(8.)).rounded_full().bg(dot_color))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(status_label),
+                        ),
+                )
+                .map(|tile| match detail {
+                    StatusDetail::Speed(down, up) => tile.child(
                         div()
                             .h_flex()
                             .items_center()
-                            .gap_2()
-                            .child(div().size(px(8.)).rounded_full().bg(dot_color))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(status_label),
-                            ),
-                    )
-                    .map(|tile| match detail {
-                        StatusDetail::Speed(down, up) => tile.child(
-                            div()
-                                .h_flex()
-                                .items_center()
-                                .gap_3()
-                                .child(footer_speed("icons/arrow-down.svg", down, colors.muted))
-                                .child(footer_speed("icons/arrow-up.svg", up, colors.muted)),
-                        ),
-                        StatusDetail::Profile(name) => tile.child(
-                            div()
-                                .text_xs()
-                                .text_color(colors.muted)
-                                .truncate()
-                                .child(name),
-                        ),
-                        StatusDetail::None => tile,
-                    }),
-            ),
+                            .gap_3()
+                            .child(footer_speed("icons/arrow-down.svg", down, colors.muted))
+                            .child(footer_speed("icons/arrow-up.svg", up, colors.muted)),
+                    ),
+                    StatusDetail::Profile(name) => tile.child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.muted)
+                            .truncate()
+                            .child(name),
+                    ),
+                    StatusDetail::None => tile,
+                }),
         )
 }
 

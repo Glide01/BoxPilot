@@ -234,7 +234,9 @@ pub struct Home {
     /// Mode.
     pub quick_settings: &'static str,
     /// Heading of the Home card for the active profile.
-    pub subscription: &'static str,
+    pub profile: &'static str,
+    /// Last item of the Home profile switcher: opens the Profiles page.
+    pub manage_profiles: &'static str,
 }
 
 pub struct Profiles {
@@ -613,7 +615,6 @@ pub struct Settings {
     pub general: &'static str,
     pub network: &'static str,
     pub tun: &'static str,
-    pub shell_environment: &'static str,
     pub troubleshooting: &'static str,
     pub about: &'static str,
     pub language: &'static str,
@@ -638,8 +639,13 @@ pub struct Settings {
     pub ipv6: &'static str,
     pub ipv6_hint: &'static str,
     pub clear_cache: &'static str,
+    /// What clearing forgets, while sing-box is stopped.
     pub clear_cache_hint: &'static str,
-    pub copied_command: Fmt1,
+    /// The same while sing-box runs (and holds the cache): why the button
+    /// is unavailable.
+    pub clear_cache_hint_connected: &'static str,
+    /// The Clear cache row's button.
+    pub clear_cache_action: &'static str,
     pub running_config: &'static str,
     pub running_config_hint: &'static str,
 }

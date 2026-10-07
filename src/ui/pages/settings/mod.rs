@@ -1,4 +1,5 @@
-//! 设置页:Shell 环境复制、清除缓存。订阅/profile 管理在 `ProfilesPage`。
+//! 设置页:常规、网络、TUN、故障排查(运行配置、清除缓存)、关于。订阅/profile
+//! 管理在 `ProfilesPage`。
 //!
 //! Feature rows live in one slot file each (`language`, `appearance`,
 //! `window`, `lan`, `diagnostics`, `updates`). Every slot exposes the same
@@ -14,15 +15,10 @@ mod updates;
 mod window;
 
 use crate::core::presentation::sanitize_port;
-#[cfg(not(target_os = "windows"))]
-use crate::core::settings::fish_proxy_command;
-#[cfg(target_os = "windows")]
-use crate::core::settings::powershell_proxy_command;
-use crate::core::settings::{posix_proxy_command, StatusLevel, PROXY_PORT};
+use crate::core::settings::PROXY_PORT;
 use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::theme::FORM_MAX_WIDTH;
-use crate::ui::toast;
 use crate::ui::widgets::{grouped_card, page_header, section_heading, setting_row};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -103,10 +99,10 @@ impl Render for SettingsPage {
         let update_rows = updates::rows(&app_state, window, cx);
 
         let state = self.app_state.read(cx);
-        let can_clear = state.process.read(cx).is_stopped() && !state.is_updating();
+        let stopped = state.process.read(cx).is_stopped();
+        let can_clear = stopped && !state.is_updating();
         let app_state_clear = self.app_state.clone();
         let app_state_ipv6 = self.app_state.clone();
-        let proxy_port = state.settings.proxy_port;
         let tun_ipv6 = state.settings.tun_ipv6;
         let sing_box_version = state
             .sing_box_version
@@ -114,47 +110,6 @@ impl Render for SettingsPage {
             .unwrap_or_else(|| s().common.unknown.to_string());
         let theme = cx.theme();
         let t = &s().settings;
-
-        let copy_btn = |id: &'static str, label: &'static str, cmd: String| {
-            let toast_msg = (t.copied_command)(label);
-            let tooltip = cmd.clone();
-            Button::new(id)
-                .outline()
-                .small()
-                .w(px(144.))
-                .label(label)
-                .tooltip(tooltip)
-                .on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(cmd.clone()));
-                    toast::show(StatusLevel::Success, toast_msg.clone(), cx);
-                })
-        };
-
-        let shell_buttons = div().h_flex().gap_2().w_full();
-        #[cfg(target_os = "windows")]
-        let shell_buttons = shell_buttons
-            .child(copy_btn(
-                "ps-env",
-                "PowerShell",
-                powershell_proxy_command(proxy_port),
-            ))
-            .child(copy_btn(
-                "wsl-env",
-                "WSL",
-                posix_proxy_command(proxy_port),
-            ));
-        #[cfg(not(target_os = "windows"))]
-        let shell_buttons = shell_buttons
-            .child(copy_btn(
-                "posix-env",
-                "bash/zsh",
-                posix_proxy_command(proxy_port),
-            ))
-            .child(copy_btn(
-                "fish-env",
-                "fish",
-                fish_proxy_command(proxy_port),
-            ));
 
         // One headed group per topic: a small heading above a card of rows
         // with hairlines between them.
@@ -193,16 +148,21 @@ impl Render for SettingsPage {
             )
             .into_any_element()];
 
-        let shell_rows = vec![shell_buttons.into_any_element()];
-
         let mut troubleshooting_rows = diagnostics_rows;
+        // While connected the hint says why the button is unavailable, so it
+        // doesn't read as broken.
+        let clear_cache_hint = if stopped {
+            t.clear_cache_hint
+        } else {
+            t.clear_cache_hint_connected
+        };
         troubleshooting_rows.push(
-            setting_row(theme, t.clear_cache, Some(t.clear_cache_hint))
+            setting_row(theme, t.clear_cache, Some(clear_cache_hint))
                 .child(
                     Button::new("clear-cache")
                         .outline()
                         .small()
-                        .label(t.clear_cache)
+                        .label(t.clear_cache_action)
                         .disabled(!can_clear)
                         .on_click(move |_, _, cx| {
                             app_state_clear.update(cx, |state, cx| state.clear_cache(cx));
@@ -230,7 +190,6 @@ impl Render for SettingsPage {
             })
             .child(section(t.network, network_rows))
             .child(section(t.tun, tun_rows))
-            .child(section(t.shell_environment, shell_rows))
             .child(section(t.troubleshooting, troubleshooting_rows))
             .child(section(t.about, about_rows));
 

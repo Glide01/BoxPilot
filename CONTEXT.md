@@ -101,7 +101,7 @@ durations such as 1小时23分 excepted).
 | Connection (page, list) | 连接 | Open / closed connections = 活动 / 已关闭 |
 | Logs | 日志 | Level names stay English (Error / Warn / Info / Debug / Trace), as in the log text |
 | Tools | 工具 | |
-| Settings | 设置 | Sections: 常规 / 网络 / TUN / 终端环境 / 故障排查 / 关于 |
+| Settings | 设置 | Sections: 常规 / 网络 / TUN / 故障排查 / 关于 |
 | System (follow the OS) | 跟随系统 | Language and Appearance options |
 | Appearance: Light / Dark | 外观：浅色 / 深色 | |
 | Close button: Ask / Minimize to tray / Quit | 关闭按钮：询问 / 最小化到托盘 / 退出 | |

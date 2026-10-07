@@ -188,6 +188,32 @@ fn text_units(text: &str) -> usize {
         .sum()
 }
 
+/// Whether `text` is long enough to risk an ellipsis in a column with
+/// `room` Latin letters of space (see [`full_text_tooltip`]).
+pub fn may_truncate(text: &str, room: usize) -> bool {
+    text_units(text) > room
+}
+
+/// `text` cut to about `room` Latin letters with an ellipsis, for places
+/// that clip instead of ellipsizing (popup menu items).
+pub fn shorten(text: &str, room: usize) -> String {
+    if !may_truncate(text, room) {
+        return text.to_string();
+    }
+    let mut used = 0;
+    let mut out = String::new();
+    for c in text.chars() {
+        used += text_units(c.encode_utf8(&mut [0; 4]));
+        if used > room.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+    }
+    out.truncate(out.trim_end().len());
+    out.push('…');
+    out
+}
+
 /// `label`, a line that ellipsizes when its column runs short (a node,
 /// profile or host name), with the whole text in a tooltip — only when the
 /// text is long enough to be at risk of the ellipsis (more than `room`
@@ -199,7 +225,7 @@ pub fn full_text_tooltip(
     room: usize,
 ) -> Stateful<Div> {
     let text: SharedString = text.into();
-    let long = text_units(&text) > room;
+    let long = may_truncate(&text, room);
     label.id(id).child(text.clone()).when(long, |label| {
         label.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
     })
@@ -564,6 +590,13 @@ pub fn usage_meter(
 #[cfg(test)]
 mod tests {
     use super::capitalize_first;
+
+    #[test]
+    fn shorten_cuts_long_text_with_an_ellipsis() {
+        assert_eq!(super::shorten("Home backup", 20), "Home backup");
+        assert_eq!(super::shorten("Hong Kong Premium 01", 10), "Hong Kong…");
+        assert_eq!(super::shorten("香港高级节点一号", 9), "香港高级…");
+    }
 
     #[test]
     fn text_units_count_wide_characters_twice() {

@@ -119,6 +119,8 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.settings.close_minimize,
         t.settings.allow_lan,
         t.settings.clear_cache_hint,
+        t.settings.clear_cache_hint_connected,
+        t.settings.clear_cache_action,
         t.updates.check_automatically,
         t.updates.rate_limited,
         t.config_viewer.preview_hint,
@@ -223,10 +225,6 @@ fn formatted_messages_fill_in_their_values() {
         "BoxPilot 1.14.0 is available — see Settings › About."
     );
     assert_eq!((ZH_CN.chart.mins_secs_ago)(1, 5), "1 分 5 秒前");
-    assert_eq!(
-        (ZH_CN.settings.copied_command)("fish"),
-        "已复制 fish 代理命令。"
-    );
 }
 
 #[test]

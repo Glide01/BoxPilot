@@ -75,6 +75,10 @@ pub fn accent_palette(dark: bool) -> AccentPalette {
 pub const CARD_RADIUS: f32 = 10.;
 /// Corner radius of the content panel the pages sit in.
 pub const PANEL_RADIUS: f32 = 12.;
+/// Gap between the content panel and the window's bottom and right edges
+/// (and the title bar or top edge); the sidebar's status tile ends on the
+/// same line.
+pub const PANEL_INSET: f32 = 8.;
 
 /// Widest a form page's column (Settings, Tools) grows: past it, a label
 /// and its control drift apart across a wide window. Left-aligned, so the

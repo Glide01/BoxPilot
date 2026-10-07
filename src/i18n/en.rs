@@ -80,7 +80,8 @@ pub static EN: Strings = Strings {
         ready_with: |profile| format!("Ready to connect with {profile}"),
         starting_with: |profile| format!("Connecting with {profile}"),
         quick_settings: "Quick settings",
-        subscription: "Subscription",
+        profile: "Profile",
+        manage_profiles: "Manage profiles…",
     },
     profiles: Profiles {
         title: "Profiles",
@@ -489,7 +490,6 @@ pub static EN: Strings = Strings {
         general: "General",
         network: "Network",
         tun: "TUN",
-        shell_environment: "Shell environment",
         troubleshooting: "Troubleshooting",
         about: "About",
         language: "Language",
@@ -523,10 +523,12 @@ pub static EN: Strings = Strings {
         lan_off: "Let other devices on your network use the proxy.",
         ipv6: "IPv6",
         ipv6_hint: "Proxies IPv6 traffic in TUN mode.",
-        clear_cache: "Clear Cache",
+        clear_cache: "Clear cache",
         clear_cache_hint:
-            "Resets cache.db — node selections go back to defaults. Available while disconnected.",
-        copied_command: |shell| format!("Copied {shell} proxy command."),
+            "Forgets the node picked in each group and other state sing-box keeps between runs.",
+        clear_cache_hint_connected: "Forgets the node picked in each group and other state \
+            sing-box keeps between runs. sing-box uses it while connected, so disconnect first.",
+        clear_cache_action: "Clear",
         running_config: "Running config",
         running_config_hint: "The exact config sing-box runs with.",
     },

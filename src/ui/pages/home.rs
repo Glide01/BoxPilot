@@ -4,24 +4,32 @@
 //! - 运行状态卡(仅运行中):内存 / 连接数 / 累计上传下载 + 近两分钟流量图。
 //! - 快捷设置:代理模式、系统代理、Clash 模式(仅运行中且 ≥2 个模式)同在
 //!   一张分组卡里,行间细线分隔。
-//! - 订阅卡:当前 profile 名、更新时间、Update 按钮与用量条。
+//! - 配置卡:当前 profile 名(点开是切换 profile 的菜单)、更新时间(本地文件
+//!   另注明)、Update 按钮与用量条(订阅服务器报了才有)。
 
-use crate::actions::{ToggleProcess, KEY_CONTEXT};
+use crate::actions::{ShowProfiles, ToggleProcess, KEY_CONTEXT};
 use crate::core::bytefmt::format_bytes;
-use crate::core::presentation::{runtime_info, updated_label, ConnectionStatus};
+use crate::core::presentation::{profile_row_info, runtime_info, updated_label, ConnectionStatus};
+use crate::core::settings::ProfileSource;
 use crate::i18n::s;
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
-    capitalize_first, empty_state, empty_state_button, full_text_tooltip, grouped_card, meta_row,
-    minute_ticker, section_heading, setting_row, stat, usage_meter,
+    capitalize_first, empty_state, empty_state_button, grouped_card, may_truncate, meta_row,
+    minute_ticker, section_heading, setting_row, shorten, stat, usage_meter,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    button::Button, scroll::ScrollableElement, spinner::Spinner, switch::Switch, tab::TabBar,
-    theme::Theme, tooltip::Tooltip, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
-    ThemeStyled,
+    button::{Button, ButtonVariants},
+    menu::{DropdownMenu, PopupMenuItem},
+    scroll::ScrollableElement,
+    spinner::Spinner,
+    switch::Switch,
+    tab::TabBar,
+    theme::Theme,
+    tooltip::Tooltip,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, ThemeStyled,
 };
 use std::time::SystemTime;
 
@@ -31,9 +39,15 @@ use std::time::SystemTime;
 /// jumps under the pointer that just clicked it.
 const POWER_BUTTON_DIAMETER: f32 = 56.;
 const POWER_ICON_SIZE: f32 = 22.;
-/// Letters of the profile's name the subscription card shows whole beside
-/// its Update button in the narrowest window; longer ones get a tooltip.
+/// Letters of the profile's name the profile card shows whole beside its
+/// Update button in the narrowest window; longer ones get a tooltip.
 const PROFILE_NAME_ROOM: usize = 40;
+/// Widest the profile switcher's menu grows, and the letters of a name
+/// that fit in it (longer ones are shortened: menu items clip).
+const PROFILE_MENU_MAX_WIDTH: f32 = 360.;
+const PROFILE_MENU_NAME_ROOM: usize = 40;
+/// Tallest the profile switcher's menu grows before it scrolls.
+const PROFILE_MENU_MAX_HEIGHT: f32 = 320.;
 
 /// `color` raised `amount` in lightness (HSL), for the top of a gradient.
 fn lighter(color: Hsla, amount: f32) -> Hsla {
@@ -175,6 +189,21 @@ impl Render for HomePage {
             t.home.not_updated_yet,
         ));
         let usage = active.and_then(|p| p.usage);
+        // A local file has no usage or auto-update to show: say what it is,
+        // so the card doesn't look like a subscription with data missing.
+        let source_info = active.map(|p| profile_row_info(&p.source));
+        let is_local = active.is_some_and(|p| matches!(p.source, ProfileSource::Local { .. }));
+        let source_empty = source_info.as_ref().is_some_and(|info| info.source_empty);
+        let local_note = is_local
+            .then(|| source_info.and_then(|info| info.detail))
+            .flatten();
+        let profiles: Vec<(String, String)> = state
+            .settings
+            .profiles
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        let active_id = state.settings.active_profile_id.clone();
 
         let app_state_toggle = self.app_state.clone();
         let app_state_mode = self.app_state.clone();
@@ -413,8 +442,58 @@ impl Render for HomePage {
         ];
         quick_rows.extend(clash_mode_row(theme, clash_mode, cx));
 
-        // —— 订阅卡:名字 + 更新时间,Update 按钮,用量条(服务器报了才有) ——
-        let subscription = card_frame(theme)
+        // —— 配置卡:名字(切换菜单) + 更新时间,Update 按钮,用量条 ——
+        // The name is the switcher: a quiet ghost button with a caret that
+        // opens every profile (the current one checked), like a row click
+        // on the Profiles page — restarting sing-box onto it if it runs.
+        // Pulled left by its padding (below) so the name lines up with the
+        // line under it; it ellipsizes inside the button, the tooltip has it
+        // all.
+        let app_state_switch = self.app_state.clone();
+        let long_name = may_truncate(&profile_name, PROFILE_NAME_ROOM);
+        let profile_switcher = Button::new("home-profile-switcher")
+            .ghost()
+            .small()
+            .dropdown_caret(true)
+            .label(profile_name.clone())
+            .font_weight(FontWeight::MEDIUM)
+            .when(long_name, |button| button.tooltip(profile_name.clone()))
+            // Connected, the stats card pushes this one to the bottom of the
+            // window: the menu opens upwards there rather than squeezing in
+            // over its own trigger.
+            .dropdown_menu_with_anchor(
+                if connected {
+                    Anchor::BottomLeft
+                } else {
+                    Anchor::TopLeft
+                },
+                move |menu, _, _| {
+                    let menu = menu
+                        .min_w(px(200.))
+                        .max_w(px(PROFILE_MENU_MAX_WIDTH))
+                        .max_h(px(PROFILE_MENU_MAX_HEIGHT))
+                        .scrollable(true);
+                    let menu = profiles.iter().fold(menu, |menu, (id, name)| {
+                        let app_state = app_state_switch.clone();
+                        let id = id.clone();
+                        menu.item(
+                            PopupMenuItem::new(shorten(name, PROFILE_MENU_NAME_ROOM))
+                                .checked(id == active_id)
+                                .on_click(move |_, _, cx| {
+                                    app_state.update(cx, |state, cx| {
+                                        state.set_active_profile(id.clone(), cx)
+                                    });
+                                }),
+                        )
+                    });
+                    menu.separator()
+                        .item(PopupMenuItem::new(s().home.manage_profiles).on_click(
+                            |_, window, cx| window.dispatch_action(Box::new(ShowProfiles), cx),
+                        ))
+                },
+            );
+
+        let profile_card = card_frame(theme)
             .child(
                 div()
                     .h_flex()
@@ -429,23 +508,25 @@ impl Render for HomePage {
                             .gap_0p5()
                             .flex_1()
                             .min_w_0()
-                            .child(full_text_tooltip(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.foreground)
-                                    .truncate(),
-                                "home-profile-name",
-                                profile_name,
-                                PROFILE_NAME_ROOM,
-                            ))
                             .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .truncate()
-                                    .child(sub_label),
-                            ),
+                                // Absolutely placed, the switcher is as wide
+                                // as its name (shrink-to-fit) up to the
+                                // column's width, where the name ellipsizes;
+                                // in the flow it would either stretch across
+                                // the card or refuse to shrink.
+                                div().relative().w_full().h(px(24.)).child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left(px(-8.))
+                                        .max_w_full()
+                                        .child(profile_switcher),
+                                ),
+                            )
+                            .child(meta_row(
+                                theme,
+                                std::iter::once(sub_label).chain(local_note),
+                            )),
                     )
                     .child(
                         Button::new("home-update")
@@ -459,7 +540,7 @@ impl Render for HomePage {
                                     this.icon(Icon::default().path("icons/refresh-cw.svg"))
                                 }
                             })
-                            .disabled(is_updating)
+                            .disabled(is_updating || source_empty)
                             .on_click(move |_, _, cx| {
                                 app_state_update
                                     .update(cx, |state, cx| state.update_subscription(cx));
@@ -485,8 +566,8 @@ impl Render for HomePage {
                 div()
                     .v_flex()
                     .gap_2()
-                    .child(section_heading(theme, t.home.subscription))
-                    .child(subscription),
+                    .child(section_heading(theme, t.home.profile))
+                    .child(profile_card),
             )
             // 窗口矮时整页滚动。
             .overflow_y_scrollbar()
