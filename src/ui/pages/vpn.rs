@@ -25,7 +25,7 @@ use crate::state::vpn::VpnStream;
 use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{empty_state, meta_row, page_header};
+use crate::ui::widgets::{empty_state, meta_row, page_header, IconLabel, Lead};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -272,8 +272,16 @@ fn ended_notice(theme: &Theme) -> Div {
 fn open_browser_button(id: &'static str, url: String) -> Button {
     Button::new(id)
         .outline()
-        .icon(IconName::ExternalLink)
-        .label(s().vpn.open_sign_in_page)
+        // A medium button's icon is 16px, a size up from its text.
+        .icon_label(
+            Lead::Sized(
+                Icon::new(IconName::ExternalLink)
+                    .size_4()
+                    .into_any_element(),
+                px(16.),
+            ),
+            s().vpn.open_sign_in_page,
+        )
         .on_click(move |_, _, cx| cx.open_url(&url))
 }
 

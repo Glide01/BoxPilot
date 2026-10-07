@@ -8,12 +8,17 @@
 use crate::i18n::s;
 use crate::ui::pages::ActivePage;
 use crate::ui::theme::{CARD_RADIUS, PANEL_INSET};
+use crate::ui::widgets::{lead_offset, text_centered, Lead};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     sidebar::{Sidebar, SidebarHeader, SidebarMenu, SidebarMenuItem},
-    Icon, IconName, Sizable, StyledExt,
+    Icon, IconName, StyledExt,
 };
+
+/// Height of a gpui-component `SidebarMenuItem` (`h_7`), which centres
+/// its icon and its `text_sm` label in it.
+const SIDEBAR_ITEM_HEIGHT: f32 = 28.;
 
 /// Bottom padding gpui-component's `Sidebar` puts under its footer slot
 /// (`pb_3`).
@@ -21,27 +26,17 @@ const SIDEBAR_FOOTER_PADDING_BOTTOM: f32 = 12.;
 
 /// 侧边栏底部单个网速读数:方向箭头 + 格式化速率(如 ↓ 1.2 MB/s)。
 fn footer_speed(icon: &'static str, value: String, color: Hsla) -> impl IntoElement {
+    let value = SharedString::from(value);
     div()
         .h_flex()
         .flex_1()
         .min_w_0()
         .items_center()
         .gap_1()
-        .child(
-            Icon::default()
-                .path(icon)
-                .with_size(px(12.))
-                .flex_none()
-                .text_color(color),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_xs()
-                .text_color(color)
-                .child(value),
-        )
+        .text_xs()
+        .text_color(color)
+        .child(text_centered(Icon::default().path(icon), value.clone()))
+        .child(div().min_w_0().truncate().child(value))
 }
 
 /// What the footer's status tile shows under the status: the live speeds
@@ -98,6 +93,7 @@ pub fn sidebar(
     optional: OptionalPages,
     badges: Badges,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
+    window: &Window,
 ) -> impl IntoElement {
     let nav = &s().nav;
     let items = [
@@ -140,6 +136,22 @@ pub fn sidebar(
                 _ => false,
             };
             let selected = active == page;
+            // The item centres its icon in the row; move it onto the
+            // label's letters, see `widgets::lead_offset`.
+            let mut style = window.text_style();
+            style.font_size = rems(0.875).into();
+            if selected {
+                style.font_weight = FontWeight::MEDIUM;
+            }
+            let icon_size = style.font_size.to_pixels(window.rem_size());
+            let offset = lead_offset(
+                &label.into(),
+                &style,
+                icon_size,
+                px(SIDEBAR_ITEM_HEIGHT),
+                window,
+            );
+            let icon = icon.relative().top(offset);
             SidebarMenuItem::new(label)
                 .icon(if selected {
                     icon.text_color(colors.accent)
@@ -183,13 +195,20 @@ pub fn sidebar(
                         .h_flex()
                         .items_center()
                         .gap_2()
-                        .child(div().size(px(8.)).rounded_full().bg(dot_color))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(status_label),
-                        ),
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(text_centered(
+                            Lead::Sized(
+                                div()
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .bg(dot_color)
+                                    .into_any_element(),
+                                px(8.),
+                            ),
+                            status_label,
+                        ))
+                        .child(status_label),
                 )
                 .map(|tile| match detail {
                     StatusDetail::Speed(down, up) => tile.child(

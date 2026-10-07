@@ -16,7 +16,9 @@
 //! `outline` (Test all, Close all, Clear). `ghost` is for icon-only buttons
 //! and for quiet actions inside list rows. An empty state's call to action
 //! is [`empty_state_button`]: primary, a touch roomier than a header
-//! button, with the same text size.
+//! button, with the same text size. An icon goes in front of a label with
+//! [`IconLabel::icon_label`], not `.icon(..).label(..)`, and in front of
+//! other text with [`text_centered`]: both centre it on the letters.
 //!
 //! Choices: a setting with two options is a switch or a segmented control;
 //! one with three or more is a [`choice_select`] dropdown.
@@ -29,8 +31,8 @@ use crate::i18n::s;
 use crate::ui::card_frame;
 use gpui::{
     div, prelude::FluentBuilder, px, Action, AnyElement, App, ClickEvent, Context, Div, ElementId,
-    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Task, Window,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Task, TextStyle, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -44,6 +46,156 @@ use gpui_component::{
 };
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
+
+/// Where to put the top of a `lead_height` tall icon beside one line of
+/// `text` set in `style`, from the top of the text's line box, so the icon
+/// is centred on the letters (half the cap height above the baseline)
+/// rather than on the line box.
+///
+/// gpui centres the line box, and puts the baseline wherever the ascent
+/// and descent of every font the line uses take it: CJK text gets those of
+/// its fallback font, Latin text those of the UI font. So an icon centred
+/// on the box sits a pixel or two above or below the letters, by an
+/// amount that differs per font, size, language and platform. This does
+/// gpui's arithmetic (`paint_line`) on the line as it will be shaped.
+fn lead_top(
+    text: &SharedString,
+    style: &TextStyle,
+    lead_height: Pixels,
+    window: &Window,
+) -> Pixels {
+    let font_size = style.font_size.to_pixels(window.rem_size());
+    let line_height = line_height(style, window);
+    if text.is_empty() {
+        return window.pixel_snap((line_height - lead_height) / 2.);
+    }
+    let text_system = window.text_system();
+    // The same shaping the text's own layout does (and caches).
+    let line = text_system.shape_line(text.clone(), font_size, &[style.to_run(text.len())], None);
+    let baseline = window.pixel_snap((line_height - line.ascent - line.descent) / 2. + line.ascent);
+    let font_id = text_system.resolve_font(&style.font());
+    // Fonts with an old OS/2 table (DejaVu Sans) report none; UI fonts'
+    // cap heights are all close to this.
+    let cap_height = Some(text_system.cap_height(font_id, font_size))
+        .filter(|height| *height > Pixels::ZERO)
+        .unwrap_or(font_size * 0.72);
+    window.pixel_snap(baseline - cap_height / 2. - lead_height / 2.)
+}
+
+/// How far to move an element `lead_height` tall that its row centres in
+/// a `box_height` tall box (as gpui-component's sidebar items centre their
+/// icon) so it sits like [`TextCentered`] beside one line of `text`, set
+/// in `style` and centred in the same box. For leads a component places
+/// itself; elsewhere use [`TextCentered`].
+pub fn lead_offset(
+    text: &SharedString,
+    style: &TextStyle,
+    lead_height: Pixels,
+    box_height: Pixels,
+    window: &Window,
+) -> Pixels {
+    let line_top = window.pixel_snap((box_height - line_height(style, window)) / 2.);
+    let centred = window.pixel_snap((box_height - lead_height) / 2.);
+    line_top + lead_top(text, style, lead_height, window) - centred
+}
+
+/// The height of a line of text in `style`, as gpui's text element
+/// computes it (not `TextStyle::line_height_in_pixels`, which rounds
+/// differently).
+fn line_height(style: &TextStyle, window: &Window) -> Pixels {
+    let rem_size = window.rem_size();
+    let font_size = style.font_size.to_pixels(rem_size);
+    window.pixel_snap(style.line_height.to_pixels(font_size.into(), rem_size))
+}
+
+/// Something set in front of one line of text (an icon, a spinner, a
+/// status dot), centred on the text's letters rather than on its line box
+/// (see [`lead_top`]). It takes the text style of the row it sits in, so
+/// that row, not the text beside it, must set the text's size and weight.
+/// Rows must centre their items (`items_center`): this is a box one line
+/// of text tall, aligned like the text's own.
+#[derive(IntoElement)]
+pub struct TextCentered {
+    lead: Lead,
+    text: SharedString,
+}
+
+/// What [`TextCentered`] holds.
+pub enum Lead {
+    /// An icon at the text's size, as `Button` sizes its icon.
+    Icon(Icon),
+    Spinner(Spinner),
+    /// Any element `height` tall (and as wide).
+    Sized(AnyElement, Pixels),
+}
+
+impl From<Icon> for Lead {
+    fn from(icon: Icon) -> Self {
+        Lead::Icon(icon)
+    }
+}
+
+impl From<IconName> for Lead {
+    fn from(icon: IconName) -> Self {
+        Lead::Icon(Icon::new(icon))
+    }
+}
+
+impl From<Spinner> for Lead {
+    fn from(spinner: Spinner) -> Self {
+        Lead::Spinner(spinner)
+    }
+}
+
+pub fn text_centered(lead: impl Into<Lead>, text: impl Into<SharedString>) -> TextCentered {
+    TextCentered {
+        lead: lead.into(),
+        text: text.into(),
+    }
+}
+
+impl RenderOnce for TextCentered {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let style = window.text_style();
+        let rem_size = window.rem_size();
+        let font_size = style.font_size.to_pixels(rem_size);
+        let (lead, size) = match self.lead {
+            Lead::Icon(icon) => (icon.size(font_size).into_any_element(), font_size),
+            Lead::Spinner(spinner) => (spinner.with_size(font_size).into_any_element(), font_size),
+            Lead::Sized(element, size) => (element, size),
+        };
+        let top = lead_top(&self.text, &style, size, window);
+        div()
+            .relative()
+            .flex_none()
+            .w(size)
+            .h(line_height(&style, window))
+            .child(div().absolute().left_0().top(top).child(lead))
+    }
+}
+
+/// `Button::icon` + `Button::label`, with the icon centred on the label's
+/// letters ([`TextCentered`]). The icon takes the label's size, as a
+/// small or extra-small button's own does.
+pub trait IconLabel {
+    fn icon_label(self, icon: impl Into<Lead>, label: impl Into<SharedString>) -> Self;
+}
+
+impl IconLabel for Button {
+    fn icon_label(self, icon: impl Into<Lead>, label: impl Into<SharedString>) -> Self {
+        let label = label.into();
+        self.accessibility_label(label.clone())
+            .child(text_centered(icon, label.clone()))
+            // `Button::label`'s own wrapper.
+            .child(
+                div()
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label),
+            )
+    }
+}
 
 /// Page title ("Groups", "Logs", …). Pages compose it into their own header
 /// row (some add counts or buttons beside it).
@@ -126,8 +278,7 @@ pub fn empty_state_button(id: impl Into<ElementId>) -> Button {
 pub fn connect_button(id: &'static str) -> Div {
     div().mt_3().child(
         empty_state_button(id)
-            .icon(Icon::default().path("icons/power.svg"))
-            .label(s().status.connect)
+            .icon_label(Icon::default().path("icons/power.svg"), s().status.connect)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleProcess), cx)),
     )
 }
@@ -268,6 +419,12 @@ pub fn meta_row<T: Into<SharedString>>(theme: &Theme, items: impl IntoIterator<I
 /// A state in words with a small dot of its colour in front ("Active",
 /// "Closed", "Running") — the quiet replacement for a filled badge.
 pub fn status_label(color: Hsla, text: impl Into<SharedString>) -> Div {
+    let text = text.into();
+    let dot = div()
+        .size(px(6.))
+        .rounded_full()
+        .bg(color)
+        .into_any_element();
     div()
         .h_flex()
         .flex_shrink_0()
@@ -275,8 +432,8 @@ pub fn status_label(color: Hsla, text: impl Into<SharedString>) -> Div {
         .gap_1p5()
         .text_xs()
         .text_color(color)
-        .child(div().size(px(6.)).rounded_full().bg(color))
-        .child(text.into())
+        .child(text_centered(Lead::Sized(dot, px(6.)), text.clone()))
+        .child(text)
 }
 
 /// One choice of a [`segmented`] control.
@@ -542,6 +699,7 @@ pub fn usage_meter(
         now,
     )));
     let tooltip: SharedString = tooltip.join("\n").into();
+    let traffic: SharedString = usage.traffic_label().into();
     let expiry = usage
         .expiry_label(now_secs)
         .map(|label| capitalize_first(&label));
@@ -567,10 +725,10 @@ pub fn usage_meter(
                         .flex_1()
                         .min_w_0()
                         .text_color(label_color)
-                        .children(
-                            icon.map(|icon| Icon::new(icon).xsmall().flex_none().text_color(color)),
-                        )
-                        .child(div().min_w_0().truncate().child(usage.traffic_label())),
+                        .children(icon.map(|icon| {
+                            text_centered(Icon::new(icon).text_color(color), traffic.clone())
+                        }))
+                        .child(div().min_w_0().truncate().child(traffic)),
                 )
                 .children(expiry.map(|expiry| {
                     div()
@@ -620,15 +778,17 @@ pub fn freshness_button(
         // pointer, and it would come back from the update still painted as
         // hovered by the click that started it. A click meanwhile is a
         // no-op (`AppState::update_profile` ignores a profile in flight).
-        FreshnessState::Updating => button.icon(Spinner::new()).label(label),
-        FreshnessState::Failed => button
-            .icon(Icon::new(IconName::TriangleAlert).text_color(theme.warning))
-            .label(label),
+        FreshnessState::Updating => button.icon_label(Spinner::new(), label),
+        FreshnessState::Failed => button.icon_label(
+            Icon::new(IconName::TriangleAlert).text_color(theme.warning),
+            label,
+        ),
         FreshnessState::Fresh { stale: true } => button
-            .icon(refresh)
+            .accessibility_label(label.clone())
+            .child(text_centered(refresh, label.clone()))
             .child(div().text_color(theme.warning).child(label)),
         FreshnessState::Never | FreshnessState::Fresh { stale: false } => {
-            button.icon(refresh).label(label)
+            button.icon_label(refresh, label)
         }
     };
     let tooltip = freshness.tooltip;

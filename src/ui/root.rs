@@ -432,6 +432,7 @@ impl Render for RootView {
                     settings: self.update_badge,
                 },
                 on_nav,
+                window,
             ))
             // Cached: the page re-renders only when it notifies (each page
             // observes the entities it reads), not on every root re-render —

@@ -9,6 +9,7 @@
 use crate::core::bytefmt::format_speed;
 use crate::state::traffic::{RatePoint, HISTORY_LEN};
 use crate::state::Traffic;
+use crate::ui::widgets::{text_centered, Lead};
 use gpui::{
     div, linear_color_stop, linear_gradient, px, rgb, Context, Div, Entity, FontWeight, Hsla,
     IntoElement, ParentElement, Render, SharedString, Styled, Window,
@@ -137,7 +138,17 @@ fn legend_item(
         .items_center()
         .gap_1()
         .whitespace_nowrap()
-        .child(Icon::default().path(icon).small().text_color(color))
+        .child(text_centered(
+            Lead::Sized(
+                Icon::default()
+                    .path(icon)
+                    .small()
+                    .text_color(color)
+                    .into_any_element(),
+                px(14.),
+            ),
+            label,
+        ))
         .child(div().text_color(theme.muted_foreground).child(label))
         .child(
             div()

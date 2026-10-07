@@ -27,7 +27,8 @@ use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::locale;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, page_header, segmented, Segment,
+    connect_button, empty_state, full_text_tooltip, page_header, segmented, text_centered,
+    IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -262,6 +263,7 @@ impl GroupsPage {
         } else {
             group.all.len().to_string()
         };
+        let now = SharedString::from(group.now.clone());
 
         // A quiet icon button: one per group, so a labelled button would
         // stack down the page; the header's Test all carries the words.
@@ -384,19 +386,18 @@ impl GroupsPage {
                     .ml_2()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(
+                    .child(text_centered(
                         Icon::new(IconName::ArrowRight)
-                            .xsmall()
-                            .flex_none()
                             .text_color(theme.muted_foreground.opacity(0.7)),
-                    )
+                        now.clone(),
+                    ))
                     .child(
                         div()
                             .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
                             .whitespace_nowrap()
-                            .child(SharedString::from(group.now.clone())),
+                            .child(now),
                     ),
             );
 
@@ -659,12 +660,11 @@ impl Render for GroupsPage {
                 Button::new("groups-test-all")
                     .outline()
                     .small()
-                    .label(t.test_all)
                     .map(|button| {
                         if testing_all {
-                            button.icon(Spinner::new())
+                            button.icon_label(Spinner::new(), t.test_all)
                         } else {
-                            button.icon(Icon::empty().path("icons/zap.svg"))
+                            button.icon_label(Icon::empty().path("icons/zap.svg"), t.test_all)
                         }
                     })
                     .loading(testing_all)

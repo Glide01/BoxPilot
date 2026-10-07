@@ -6,15 +6,16 @@
 use super::SettingsPage;
 use crate::i18n::s;
 use crate::state::{app_state::UpdateCheck, AppState};
-use crate::ui::widgets::setting_row;
+use crate::ui::widgets::{setting_row, IconLabel};
 use gpui::{
     div, prelude::FluentBuilder, AnyElement, Context, Entity, Hsla, IntoElement, ParentElement,
     SharedString, Styled, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
+    spinner::Spinner,
     switch::Switch,
-    ActiveTheme, IconName, Sizable, StyledExt,
+    ActiveTheme, Sizable, StyledExt,
 };
 
 /// This slot's rows, in display order; empty = nothing to show.
@@ -97,9 +98,14 @@ pub(super) fn rows(
         Button::new("update-check-now")
             .outline()
             .small()
-            .label(t.check_now)
-            // A loading button is inert; the icon carries its spinner.
-            .when(checking, |button| button.icon(IconName::Loader))
+            // A loading button is inert; the spinner says why.
+            .map(|button| {
+                if checking {
+                    button.icon_label(Spinner::new(), t.check_now)
+                } else {
+                    button.label(t.check_now)
+                }
+            })
             .loading(checking)
             .on_click({
                 let app_state = app_state.clone();

@@ -14,7 +14,7 @@ use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
     empty_state, freshness_button, full_text_tooltip, minute_ticker, page_header,
-    profile_source_line, row_hover_bg, usage_meter, CONTROL_LINE_HEIGHT,
+    profile_source_line, row_hover_bg, usage_meter, IconLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -527,8 +527,7 @@ impl Render for ProfilesPage {
                         Button::new("profile-add")
                             .primary()
                             .small()
-                            .icon(Icon::new(IconName::Plus))
-                            .label(s().profiles.add)
+                            .icon_label(IconName::Plus, s().profiles.add)
                             .on_click(move |_, window, cx| {
                                 Self::open_profile_dialog(
                                     app_state_add.clone(),

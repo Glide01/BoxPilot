@@ -12,7 +12,7 @@ use crate::core::config_view::{load, ConfigRequest, ConfigSource, ConfigView, Co
 use crate::core::paths::profile_config_path;
 use crate::i18n::s;
 use crate::state::AppState;
-use crate::ui::widgets::status_label;
+use crate::ui::widgets::{status_label, IconLabel};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -382,8 +382,7 @@ impl ConfigViewer {
                         Button::new("config-search")
                             .ghost()
                             .small()
-                            .icon(IconName::Search)
-                            .label(t.common.search)
+                            .icon_label(IconName::Search, t.common.search)
                             .tooltip(t.config_viewer.search_tooltip)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.editor
@@ -394,8 +393,7 @@ impl ConfigViewer {
                         Button::new("config-open-folder")
                             .outline()
                             .small()
-                            .icon(IconName::FolderOpen)
-                            .label(t.config_viewer.open_folder)
+                            .icon_label(IconName::FolderOpen, t.config_viewer.open_folder)
                             .tooltip(t.config_viewer.open_folder_tooltip)
                             .on_click(move |_, _, cx| cx.reveal_path(&file)),
                     )
@@ -406,8 +404,8 @@ impl ConfigViewer {
                             .min_w(px(84.))
                             .when_else(
                                 self.copied,
-                                |button| button.icon(IconName::Check).label(t.common.copied),
-                                |button| button.icon(IconName::Copy).label(t.common.copy),
+                                |button| button.icon_label(IconName::Check, t.common.copied),
+                                |button| button.icon_label(IconName::Copy, t.common.copy),
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
                     ),

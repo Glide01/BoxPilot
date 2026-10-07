@@ -20,7 +20,7 @@ use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
     empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
     minute_ticker, profile_source_line, section_heading, setting_row, shorten, stat, usage_meter,
-    CONTROL_LINE_HEIGHT,
+    IconLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -140,8 +140,7 @@ impl Render for HomePage {
             .child(
                 div().mt_3().child(
                     empty_state_button("home-add-subscription")
-                        .icon(Icon::new(IconName::Plus))
-                        .label(t.home.add_subscription)
+                        .icon_label(IconName::Plus, t.home.add_subscription)
                         .on_click(move |_, window, cx| {
                             super::profiles::ProfilesPage::open_profile_dialog(
                                 app_state_add.clone(),
