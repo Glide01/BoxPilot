@@ -72,7 +72,10 @@ still matters: Apple silicon refuses to run unsigned code at all.
   own cache needs root).
 - **Menu bar icon and menus.** The tray is the Windows `tray-icon` backend,
   as an `NSStatusItem` created on the main thread; a click opens the menu,
-  as menu bar icons do, and "Show BoxPilot" is its first item. So the tray
+  as menu bar icons do, and "Show BoxPilot" is its first item. Its icon is
+  not ADR 0004's colour / greyscale app icon but a one-colour template glyph
+  (`assets/tray/`), a box in outline while disconnected and filled while
+  connected, which AppKit tints for a light or dark menu bar. So the tray
   is always available, and ADR 0004's Ask / Minimize to tray / Quit flow
   applies unchanged. The app has a menu bar of its own: Settings… (⌘,),
   Services, Hide (⌘H), Hide Others, Show All, Quit (⌘Q); Edit, whose items

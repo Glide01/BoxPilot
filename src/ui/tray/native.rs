@@ -11,7 +11,7 @@
 //! gpui.
 
 #[cfg(target_os = "macos")]
-use super::icon::padded_tray_icon;
+use super::icon::menu_bar_icon;
 #[cfg(target_os = "windows")]
 use super::icon::tray_icon;
 use super::model::{menu_entries, MenuEntry, TrayCommand, TraySnapshot};
@@ -192,10 +192,32 @@ fn update_in_place(built: &BuiltMenu, entries: &[MenuEntry]) {
 fn icon(connected: bool) -> Result<Icon, String> {
     #[cfg(target_os = "windows")]
     let image = tray_icon(32, connected);
-    // 22pt at 2x, the box itself ~16pt (see `padded_tray_icon`).
+    // A template glyph, 22pt at 2x (see `menu_bar_icon`).
     #[cfg(target_os = "macos")]
-    let image = padded_tray_icon(44, 32, connected);
+    let image = menu_bar_icon(connected);
     Icon::from_rgba(image.rgba, image.size, image.size).map_err(|e| e.to_string())
+}
+
+/// macOS draws the menu bar glyph as a template image: tinted for a light
+/// or dark menu bar and for the highlighted (menu open) state. tray-icon's
+/// plain `with_icon` / `set_icon` would draw it as-is, black on a dark bar.
+fn with_icon(builder: TrayIconBuilder, icon: Icon) -> TrayIconBuilder {
+    #[cfg(target_os = "macos")]
+    {
+        builder.with_icon_templated(icon)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        builder.with_icon(icon)
+    }
+}
+
+/// See [`with_icon`].
+fn set_icon(tray: &TrayIcon, icon: Icon) {
+    #[cfg(target_os = "macos")]
+    let _ = tray.set_icon_templated(Some(icon));
+    #[cfg(target_os = "windows")]
+    let _ = tray.set_icon(Some(icon));
 }
 
 /// tray-icon's handlers are process-wide and settable once.
@@ -249,10 +271,10 @@ impl Backend {
         let connected = snapshot.connected();
         let tooltip = snapshot.tooltip();
         let (menu, built) = build_menu(&entries)?;
-        let tray = TrayIconBuilder::new()
+        let builder = TrayIconBuilder::new()
             .with_id("boxpilot")
-            .with_tooltip(&tooltip)
-            .with_icon(icons[usize::from(connected)].clone())
+            .with_tooltip(&tooltip);
+        let tray = with_icon(builder, icons[usize::from(connected)].clone())
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(cfg!(target_os = "macos"))
             .build()
@@ -291,9 +313,7 @@ impl Backend {
         }
         let connected = snapshot.connected();
         if connected != self.connected {
-            let _ = self
-                .tray
-                .set_icon(Some(self.icons[usize::from(connected)].clone()));
+            set_icon(&self.tray, self.icons[usize::from(connected)].clone());
             self.connected = connected;
         }
     }

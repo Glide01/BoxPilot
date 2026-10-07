@@ -1,9 +1,18 @@
-//! Tray icon bitmaps, made from the app icon: full colour while connected,
-//! greyscale otherwise. Decoded once per size and state; no gpui.
+//! Tray icon bitmaps. Windows and Linux use the app icon: full colour while
+//! connected, greyscale otherwise. The macOS menu bar uses a one-colour
+//! glyph instead, drawn as a template image (only its alpha counts; AppKit
+//! colours it for the menu bar's appearance and the highlighted state).
+//! Decoded once per size and state; no gpui.
 
 use image::{imageops::FilterType, RgbaImage};
 
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/icon.png");
+/// Rendered from `assets/tray/box-*.svg` at 44px (22pt at 2x, the menu
+/// bar's height): `resvg -w 44 -h 44 box-outline.svg box-outline.png`.
+const MENU_BAR_DISCONNECTED_PNG: &[u8] = include_bytes!("../../../assets/tray/box-outline.png");
+const MENU_BAR_CONNECTED_PNG: &[u8] = include_bytes!("../../../assets/tray/box-filled.png");
+/// The menu bar glyphs' pixel size.
+pub const MENU_BAR_ICON_SIZE: u32 = 44;
 
 /// A square RGBA8 bitmap (row-major, straight alpha).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,21 +47,25 @@ pub fn tray_icon(size: u32, connected: bool) -> IconImage {
     }
 }
 
-/// [`tray_icon`] at `size`, centred on a transparent `canvas`-sized square.
-/// The macOS menu bar draws one bitmap pixel per point, capped at its 22pt
-/// height: a 44px canvas stays sharp on a Retina screen, and the margin
-/// brings the box down to about the size of the system's own icons there.
+/// The macOS menu bar glyph: a shipping box in outline while disconnected,
+/// filled while connected — the system's own on/off convention, no colour.
+/// Black with alpha, for use as a template image.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn padded_tray_icon(canvas: u32, size: u32, connected: bool) -> IconImage {
-    let icon = tray_icon(size.min(canvas), connected);
-    let mut padded = RgbaImage::new(canvas, canvas);
-    if let Some(icon_image) = RgbaImage::from_raw(icon.size, icon.size, icon.rgba) {
-        let offset = i64::from((canvas - icon.size) / 2);
-        image::imageops::replace(&mut padded, &icon_image, offset, offset);
-    }
+pub fn menu_bar_icon(connected: bool) -> IconImage {
+    let png = if connected {
+        MENU_BAR_CONNECTED_PNG
+    } else {
+        MENU_BAR_DISCONNECTED_PNG
+    };
+    let size = MENU_BAR_ICON_SIZE;
+    let image = match image::load_from_memory_with_format(png, image::ImageFormat::Png) {
+        Ok(image) => image.to_rgba8(),
+        // Bundled asset; a blank square keeps the menu usable regardless.
+        Err(_) => RgbaImage::new(size, size),
+    };
     IconImage {
-        size: canvas,
-        rgba: padded.into_raw(),
+        size: image.width(),
+        rgba: image.into_raw(),
     }
 }
 
@@ -113,17 +126,35 @@ mod tests {
     }
 
     #[test]
-    fn padded_icon_keeps_a_transparent_margin() {
-        let icon = padded_tray_icon(44, 32, true);
-        assert_eq!(icon.size, 44);
-        assert_eq!(icon.rgba.len(), 44 * 44 * 4);
-        let alpha = |x: usize, y: usize| icon.rgba[(y * 44 + x) * 4 + 3];
-        for i in 0..44 {
-            for (x, y) in [(i, 0), (i, 43), (0, i), (43, i), (i, 5), (5, i)] {
-                assert_eq!(alpha(x, y), 0, "({x}, {y})");
+    fn menu_bar_icons_are_black_glyphs_with_a_margin() {
+        let size = MENU_BAR_ICON_SIZE as usize;
+        for connected in [false, true] {
+            let icon = menu_bar_icon(connected);
+            assert_eq!(icon.size, MENU_BAR_ICON_SIZE);
+            assert_eq!(icon.rgba.len(), size * size * 4);
+            // A template image: only alpha carries the shape.
+            assert!(icon
+                .rgba
+                .chunks_exact(4)
+                .all(|px| px[3] == 0 || px[..3] == [0, 0, 0]));
+            let alpha = |x: usize, y: usize| icon.rgba[(y * size + x) * 4 + 3];
+            for i in 0..size {
+                for (x, y) in [(i, 0), (i, size - 1), (0, i), (size - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "({x}, {y})");
+                }
             }
         }
-        assert!(icon.rgba.chunks_exact(4).any(|px| px[3] > 0));
+    }
+
+    #[test]
+    fn connected_menu_bar_icon_is_the_filled_one() {
+        let ink = |icon: IconImage| {
+            icon.rgba
+                .chunks_exact(4)
+                .map(|px| u32::from(px[3]))
+                .sum::<u32>()
+        };
+        assert!(ink(menu_bar_icon(true)) > ink(menu_bar_icon(false)) * 6 / 5);
     }
 
     #[test]
