@@ -4,6 +4,8 @@
 //! page observes the slice of `AppState` it cares about. Shared theme
 //! comes from `gpui_component::ActiveTheme`.
 
+#[cfg(target_os = "macos")]
+pub mod app_menu;
 pub mod app_window;
 pub mod assets;
 pub mod config_viewer;

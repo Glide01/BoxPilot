@@ -103,9 +103,10 @@ fn main() {
     ensure_elevated();
 
     // Launch attempts reaching this instance: our own argv link, plus every
-    // one the pipe server forwards later. A cold start with no link is not
-    // an *attempt to reach a running instance*, so it sends nothing —
-    // `Plain` only ever originates from the pipe.
+    // one the pipe server forwards later (and, on macOS, the Apple events
+    // below). A cold start with no link is not an *attempt to reach a
+    // running instance*, so it sends nothing — `Plain` only ever originates
+    // from the pipe or a macOS reopen.
     let (deeplink_tx, deeplink_rx) = futures_channel::mpsc::unbounded::<LaunchAttempt>();
     if let Some(uri) = deeplink_arg {
         let _ = deeplink_tx.unbounded_send(LaunchAttempt::DeepLink(uri));
@@ -135,32 +136,56 @@ fn main() {
     #[cfg(target_os = "linux")]
     box_pilot_gui::core::desktop_integration::register_if_appimage();
 
-    gpui_platform::application().with_assets(AppAssets).run(move |cx| {
+    let app = gpui_platform::application().with_assets(AppAssets);
+
+    // macOS starts no new process for a link click or a second launch from
+    // Finder / the Dock: LaunchServices hands them to the running app as
+    // Apple events — a cold start's link too, never in argv. Both become
+    // launch attempts in the same channel, so ADR 0001's rule (and its
+    // `view_attached()` gate) covers them unchanged. gpui calls `on_reopen`
+    // only while no window is visible: with one up, AppKit brings it
+    // forward itself.
+    #[cfg(target_os = "macos")]
+    {
+        let tx = deeplink_tx.clone();
+        app.on_open_urls(move |urls| {
+            for attempt in LaunchAttempt::from_open_urls(urls) {
+                let _ = tx.unbounded_send(attempt);
+            }
+        });
+        let tx = deeplink_tx.clone();
+        app.on_reopen(move |_| {
+            let _ = tx.unbounded_send(LaunchAttempt::Plain);
+        });
+    }
+
+    app.run(move |cx| {
         gpui_component::init(cx);
 
         // Anywhere in the main window (`RootView` keeps focus inside its
-        // context). Ctrl+S not while typing in a text field (gpui-component's
-        // `Input` context): a stray save chord there shouldn't toggle sing-box.
+        // context). `secondary` is Cmd on macOS, Ctrl elsewhere. Ctrl+S not
+        // while typing in a text field (gpui-component's `Input` context): a
+        // stray save chord there shouldn't toggle sing-box.
         cx.bind_keys([
-            KeyBinding::new("ctrl-u", UpdateSubscription, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-u", UpdateSubscription, Some(KEY_CONTEXT)),
             KeyBinding::new(
-                "ctrl-s",
+                "secondary-s",
                 ToggleProcess,
                 Some(&format!("{KEY_CONTEXT} && !Input")),
             ),
         ]);
         // Keyboard navigation: Tab walks the controls (out of a text field
-        // too), Ctrl+1..7 open the pages in sidebar order.
+        // too), Ctrl+1..7 (Cmd on macOS) open the pages in sidebar order.
         cx.bind_keys([
             KeyBinding::new("tab", FocusNext, Some(KEY_CONTEXT)),
             KeyBinding::new("shift-tab", FocusPrevious, Some(KEY_CONTEXT)),
-            KeyBinding::new("ctrl-1", ShowHome, Some(KEY_CONTEXT)),
-            KeyBinding::new("ctrl-2", ShowGroups, Some(KEY_CONTEXT)),
-            KeyBinding::new("ctrl-3", ShowConnections, Some(KEY_CONTEXT)),
-            KeyBinding::new("ctrl-4", ShowProfiles, Some(KEY_CONTEXT)),
-            KeyBinding::new("ctrl-5", ShowLogs, Some(KEY_CONTEXT)),
-            KeyBinding::new("ctrl-6", ShowTools, Some(KEY_CONTEXT)),
-            KeyBinding::new("ctrl-7", ShowSettings, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-1", ShowHome, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-2", ShowGroups, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-3", ShowConnections, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-4", ShowProfiles, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-5", ShowLogs, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-6", ShowTools, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-7", ShowSettings, Some(KEY_CONTEXT)),
         ]);
         // Connections details panel, only while it is open (the page sets
         // the context then) and never while typing in the filter box, whose
@@ -187,6 +212,8 @@ fn main() {
         // background on Linux.
         app_window::init(app_state.clone(), cx);
         tray::init(&app_state, cx);
+        #[cfg(target_os = "macos")]
+        box_pilot_gui::ui::app_menu::init(&app_state, cx);
         drop(app_state);
 
         cx.spawn(async move |cx| cx.update(app_window::show)).detach();

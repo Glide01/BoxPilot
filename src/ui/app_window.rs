@@ -10,6 +10,7 @@
 //! `ProcessSession`, whose `Drop` stops sing-box and resets the system
 //! proxy.
 
+use crate::actions::ShowSettings;
 use crate::core::settings::{CloseAction, StatusEvent, StatusLevel};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
@@ -185,6 +186,11 @@ fn open_handle(cx: &App) -> Option<WindowHandle<Root>> {
 
 /// Bring the main window to the front, opening it if it's closed.
 pub fn show(cx: &mut App) {
+    // macOS: ordering a window front doesn't activate its app, so after a
+    // menu bar icon click or a link handled in the background it would
+    // stay behind the frontmost app.
+    #[cfg(target_os = "macos")]
+    cx.activate(true);
     if let Some(handle) = open_handle(cx) {
         // Errs only while that window is mid-update itself — it is up
         // anyway, so there's nothing to open.
@@ -192,6 +198,39 @@ pub fn show(cx: &mut App) {
         return;
     }
     open(cx);
+}
+
+/// Bring the window up on the Settings page (the macOS app menu's
+/// Settings…). A window opened for it gets the page once its `RootView`
+/// has drawn, and with it its action handlers.
+pub fn show_settings(cx: &mut App) {
+    let was_open = is_open(cx);
+    show(cx);
+    let Some(handle) = open_handle(cx) else {
+        return;
+    };
+    let _ = handle.update(cx, |_, window, cx| {
+        if was_open {
+            window.dispatch_action(Box::new(ShowSettings), cx);
+        } else {
+            window.on_next_frame(|window, cx| window.dispatch_action(Box::new(ShowSettings), cx));
+        }
+    });
+}
+
+/// Minimize the window, if it is open (the macOS Window menu).
+pub fn minimize(cx: &mut App) {
+    if let Some(handle) = open_handle(cx) {
+        let _ = handle.update(cx, |_, window, _| window.minimize_window());
+    }
+}
+
+/// Close the window as its close button would (the macOS Window menu's
+/// Close Window): `should_close` decides whether that quits.
+pub fn close(cx: &mut App) {
+    if let Some(handle) = open_handle(cx) {
+        let _ = handle.update(cx, |_, window, cx| request_close(window, cx));
+    }
 }
 
 fn open(cx: &mut App) {
@@ -303,8 +342,9 @@ fn should_close(window: &mut Window, cx: &mut App) -> bool {
 }
 
 /// The close button BoxPilot draws itself (a client-decorated Linux
-/// window; on Windows the OS turns ours into its own close request). Same
-/// path as the platform's: `should_close` decides.
+/// window; on Windows the OS turns ours into its own close request), and
+/// the macOS Close Window item. Same path as the platform's:
+/// `should_close` decides.
 pub fn request_close(window: &mut Window, cx: &mut App) {
     if should_close(window, cx) {
         window.remove_window();

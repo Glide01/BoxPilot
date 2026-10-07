@@ -16,7 +16,7 @@ use crate::ui::widgets::{status_label, IconLabel};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
-    input::{Editor, EditorState},
+    input::{Editor, EditorState, Search},
     switch::Switch,
     ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
 };
@@ -383,7 +383,9 @@ impl ConfigViewer {
                             .ghost()
                             .small()
                             .icon_label(IconName::Search, t.common.search)
-                            .tooltip(t.config_viewer.search_tooltip)
+                            // The keys come from the editor's own binding:
+                            // ⌘F on macOS, Ctrl+F elsewhere.
+                            .tooltip_with_action(t.common.search, &Search, Some("Input"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.editor
                                     .update(cx, |editor, cx| editor.open_search(false, cx));

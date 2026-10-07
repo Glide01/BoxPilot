@@ -43,3 +43,19 @@ actions!(
 /// Key context the Connections page sets while its details panel is open;
 /// the panel's keys are bound in it (and not while typing in an `Input`).
 pub const CONNECTION_DETAILS_CONTEXT: &str = "ConnectionDetails";
+
+// The macOS menu bar's own items (`ui::app_menu`). Handled app-wide, not in
+// `RootView`, so they also work while the window is closed to the menu bar
+// icon (Settings… then reopens it).
+actions!(
+    box_pilot,
+    [
+        OpenSettings,
+        HideApp,
+        HideOtherApps,
+        ShowAllApps,
+        Quit,
+        MinimizeWindow,
+        CloseWindow
+    ]
+);
