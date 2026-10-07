@@ -296,7 +296,8 @@ pub struct Groups {
     pub sort_default: &'static str,
     pub sort_delay: &'static str,
     pub test_all: &'static str,
-    pub test: &'static str,
+    /// Tooltip of a group's test icon button.
+    pub test_group: &'static str,
     pub test_delay: &'static str,
     /// urltest groups' badge.
     pub auto: &'static str,
@@ -313,8 +314,9 @@ pub struct Connections {
     /// "3 open" — the rest of the summary line is rates and totals.
     pub open_count: FmtN,
     pub total: &'static str,
-    pub active_tab: FmtN,
-    pub closed_tab: FmtN,
+    /// The view choices; the segmented control adds each count.
+    pub active_tab: &'static str,
+    pub closed_tab: &'static str,
     pub newest: &'static str,
     pub traffic: &'static str,
     pub close_all: &'static str,

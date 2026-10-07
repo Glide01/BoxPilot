@@ -24,6 +24,13 @@ use gpui_component::{
 };
 use std::time::SystemTime;
 
+/// Narrowest the name / source / usage column gets before the freshness
+/// lines beside it start to ellipsize.
+const INFO_MIN_WIDTH: f32 = 220.;
+/// Width of the freshness lines ("Updated 25 min ago" over "Auto-updates
+/// every 60 min"); they ellipsize below it only on a narrow window.
+const FRESHNESS_WIDTH: f32 = 180.;
+
 pub struct ProfilesPage {
     app_state: Entity<AppState>,
     /// Re-renders once a minute: "updated N min ago" and the usage line's
@@ -369,9 +376,10 @@ impl ProfilesPage {
             .border_color(theme.border)
             .bg(theme.background)
             .map(|this| {
+                // The radio says which row is in use; a faint tint backs it
+                // up. No accent border on top: one signal is enough.
                 if is_active {
-                    this.border_color(primary.opacity(0.5))
-                        .bg(primary.opacity(0.04))
+                    this.bg(primary.opacity(0.04))
                 } else {
                     this.cursor_pointer()
                         .hover(move |s| s.bg(hover_bg))
@@ -387,12 +395,16 @@ impl ProfilesPage {
             .gap_3()
             .w_full()
             .child(radio)
+            // Name, source and usage take all the width the freshness
+            // column leaves; they only ellipsize once the window is too
+            // narrow for both, and keep at least `INFO_MIN_WIDTH` while the
+            // freshness lines give way first.
             .child(
                 div()
                     .v_flex()
                     .gap_1()
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(INFO_MIN_WIDTH))
                     .child(
                         div()
                             .min_w_0()
@@ -412,10 +424,12 @@ impl ProfilesPage {
                     )
                     // Traffic / expiry the subscription server reported.
                     .children(profile.usage.as_ref().map(|usage| {
-                        div()
-                            .pt_1()
-                            .max_w(px(420.))
-                            .child(usage_meter(theme, ("profile-usage", ix), usage, now))
+                        div().pt_1().w_full().child(usage_meter(
+                            theme,
+                            ("profile-usage", ix),
+                            usage,
+                            now,
+                        ))
                     })),
             )
             .child(
@@ -423,24 +437,35 @@ impl ProfilesPage {
                     .h_flex()
                     .items_center()
                     .gap_1()
-                    .flex_none()
+                    .flex_shrink(1.)
+                    .min_w_0()
                     // Freshness: when it last changed, over how it stays
                     // fresh.
+                    // One width on every row, so the usage bars beside it
+                    // end in a line.
                     .child(
                         div()
                             .v_flex()
+                            .w(px(FRESHNESS_WIDTH))
+                            .flex_shrink(1.)
+                            .min_w_0()
                             .items_end()
                             .gap_0p5()
                             .mr_2()
                             .text_xs()
-                            .whitespace_nowrap()
                             .child(
                                 div()
+                                    .max_w_full()
+                                    .truncate()
                                     .text_color(theme.foreground.opacity(0.8))
                                     .child(capitalize_first(&time_label)),
                             )
                             .children(row_info.detail.map(|detail| {
-                                div().text_color(theme.muted_foreground).child(detail)
+                                div()
+                                    .max_w_full()
+                                    .truncate()
+                                    .text_color(theme.muted_foreground)
+                                    .child(detail)
                             })),
                     )
                     .child(

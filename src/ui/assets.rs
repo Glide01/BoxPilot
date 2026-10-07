@@ -10,6 +10,7 @@ const PENCIL_SVG: &[u8] = include_bytes!("../../assets/icons/pencil.svg");
 const REFRESH_CW_SVG: &[u8] = include_bytes!("../../assets/icons/refresh-cw.svg");
 const GAUGE_SVG: &[u8] = include_bytes!("../../assets/icons/gauge.svg");
 const SHIELD_CHECK_SVG: &[u8] = include_bytes!("../../assets/icons/shield-check.svg");
+const ZAP_SVG: &[u8] = include_bytes!("../../assets/icons/zap.svg");
 /// The app icon, shown beside the name at the top of the sidebar.
 const BRAND_ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
@@ -23,6 +24,7 @@ impl AssetSource for AppAssets {
             "icons/refresh-cw.svg" => Ok(Some(Cow::Borrowed(REFRESH_CW_SVG))),
             "icons/gauge.svg" => Ok(Some(Cow::Borrowed(GAUGE_SVG))),
             "icons/shield-check.svg" => Ok(Some(Cow::Borrowed(SHIELD_CHECK_SVG))),
+            "icons/zap.svg" => Ok(Some(Cow::Borrowed(ZAP_SVG))),
             "brand/icon.png" => Ok(Some(Cow::Borrowed(BRAND_ICON_PNG))),
             _ => Assets.load(path),
         }

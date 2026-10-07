@@ -89,6 +89,8 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.usage.expires_today,
         t.groups.search_placeholder,
         t.groups.test_all,
+        t.groups.test_group,
+        t.connections.active_tab,
         t.groups.timeout,
         t.connections.filter_placeholder,
         t.connections.close_all,
@@ -156,7 +158,7 @@ fn chinese_is_translated() {
     assert_eq!(ZH_CN.status.disconnect, "断开");
     assert_eq!(ZH_CN.status.connected, "已连接");
     assert_eq!(ZH_CN.home.clash_mode, "Clash 模式");
-    assert_eq!(ZH_CN.groups.test, "测速");
+    assert_eq!(ZH_CN.groups.test_all, "全部测速");
 }
 
 /// sing-box is never "内核" (CONTEXT.md).
@@ -200,8 +202,6 @@ fn formatted_messages_fill_in_their_values() {
     );
     assert_eq!((ZH_CN.profiles.auto_update_every)(30), "每 30 分钟自动更新");
 
-    assert_eq!((EN.connections.active_tab)(3), "Active (3)");
-    assert_eq!((ZH_CN.connections.active_tab)(3), "活动 (3)");
     assert_eq!((EN.logs.count_of)(3, 10), "3 of 10");
     assert_eq!((ZH_CN.logs.count_of)(3, 10), "3 / 10");
 

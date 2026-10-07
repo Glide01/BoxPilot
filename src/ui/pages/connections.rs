@@ -437,6 +437,11 @@ impl Render for ConnectionsPage {
         let theme = cx.theme();
         let t = &s().connections;
 
+        // Nothing to filter, switch or close (sing-box stopped, or no
+        // connection yet, open or closed): the toolbar, the totals and
+        // Close all stay out of the way of the empty state.
+        let has_any = live && summary.open + summary.closed > 0;
+
         // Live totals beside the title: open count, current rates, and the
         // traffic so far — three groups set apart by space.
         let summary_items = [
@@ -459,20 +464,20 @@ impl Render for ConnectionsPage {
             .gap_4()
             .min_w_0()
             .child(page_header(theme, t.title))
-            .when(live, |this| {
+            .when(has_any, |this| {
                 this.child(meta_row(theme, summary_items).gap_4().text_sm())
             });
-        let close_all = {
+        let close_all = has_any.then(|| {
             let connections = connections.clone();
             Button::new("connections-close-all")
                 .outline()
                 .small()
                 .label(t.close_all)
-                .disabled(!live || summary.open == 0)
+                .disabled(summary.open == 0)
                 .on_click(move |_, _, cx| {
                     connections.update(cx, |state, cx| state.close_all(cx));
                 })
-        };
+        });
         let header = div()
             .h_flex()
             .items_center()
@@ -480,7 +485,7 @@ impl Render for ConnectionsPage {
             .gap_2()
             .w_full()
             .child(title_block)
-            .child(close_all);
+            .children(close_all);
 
         let page = cx.entity().downgrade();
         let mut controls = div()
@@ -507,8 +512,8 @@ impl Render for ConnectionsPage {
             theme,
             "connections-view",
             vec![
-                Segment::new((t.active_tab)(summary.open as u64)),
-                Segment::new((t.closed_tab)(summary.closed as u64)),
+                Segment::new(t.active_tab).count(summary.open),
+                Segment::new(t.closed_tab).count(summary.closed),
             ],
             VIEWS.iter().position(|view| *view == self.view),
             move |ix, _, cx| {
@@ -537,6 +542,9 @@ impl Render for ConnectionsPage {
                 .into_any_element()
         } else if self.rows.is_empty() {
             let (title, hint) = match (query_empty, self.view) {
+                // Nothing at all yet (the toolbar is hidden): whatever the
+                // view and filter left from before, wait for the first one.
+                _ if !has_any => (t.no_active_title, t.no_active_hint),
                 (false, _) => (t.no_match_title, t.no_match_hint),
                 (true, ConnectionView::Active) => (t.no_active_title, t.no_active_hint),
                 (true, ConnectionView::Closed) => (t.no_closed_title, t.no_closed_hint),
@@ -633,7 +641,7 @@ impl Render for ConnectionsPage {
             .size_full()
             .gap_4()
             .child(header)
-            .child(controls)
+            .when(has_any, |page| page.child(controls))
             .child(body)
     }
 }

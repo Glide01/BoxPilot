@@ -1,6 +1,6 @@
 //! Groups page: header (title, search box, Sort Default / Delay, Test all),
 //! then every group as a card — title line (chevron + name + node count +
-//! current node + Test button) over a grid of node cards (name + delay
+//! current node + test icon button) over a grid of node cards (name + delay
 //! badge / protocol type).
 //!
 //! - Clicking a title line folds / unfolds the group; sing-box stores that
@@ -9,7 +9,7 @@
 //!   and groups without a match are hidden.
 //! - Clicking a node card switches a selector group to it; urltest groups
 //!   pick by latency and are read-only.
-//! - Clicking a node's delay badge (or the gauge icon that shows on hover
+//! - Clicking a node's delay badge (or the zap icon that shows on hover
 //!   while it has none) tests just that node; its badge spins meanwhile.
 //! - sing-box stopped (or its API unreachable): no groups, empty state.
 //!
@@ -30,7 +30,7 @@ use crate::ui::widgets::{connect_button, empty_state, page_header, segmented, Se
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    button::Button,
+    button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
     spinner::Spinner,
@@ -42,7 +42,7 @@ use gpui_component::{
 use std::rc::Rc;
 
 /// Height of a group's title row.
-const HEADER_HEIGHT: f32 = 52.;
+const HEADER_HEIGHT: f32 = 46.;
 /// Height of one node card.
 const CARD_HEIGHT: f32 = 56.;
 /// Space between node cards, both ways.
@@ -253,15 +253,23 @@ impl GroupsPage {
             group.all.len().to_string()
         };
 
+        // A quiet icon button: one per group, so a labelled button would
+        // stack down the page; the header's Test all carries the words.
         let test_btn = {
             let proxy_groups = self.proxy_groups.clone();
             let name = group.name.clone();
             Button::new(("group-test", gi))
-                .outline()
+                .ghost()
                 .small()
-                .label(s().groups.test)
-                // `loading` only animates an icon, and keeps the button inert.
-                .when(is_testing, |button| button.icon(Spinner::new()))
+                .map(|button| {
+                    if is_testing {
+                        button.icon(Spinner::new())
+                    } else {
+                        button.icon(Icon::empty().path("icons/zap.svg"))
+                    }
+                })
+                .tooltip(s().groups.test_group)
+                // `loading` keeps the button inert while the spinner turns.
                 .loading(is_testing)
                 .disabled(!live)
                 .on_click(move |_, _, cx| {
@@ -310,6 +318,23 @@ impl GroupsPage {
                     .text_color(theme.foreground)
                     .child(SharedString::from(group.name.clone())),
             )
+            // urltest groups pick their node by latency themselves, which a
+            // gauge beside the group's name says (with a tooltip) instead
+            // of a badge.
+            .when(group.kind == GroupKind::UrlTest, |row| {
+                row.child(
+                    div()
+                        .id(("group-auto", gi))
+                        .flex_none()
+                        .child(
+                            Icon::empty()
+                                .path("icons/gauge.svg")
+                                .xsmall()
+                                .text_color(theme.primary),
+                        )
+                        .tooltip(|window, cx| Tooltip::new(s().groups.auto).build(window, cx)),
+                )
+            })
             .child(
                 div()
                     .flex_shrink_0()
@@ -317,9 +342,7 @@ impl GroupsPage {
                     .text_color(theme.muted_foreground)
                     .child(count),
             )
-            // The node in use, after an arrow; urltest groups pick it
-            // themselves, which a gauge says (with a tooltip) instead of a
-            // badge.
+            // The node in use, after an arrow.
             .child(
                 div()
                     .h_flex()
@@ -336,22 +359,6 @@ impl GroupsPage {
                             .flex_none()
                             .text_color(theme.muted_foreground.opacity(0.7)),
                     )
-                    .when(group.kind == GroupKind::UrlTest, |row| {
-                        row.child(
-                            div()
-                                .id(("group-auto", gi))
-                                .flex_none()
-                                .child(
-                                    Icon::empty()
-                                        .path("icons/gauge.svg")
-                                        .xsmall()
-                                        .text_color(theme.primary),
-                                )
-                                .tooltip(|window, cx| {
-                                    Tooltip::new(s().groups.auto).build(window, cx)
-                                }),
-                        )
-                    })
                     .child(
                         div()
                             .min_w_0()
@@ -520,7 +527,7 @@ fn node_card(card: NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Theme) 
     element
 }
 
-/// The delay result (or, without one, a gauge icon shown while the card is
+/// The delay result (or, without one, a zap icon shown while the card is
 /// hovered); clicking it tests just this node. A spinner while it runs.
 fn delay_badge(card: &NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Theme) -> AnyElement {
     if card.testing {
@@ -557,7 +564,7 @@ fn delay_badge(card: &NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Them
             .group_hover(NODE_CARD_GROUP, |s| s.visible())
             .child(
                 Icon::empty()
-                    .path("icons/gauge.svg")
+                    .path("icons/zap.svg")
                     .xsmall()
                     .text_color(theme.muted_foreground),
             )
@@ -620,7 +627,13 @@ impl Render for GroupsPage {
                     .outline()
                     .small()
                     .label(t.test_all)
-                    .when(testing_all, |button| button.icon(Spinner::new()))
+                    .map(|button| {
+                        if testing_all {
+                            button.icon(Spinner::new())
+                        } else {
+                            button.icon(Icon::empty().path("icons/zap.svg"))
+                        }
+                    })
                     .loading(testing_all)
                     .disabled(!live)
                     .on_click(move |_, _, cx| {

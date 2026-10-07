@@ -220,14 +220,10 @@ fn looks_like_token(segment: &str) -> bool {
             .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
 }
 
-/// Logs-header count: the total, or "visible of total" while a filter hides
-/// some lines.
-pub fn log_count_label(visible: usize, total: usize) -> String {
-    if visible == total {
-        format!("{}", total)
-    } else {
-        (s().logs.count_of)(visible, total)
-    }
+/// Logs-header count, only while the level filter hides some lines
+/// ("3 of 10"): a bare line total says nothing worth a glance.
+pub fn log_count_label(visible: usize, total: usize) -> Option<String> {
+    (visible != total).then(|| (s().logs.count_of)(visible, total))
 }
 
 /// What Home says about the running sing-box: "Running for 1h 23m" and
@@ -492,9 +488,10 @@ mod tests {
 
     #[test]
     fn log_count_label_shows_ratio_only_when_filtered() {
-        assert_eq!(log_count_label(10, 10), "10");
-        assert_eq!(log_count_label(3, 10), "3 of 10");
-        assert_eq!(log_count_label(0, 0), "0");
+        assert_eq!(log_count_label(10, 10), None);
+        assert_eq!(log_count_label(3, 10).as_deref(), Some("3 of 10"));
+        assert_eq!(log_count_label(0, 10).as_deref(), Some("0 of 10"));
+        assert_eq!(log_count_label(0, 0), None);
     }
 
     #[test]

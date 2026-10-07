@@ -424,7 +424,7 @@ fn ping_card(ei: usize, ping: &PingSession, entity: &Entity<TailscaleState>, the
     } else {
         let entity = entity.clone();
         Button::new(id(ei, "ping-close"))
-            .ghost()
+            .outline()
             .small()
             .label(s().common.close)
             .on_click(move |_, _, cx| entity.update(cx, |state, cx| state.dismiss_ping(cx)))
@@ -506,7 +506,7 @@ fn taildrop_card(
         let tag = tag.clone();
         let busy = state.is_busy(&TailscaleAction::MarkRead { tag: tag.clone() });
         Button::new(id(ei, "mark-read"))
-            .ghost()
+            .outline()
             .small()
             .label(s().tailscale.mark_read)
             .loading(busy)

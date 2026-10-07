@@ -7,6 +7,14 @@
 //! [`meta_row`]) or on lines of their own — never strung together with
 //! " · ". State reads as coloured text or a small dot beside it
 //! ([`status_label`]), not as filled badges.
+//!
+//! Buttons: actions in a page header, a card header or a toolbar are all
+//! `small`. `primary` marks the one action a page or card is there for
+//! (Add a profile, Start a test, Sign in); every other labelled action is
+//! `outline` (Test all, Close all, Clear). `ghost` is for icon-only buttons
+//! and for quiet actions inside list rows. An empty state's call to action
+//! is [`empty_state_button`]: primary, a touch roomier than a header
+//! button, with the same text size.
 
 use crate::actions::ToggleProcess;
 use crate::core::sub_usage::{expiry_date_utc, SubscriptionUsage, UsageLevel};
@@ -94,13 +102,21 @@ pub fn empty_state(
         )
 }
 
+/// An empty state's call to action, unlabelled: a primary button with a
+/// header button's text size (gpui-component's medium size jumps to 16px
+/// text, which reads louder than everything around it), given a little
+/// more room. The caller adds the label, icon and handler and appends it
+/// to [`empty_state`].
+pub fn empty_state_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id).primary().small().h(px(30.)).px_3()
+}
+
 /// The primary "Connect" action an empty state offers when what it lacks
 /// only exists while sing-box runs. Dispatches `ToggleProcess`, the same
 /// action as the Home power button and its shortcut.
 pub fn connect_button(id: &'static str) -> Div {
     div().mt_3().child(
-        Button::new(id)
-            .primary()
+        empty_state_button(id)
             .icon(Icon::default().path("icons/power.svg"))
             .label(s().status.connect)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleProcess), cx)),
@@ -198,6 +214,9 @@ pub fn status_label(color: Hsla, text: impl Into<SharedString>) -> Div {
 pub struct Segment {
     pub label: SharedString,
     pub tooltip: Option<&'static str>,
+    /// A count shown after the label in muted text ("Active  12"); `None`
+    /// (or zero, see [`Segment::count`]) shows the label alone.
+    pub count: Option<usize>,
 }
 
 impl Segment {
@@ -205,11 +224,19 @@ impl Segment {
         Self {
             label: label.into(),
             tooltip: None,
+            count: None,
         }
     }
 
     pub fn tooltip(mut self, tooltip: &'static str) -> Self {
         self.tooltip = Some(tooltip);
+        self
+    }
+
+    /// How many items the choice holds. Zero shows nothing: an empty
+    /// choice needs no number.
+    pub fn count(mut self, count: usize) -> Self {
+        self.count = (count > 0).then_some(count);
         self
     }
 }
@@ -244,6 +271,7 @@ pub fn segmented(
                 .px_2p5()
                 .flex()
                 .items_center()
+                .gap_1p5()
                 .rounded(theme.radius - px(2.))
                 .text_xs()
                 .font_weight(FontWeight::MEDIUM)
@@ -261,6 +289,12 @@ pub fn segmented(
                 })
                 .on_click(move |_, window, cx| on_select(ix, window, cx))
                 .child(segment.label)
+                .children(segment.count.map(|count| {
+                    div()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(muted_fg)
+                        .child(count.to_string())
+                }))
         }))
 }
 

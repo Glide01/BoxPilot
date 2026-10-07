@@ -4,10 +4,10 @@ use crate::core::singbox_api::LogLevel;
 use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::card_frame;
-use crate::ui::widgets::{empty_state, page_header, segmented, Segment};
-use gpui::*;
+use crate::ui::widgets::{connect_button, empty_state, page_header, segmented, Segment};
+use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    button::{Button, ButtonVariants},
+    button::Button,
     input::{Editor, EditorState, TextDecoration, TextDecorationCollection},
     ActiveTheme, IconName, Sizable, StyledExt,
 };
@@ -90,6 +90,10 @@ impl LogsPage {
             cx.notify();
         })
         .detach();
+
+        // Stopped / started: the empty state's Connect button follows.
+        let process = app_state.read(cx).process.clone();
+        cx.observe(&process, |_, _, cx| cx.notify()).detach();
 
         let mut page = Self {
             app_state,
@@ -251,6 +255,7 @@ impl Render for LogsPage {
         let theme = cx.theme();
 
         let total = logs.entries().len();
+        let stopped = self.app_state.read(cx).process.read(cx).is_stopped();
         let threshold = logs.threshold();
         let default_threshold = logs.default_threshold();
         let count_label = log_count_label(logs.visible_count(), total);
@@ -260,12 +265,12 @@ impl Render for LogsPage {
             .items_center()
             .gap_2()
             .child(page_header(theme, s().logs.title))
-            .child(
+            .children(count_label.map(|count| {
                 div()
                     .text_sm()
                     .text_color(theme.muted_foreground)
-                    .child(count_label),
-            );
+                    .child(count)
+            }));
 
         // The level sing-box's config asks for says so in its tooltip.
         let levels = LEVEL_CHOICES
@@ -298,7 +303,7 @@ impl Render for LogsPage {
             ))
             .child(
                 Button::new("logs-clear")
-                    .ghost()
+                    .outline()
                     .small()
                     .label(s().logs.clear)
                     .on_click(move |_, _, cx| {
@@ -314,7 +319,8 @@ impl Render for LogsPage {
             .gap_2()
             .w_full()
             .child(title_block)
-            .child(controls);
+            // No lines yet: nothing to filter or clear.
+            .when(total > 0, |header| header.child(controls));
 
         let body = if total == 0 {
             empty_state(
@@ -323,6 +329,7 @@ impl Render for LogsPage {
                 s().logs.empty_title,
                 s().logs.empty_hint,
             )
+            .when(stopped, |this| this.child(connect_button("logs-connect")))
             .into_any_element()
         } else {
             // 只读、无边框、不换行的编辑器:鼠标可拖选 + 复制 + 搜索 + 横向滚动。
