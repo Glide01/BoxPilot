@@ -34,10 +34,10 @@ running in the tray?" with a "Don't ask again" box.
   a tray icon is actually showing (`tray::is_available`). Without one — a
   Linux desktop with no StatusNotifier host (e.g. GNOME without the
   AppIndicator extension), a headless/xvfb session, a failed registration —
-  closing quits exactly as before, and the Settings row shows no choice,
-  just "Quits BoxPilot" with the hint "No system tray on this desktop to
-  keep BoxPilot running in." If the host goes away while the window is
-  closed, the window reopens.
+  closing quits exactly as before, and the Settings row shows no choice
+  and no control, only the hint "Closing the window quits BoxPilot. This
+  desktop has no system tray to keep it running in." If the host goes away
+  while the window is closed, the window reopens.
 - **Backends.** Windows: `tray-icon` + `muda`, created on the UI thread,
   whose hidden window gpui's own `GetMessageW` loop pumps. Linux: a
   StatusNotifierItem over D-Bus via `ksni` (no GTK), registered on a thread

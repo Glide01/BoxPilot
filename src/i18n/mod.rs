@@ -623,7 +623,6 @@ pub struct Settings {
     pub close_button: &'static str,
     pub close_hint: &'static str,
     pub close_no_tray_hint: &'static str,
-    pub close_quits: &'static str,
     pub close_ask: &'static str,
     pub close_minimize: &'static str,
     pub close_quit: &'static str,

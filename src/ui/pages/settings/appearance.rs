@@ -5,12 +5,12 @@ use super::SettingsPage;
 use crate::core::settings::ThemePreference;
 use crate::i18n::{s, Strings};
 use crate::state::AppState;
-use crate::ui::{theme, widgets::setting_row};
-use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
-use gpui_component::{
-    tab::{Tab, TabBar},
-    ActiveTheme,
+use crate::ui::{
+    theme,
+    widgets::{choice_select, setting_row},
 };
+use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
+use gpui_component::ActiveTheme;
 
 /// The options, in display order (never rely on `ThemePreference`'s variant
 /// order: serde's `other` fallback forces `System` last).
@@ -31,31 +31,22 @@ fn label(pref: ThemePreference, t: &'static Strings) -> &'static str {
 /// This slot's rows, in display order; empty = nothing to show.
 pub(super) fn rows(
     app_state: &Entity<AppState>,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<SettingsPage>,
 ) -> Vec<AnyElement> {
     let current = app_state.read(cx).settings.theme;
-    let selected = OPTIONS
-        .iter()
-        .position(|pref| *pref == current)
-        .unwrap_or(0);
-
     let app_state = app_state.clone();
-    let control = TabBar::new("appearance")
-        .segmented()
-        .selected_index(selected)
-        .on_click(move |ix: &usize, window, cx| {
-            if let Some(pref) = OPTIONS.get(*ix) {
-                let pref = *pref;
-                app_state.update(cx, |state, cx| state.set_theme(pref, cx));
-                theme::apply(pref, Some(window), cx);
-            }
-        })
-        .children(
-            OPTIONS
-                .iter()
-                .map(|pref| Tab::new().label(label(*pref, s()))),
-        );
+    let control = choice_select(
+        "appearance",
+        OPTIONS.map(|pref| (pref, label(pref, s()))),
+        current,
+        move |pref, window, cx| {
+            app_state.update(cx, |state, cx| state.set_theme(pref, cx));
+            theme::apply(pref, Some(window), cx);
+        },
+        window,
+        cx,
+    );
 
     vec![setting_row(
         cx.theme(),

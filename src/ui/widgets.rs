@@ -1,7 +1,8 @@
 //! Shared chrome builders beside `card_frame`: page titles, empty states,
-//! labeled setting rows, grouped lists, segmented controls, quiet status
-//! labels and the subscription usage meter. Pure element builders — one
-//! place to restyle what every page repeats.
+//! labeled setting rows, grouped lists, segmented controls, setting
+//! dropdowns, quiet status labels and the subscription usage meter. Element
+//! builders (only [`choice_select`] keeps state, in the window) — one place
+//! to restyle what every page repeats.
 //!
 //! House style: related facts sit side by side, set apart by space (see
 //! [`meta_row`]) or on lines of their own — never strung together with
@@ -15,6 +16,9 @@
 //! and for quiet actions inside list rows. An empty state's call to action
 //! is [`empty_state_button`]: primary, a touch roomier than a header
 //! button, with the same text size.
+//!
+//! Choices: a setting with two options is a switch or a segmented control;
+//! one with three or more is a [`choice_select`] dropdown.
 
 use crate::actions::ToggleProcess;
 use crate::core::sub_usage::{expiry_date_utc, SubscriptionUsage, UsageLevel};
@@ -29,9 +33,11 @@ use gpui::{
 use gpui_component::{
     button::{Button, ButtonVariants},
     progress::Progress,
+    searchable_list::SearchableListItem,
+    select::{Select, SelectEvent, SelectState},
     theme::Theme,
     tooltip::Tooltip,
-    Icon, IconName, Sizable, StyledExt,
+    Icon, IconName, IndexPath, Sizable, StyledExt,
 };
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -296,6 +302,91 @@ pub fn segmented(
                         .child(count.to_string())
                 }))
         }))
+}
+
+/// Width of a [`choice_select`]: room for the longest choice in either
+/// language ("Minimize to tray") at the small size, the same for every
+/// dropdown so a card's controls line up.
+pub const CHOICE_SELECT_WIDTH: f32 = 160.;
+
+/// One option of a [`choice_select`]: what it shows, what it stands for.
+#[derive(Clone)]
+pub struct Choice<V> {
+    label: SharedString,
+    value: V,
+}
+
+impl<V: Clone + PartialEq> SearchableListItem for Choice<V> {
+    type Value = V;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &V {
+        &self.value
+    }
+}
+
+/// A small dropdown for a setting row with three or more choices
+/// (Language, Appearance, Close button): the current choice in an
+/// input-styled trigger, the rest in a menu below with a check on the
+/// current one. Mouse or keyboard (Tab to it, Up/Down/Enter, Esc);
+/// `on_select` runs as soon as a choice is picked, re-picking the current
+/// one included.
+///
+/// The dropdown's state lives in the window under `id` for as long as it is
+/// drawn every frame, and is rebuilt when its page comes back. Each render
+/// brings its labels (the UI language may have changed) and its selection
+/// (`selected` may have been changed elsewhere) up to date.
+pub fn choice_select<V: Copy + PartialEq + 'static>(
+    id: &'static str,
+    choices: impl IntoIterator<Item = (V, &'static str)>,
+    selected: V,
+    on_select: impl Fn(V, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let choices: Vec<Choice<V>> = choices
+        .into_iter()
+        .map(|(value, label)| Choice {
+            label: label.into(),
+            value,
+        })
+        .collect();
+    let selected_ix = choices
+        .iter()
+        .position(|choice| choice.value == selected)
+        .map(|ix| IndexPath::default().row(ix));
+
+    let mut created = false;
+    let state = window.use_keyed_state(id, cx, |window, cx| {
+        created = true;
+        SelectState::new(choices.clone(), selected_ix, window, cx)
+    });
+    if created {
+        window
+            .subscribe(&state, cx, move |_, event: &SelectEvent<_>, window, cx| {
+                let SelectEvent::Confirm(Some(value)) = event else {
+                    return;
+                };
+                on_select(*value, window, cx);
+            })
+            .detach();
+    } else {
+        state.update(cx, |state, cx| {
+            state.set_items(choices, window, cx);
+            if state.selected_value() != Some(&selected) {
+                state.set_selected_value(&selected, window, cx);
+            }
+        });
+    }
+
+    div()
+        .flex_none()
+        .w(px(CHOICE_SELECT_WIDTH))
+        .child(Select::new(&state).small())
+        .into_any_element()
 }
 
 /// A short stat: caption over a larger value ("Memory / 48.2 MB").

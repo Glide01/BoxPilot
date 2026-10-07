@@ -14,25 +14,22 @@ use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
-    capitalize_first, empty_state, grouped_card, meta_row, minute_ticker, section_heading,
-    setting_row, stat, usage_meter,
+    capitalize_first, empty_state, empty_state_button, grouped_card, meta_row, minute_ticker,
+    section_heading, setting_row, stat, usage_meter,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    button::{Button, ButtonVariants},
-    scroll::ScrollableElement,
-    spinner::Spinner,
-    switch::Switch,
-    tab::TabBar,
-    theme::Theme,
-    tooltip::Tooltip,
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
+    button::Button, scroll::ScrollableElement, spinner::Spinner, switch::Switch, tab::TabBar,
+    theme::Theme, tooltip::Tooltip, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
 };
 use std::time::SystemTime;
 
-/// 电源按钮直径与图标尺寸(px)。
-const POWER_BUTTON_DIAMETER: f32 = 76.;
-const POWER_ICON_SIZE: f32 = 30.;
+/// 电源按钮直径与图标尺寸(px)。Compact enough that, connected, the hero,
+/// stats, quick settings and subscription all fit a 1000×700 window
+/// without scrolling; the same size in every state, so the button never
+/// jumps under the pointer that just clicked it.
+const POWER_BUTTON_DIAMETER: f32 = 56.;
+const POWER_ICON_SIZE: f32 = 22.;
 
 /// `color` raised `amount` in lightness (HSL), for the top of a gradient.
 fn lighter(color: Hsla, amount: f32) -> Hsla {
@@ -118,8 +115,7 @@ impl Render for HomePage {
             .size_full()
             .child(
                 div().mt_3().child(
-                    Button::new("home-add-subscription")
-                        .primary()
+                    empty_state_button("home-add-subscription")
                         .icon(Icon::new(IconName::Plus))
                         .label(t.home.add_subscription)
                         .on_click(move |_, window, cx| {
@@ -213,10 +209,14 @@ impl Render for HomePage {
                     linear_color_stop(lighter(theme.primary, 0.08), 0.),
                     linear_color_stop(theme.primary, 1.),
                 ))
+                // A soft lift, not a glow: on the dark background a wide
+                // accent shadow reads as a halo, so it stays faint there.
                 .shadow(vec![BoxShadow {
-                    color: theme.primary.opacity(0.35),
-                    offset: point(px(0.), px(6.)),
-                    blur_radius: px(18.),
+                    color: theme
+                        .primary
+                        .opacity(if theme.is_dark() { 0.2 } else { 0.28 }),
+                    offset: point(px(0.), px(3.)),
+                    blur_radius: px(10.),
                     spread_radius: px(0.),
                     inset: false,
                 }])
@@ -282,17 +282,20 @@ impl Render for HomePage {
         };
 
         let hero = card_frame(theme)
-            .p_5()
-            // Connected: a faint wash of the accent says so at a glance.
+            .px_5()
+            // Connected: a faint wash of the accent says so at a glance; the
+            // border only leans towards the accent, so the card keeps the
+            // weight of its neighbours.
             .when(connected, |card| {
+                let tint = if theme.is_dark() { 0.14 } else { 0.25 };
                 card.bg(theme.primary.opacity(0.05))
-                    .border_color(theme.primary.opacity(0.25))
+                    .border_color(theme.border.blend(theme.primary.opacity(tint)))
             })
             .child(
                 div()
                     .h_flex()
                     .items_center()
-                    .gap_5()
+                    .gap_4()
                     .child(power_button)
                     .child(
                         div()
@@ -302,7 +305,7 @@ impl Render for HomePage {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_2xl()
+                                    .text_xl()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.foreground)
                                     .child(status_title),
@@ -423,7 +426,7 @@ impl Render for HomePage {
         div()
             .v_flex()
             .size_full()
-            .gap_5()
+            .gap_4()
             .child(hero)
             .children(stats)
             .child(
