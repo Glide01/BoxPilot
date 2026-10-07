@@ -11,6 +11,7 @@ use crate::core::network_tools::{
 use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
 use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
+use crate::ui::theme::FORM_MAX_WIDTH;
 use crate::ui::widgets::{connect_button, empty_state, page_header, setting_row};
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -485,7 +486,12 @@ impl Render for ToolsPage {
             div()
                 .flex_1()
                 .min_h_0()
-                .child(cards.overflow_y_scrollbar())
+                .child(
+                    div()
+                        .w_full()
+                        .child(cards.max_w(px(FORM_MAX_WIDTH)))
+                        .overflow_y_scrollbar(),
+                )
                 .into_any_element()
         };
 

@@ -22,6 +22,9 @@ use std::collections::VecDeque;
 pub const HEIGHT: f32 = LEGEND_HEIGHT + GAP + PLOT_HEIGHT;
 const LEGEND_HEIGHT: f32 = 16.;
 const GAP: f32 = 8.;
+/// The download reading's least width ("Download 999.9 KB/s"), so the
+/// upload reading beside it holds still while the rates tick.
+const LEGEND_ITEM_MIN_WIDTH: f32 = 150.;
 const PLOT_HEIGHT: f32 = 72.;
 /// How far the plot's clip reaches past its top and sides (see `render`).
 const CLIP_BLEED: f32 = 8.;
@@ -213,13 +216,16 @@ impl Render for TrafficChart {
                     .items_center()
                     .gap_4()
                     .text_xs()
-                    .child(legend_item(
-                        theme,
-                        "icons/arrow-down.svg",
-                        colors.download,
-                        crate::i18n::s().common.download,
-                        format_speed(traffic.down),
-                    ))
+                    .child(
+                        legend_item(
+                            theme,
+                            "icons/arrow-down.svg",
+                            colors.download,
+                            crate::i18n::s().common.download,
+                            format_speed(traffic.down),
+                        )
+                        .min_w(px(LEGEND_ITEM_MIN_WIDTH)),
+                    )
                     .child(legend_item(
                         theme,
                         "icons/arrow-up.svg",

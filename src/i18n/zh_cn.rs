@@ -74,6 +74,7 @@ pub static ZH_CN: Strings = Strings {
         not_updated_yet: "尚未更新",
         running_for: |uptime| format!("已运行 {uptime}"),
         ready_with: |profile| format!("将使用「{profile}」连接"),
+        starting_with: |profile| format!("正在使用「{profile}」连接"),
         quick_settings: "快捷设置",
         subscription: "订阅",
     },

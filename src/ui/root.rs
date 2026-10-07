@@ -1,4 +1,7 @@
-use crate::actions::{ToggleProcess, UpdateSubscription, KEY_CONTEXT};
+use crate::actions::{
+    FocusNext, FocusPrevious, ShowConnections, ShowGroups, ShowHome, ShowLogs, ShowProfiles,
+    ShowSettings, ShowTools, ToggleProcess, UpdateSubscription, KEY_CONTEXT,
+};
 use crate::core::bytefmt::format_speed;
 use crate::core::presentation::{redact_url, ConnectionStatus};
 use crate::core::settings::StatusEvent;
@@ -85,16 +88,20 @@ impl RootView {
         // Show/hide the Tailscale sidebar item; leave the page if it goes
         // away under the user (sing-box stopped). Only visibility changes
         // re-render — status pushes are frequent.
-        cx.observe(&tailscale_state, |this: &mut Self, state, cx| {
-            let visible = state.read(cx).has_endpoints();
-            if visible != this.tailscale_visible {
-                this.tailscale_visible = visible;
-                if !visible && this.active_page == ActivePage::Tailscale {
-                    this.active_page = ActivePage::Home;
+        cx.observe_in(
+            &tailscale_state,
+            window,
+            |this: &mut Self, state, window, cx| {
+                let visible = state.read(cx).has_endpoints();
+                if visible != this.tailscale_visible {
+                    this.tailscale_visible = visible;
+                    if !visible && this.active_page == ActivePage::Tailscale {
+                        this.show_page(ActivePage::Home, window, cx);
+                    }
+                    cx.notify();
                 }
-                cx.notify();
-            }
-        })
+            },
+        )
         .detach();
         let vpn_status = app_state.read(cx).vpn.clone();
         Self::route_status_toasts(&vpn_status, window, cx);
@@ -102,12 +109,12 @@ impl RootView {
         // leave the page if it goes away under the user. Only visibility
         // changes re-render, like Tailscale above.
         let vpn_visible = vpn_status.read(cx).is_visible();
-        cx.observe(&vpn_status, |this: &mut Self, state, cx| {
+        cx.observe_in(&vpn_status, window, |this: &mut Self, state, window, cx| {
             let visible = state.read(cx).is_visible();
             if visible != this.vpn_visible {
                 this.vpn_visible = visible;
                 if !visible && this.active_page == ActivePage::Vpn {
-                    this.active_page = ActivePage::Home;
+                    this.show_page(ActivePage::Home, window, cx);
                 }
                 cx.notify();
             }
@@ -245,6 +252,42 @@ impl RootView {
             .update(cx, |state, cx| state.toggle_process(cx));
     }
 
+    /// Switch pages. Focus comes back to the root: a control focused on the
+    /// page being left is no longer drawn, and with the focus on nothing the
+    /// window's keys (Tab, the shortcuts) would stop reaching this view.
+    fn show_page(&mut self, page: ActivePage, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_page != page {
+            self.active_page = page;
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Ctrl+1..7: the pages always in the sidebar, in its order.
+    fn register_page_shortcuts(root: Div, cx: &mut Context<Self>) -> Div {
+        root.on_action(cx.listener(|this, _: &ShowHome, window, cx| {
+            this.show_page(ActivePage::Home, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowGroups, window, cx| {
+            this.show_page(ActivePage::Groups, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowConnections, window, cx| {
+            this.show_page(ActivePage::Connections, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowProfiles, window, cx| {
+            this.show_page(ActivePage::Profiles, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowLogs, window, cx| {
+            this.show_page(ActivePage::Logs, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowTools, window, cx| {
+            this.show_page(ActivePage::Tools, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
+            this.show_page(ActivePage::Settings, window, cx)
+        }))
+    }
+
     /// Take the parked deep-link import and confirm it with the user —
     /// links come from arbitrary web pages, never import silently. The URL
     /// shows redacted: the host and path are enough to recognise it, and the
@@ -341,14 +384,9 @@ impl Render for RootView {
         };
 
         let view = cx.entity().downgrade();
-        let on_nav = move |page: ActivePage, _: &mut Window, cx: &mut App| {
-            view.update(cx, |this, cx| {
-                if this.active_page != page {
-                    this.active_page = page;
-                    cx.notify();
-                }
-            })
-            .ok();
+        let on_nav = move |page: ActivePage, window: &mut Window, cx: &mut App| {
+            view.update(cx, |this, cx| this.show_page(page, window, cx))
+                .ok();
         };
 
         let page: AnyView = match self.active_page {
@@ -420,11 +458,14 @@ impl Render for RootView {
                     .child(page.cached(StyleRefinement::default().size_full())),
             );
 
-        div()
+        let root = div()
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_update_sub))
             .on_action(cx.listener(Self::on_toggle_process))
+            .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
+            .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx));
+        Self::register_page_shortcuts(root, cx)
             .flex()
             .flex_col()
             .size_full()

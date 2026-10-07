@@ -14,13 +14,14 @@ use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
-    capitalize_first, empty_state, empty_state_button, grouped_card, meta_row, minute_ticker,
-    section_heading, setting_row, stat, usage_meter,
+    capitalize_first, empty_state, empty_state_button, full_text_tooltip, grouped_card, meta_row,
+    minute_ticker, section_heading, setting_row, stat, usage_meter,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button, scroll::ScrollableElement, spinner::Spinner, switch::Switch, tab::TabBar,
     theme::Theme, tooltip::Tooltip, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
+    ThemeStyled,
 };
 use std::time::SystemTime;
 
@@ -30,6 +31,9 @@ use std::time::SystemTime;
 /// jumps under the pointer that just clicked it.
 const POWER_BUTTON_DIAMETER: f32 = 56.;
 const POWER_ICON_SIZE: f32 = 22.;
+/// Letters of the profile's name the subscription card shows whole beside
+/// its Update button in the narrowest window; longer ones get a tooltip.
+const PROFILE_NAME_ROOM: usize = 40;
 
 /// `color` raised `amount` in lightness (HSL), for the top of a gradient.
 fn lighter(color: Hsla, amount: f32) -> Hsla {
@@ -41,6 +45,8 @@ fn lighter(color: Hsla, amount: f32) -> Hsla {
 
 pub struct HomePage {
     app_state: Entity<AppState>,
+    /// The power button's: Tab reaches it, Enter / Space press it.
+    power_focus: FocusHandle,
     /// The live traffic chart in the stats card, its own (cached) view so
     /// its per-mouse-move hover repaints only the chart.
     traffic_chart: Entity<TrafficChart>,
@@ -64,6 +70,7 @@ impl HomePage {
         let traffic_chart = cx.new(|cx| TrafficChart::new(traffic, cx));
         Self {
             app_state,
+            power_focus: cx.focus_handle().tab_stop(true),
             traffic_chart,
             _ticker: minute_ticker(cx),
         }
@@ -99,7 +106,7 @@ fn clash_mode_row(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Opt
 }
 
 impl Render for HomePage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.app_state.read(cx);
 
         let t = s();
@@ -209,6 +216,15 @@ impl Render for HomePage {
                     linear_color_stop(lighter(theme.primary, 0.08), 0.),
                     linear_color_stop(theme.primary, 1.),
                 ))
+                // Hover: the same gradient in the theme's hover accent, like
+                // a primary button.
+                .hover(|style| {
+                    style.bg(linear_gradient(
+                        180.,
+                        linear_color_stop(lighter(theme.primary_hover, 0.08), 0.),
+                        linear_color_stop(theme.primary_hover, 1.),
+                    ))
+                })
                 // A soft lift, not a glow: on the dark background a wide
                 // accent shadow reads as a halo, so it stays faint there.
                 .shadow(vec![BoxShadow {
@@ -243,7 +259,14 @@ impl Render for HomePage {
         // 仅启动中(含 Linux TUN gate)禁用:不挂 on_click,半透明 + 禁止光标
         // (同 gpui-component Button 的 loading 态)。拉订阅(含后台自动更新)
         // 不挡开关,与 Ctrl+S 一致。
+        // A tab stop (Enter / Space press it, like a button); the ring only
+        // when the focus came from the keyboard, and a click doesn't take
+        // the focus at all.
+        let power_focused = self.power_focus.is_focused(window) && window.last_input_was_keyboard();
         let power_button = power_button
+            .track_focus(&self.power_focus)
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .when(power_focused, |this| this.focus_ring_style(window, cx))
             .map(|this| {
                 if status.can_toggle() {
                     this.cursor_pointer().on_click(move |_, _, cx| {
@@ -262,24 +285,44 @@ impl Render for HomePage {
             });
 
         // 状态标题下的一行:断开时说明 Connect 会用哪个 profile;运行中把
-        // 运行时长与 sing-box 版本分开摆放(间距分隔,不用 " · ")。
+        // sing-box 版本与运行时长分开摆放(间距分隔,不用 " · ")。The
+        // ticking uptime goes last, so its changing width moves nothing.
         let status_detail = match status {
-            ConnectionStatus::Disconnected if !profile_name.is_empty() => Some(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .truncate()
-                    .child((t.home.ready_with)(&profile_name))
-                    .into_any_element(),
-            ),
+            ConnectionStatus::Disconnected | ConnectionStatus::Starting
+                if !profile_name.is_empty() =>
+            {
+                let line = if status == ConnectionStatus::Starting {
+                    t.home.starting_with
+                } else {
+                    t.home.ready_with
+                };
+                Some(
+                    div()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .truncate()
+                        .child(line(&profile_name))
+                        .into_any_element(),
+                )
+            }
             ConnectionStatus::Connected if info.uptime.is_some() || info.version.is_some() => Some(
-                meta_row(theme, info.uptime.into_iter().chain(info.version))
+                meta_row(theme, info.version.into_iter().chain(info.uptime))
                     .gap_4()
                     .text_sm()
                     .into_any_element(),
             ),
             _ => None,
-        };
+        }
+        // Nothing to say yet (sing-box just started, its version and uptime
+        // not in): an empty line of the same height, so the card doesn't
+        // shrink and grow back as the hero changes state.
+        .unwrap_or_else(|| {
+            div()
+                .text_sm()
+                .invisible()
+                .child("\u{a0}")
+                .into_any_element()
+        });
 
         let hero = card_frame(theme)
             .px_5()
@@ -310,7 +353,7 @@ impl Render for HomePage {
                                     .text_color(theme.foreground)
                                     .child(status_title),
                             )
-                            .children(status_detail),
+                            .child(status_detail),
                     ),
             );
 
@@ -386,14 +429,16 @@ impl Render for HomePage {
                             .gap_0p5()
                             .flex_1()
                             .min_w_0()
-                            .child(
+                            .child(full_text_tooltip(
                                 div()
                                     .text_sm()
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.foreground)
-                                    .truncate()
-                                    .child(profile_name),
-                            )
+                                    .truncate(),
+                                "home-profile-name",
+                                profile_name,
+                                PROFILE_NAME_ROOM,
+                            ))
                             .child(
                                 div()
                                     .text_xs()

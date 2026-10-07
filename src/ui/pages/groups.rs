@@ -26,7 +26,9 @@ use crate::i18n::s;
 use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::locale;
 use crate::ui::theme::CARD_RADIUS;
-use crate::ui::widgets::{connect_button, empty_state, page_header, segmented, Segment};
+use crate::ui::widgets::{
+    connect_button, empty_state, full_text_tooltip, page_header, segmented, Segment,
+};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -58,6 +60,14 @@ const MAX_COLUMNS: usize = 4;
 const DEFAULT_COLUMNS: usize = 2;
 /// `group_hover` name of a node card (shows the test icon).
 const NODE_CARD_GROUP: &str = "node-card";
+/// Letters a node name has before the narrowest card may cut it (its
+/// name, beside the delay, in `MIN_CARD_WIDTH`); longer ones get a
+/// tooltip with the whole name.
+const NODE_NAME_ROOM: usize = 16;
+/// The same for a group's name in its header, which may take half of it.
+const GROUP_NAME_ROOM: usize = 24;
+/// Group of a group header's fold area: hovering it lights up the chevron.
+const GROUP_TOGGLE_GROUP: &str = "group-toggle";
 
 /// What the cached rows were derived from.
 #[derive(Clone, PartialEq)]
@@ -291,22 +301,41 @@ impl GroupsPage {
             .when(!searching, |area| {
                 let proxy_groups = self.proxy_groups.clone();
                 let name = group.name.clone();
-                area.cursor_pointer().on_click(move |_, _, cx| {
-                    proxy_groups.update(cx, |state, cx| {
-                        state.set_expanded(name.clone(), !expanded, cx)
-                    });
-                })
+                area.group(GROUP_TOGGLE_GROUP)
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| {
+                        proxy_groups.update(cx, |state, cx| {
+                            state.set_expanded(name.clone(), !expanded, cx)
+                        });
+                    })
             })
+            // The chevron sits on a soft square while the fold area is
+            // hovered, like a ghost icon button: the header says it folds.
             .child(
-                Icon::new(if expanded {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                })
-                .small()
-                .text_color(theme.muted_foreground),
+                div()
+                    .flex_none()
+                    .size(px(20.))
+                    .ml(px(-3.))
+                    .mr(px(-3.))
+                    .rounded(theme.radius)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(!searching, |chevron| {
+                        let hover_bg = theme.secondary_hover;
+                        chevron.group_hover(GROUP_TOGGLE_GROUP, move |s| s.bg(hover_bg))
+                    })
+                    .child(
+                        Icon::new(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .small()
+                        .text_color(theme.muted_foreground),
+                    ),
             )
-            .child(
+            .child(full_text_tooltip(
                 div()
                     .flex_shrink_0()
                     .max_w(relative(0.5))
@@ -315,9 +344,11 @@ impl GroupsPage {
                     .whitespace_nowrap()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.foreground)
-                    .child(SharedString::from(group.name.clone())),
-            )
+                    .text_color(theme.foreground),
+                ("group-name", gi),
+                group.name.clone(),
+                GROUP_NAME_ROOM,
+            ))
             // urltest groups pick their node by latency themselves, which a
             // gauge beside the group's name says (with a tooltip) instead
             // of a badge.
@@ -462,7 +493,7 @@ fn node_card(card: NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Theme) 
         .items_center()
         .justify_between()
         .gap_2()
-        .child(
+        .child(full_text_tooltip(
             div()
                 .flex_1()
                 .min_w_0()
@@ -474,9 +505,11 @@ fn node_card(card: NodeCard, proxy_groups: &Entity<ProxyGroups>, theme: &Theme) 
                     theme.foreground
                 } else {
                     theme.muted_foreground
-                })
-                .child(SharedString::from(card.node.to_string())),
-        )
+                }),
+            node_id("node-name", card.group, card.index),
+            card.node.to_string(),
+            NODE_NAME_ROOM,
+        ))
         .when(card.live, |row| {
             row.child(delay_badge(&card, proxy_groups, theme))
         });

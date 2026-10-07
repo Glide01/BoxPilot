@@ -11,6 +11,24 @@ actions!(box_pilot, [UpdateSubscription, ToggleProcess]);
 /// Key context of `RootView`, the scope both shortcuts are bound in.
 pub const KEY_CONTEXT: &str = "BoxPilot";
 
+// Keyboard navigation in the main window: Tab / Shift+Tab walk the focusable
+// controls (gpui binds no Tab of its own), Ctrl+1..7 open the pages that are
+// always in the sidebar, in sidebar order. Dispatched from `RootView`.
+actions!(
+    box_pilot,
+    [
+        FocusNext,
+        FocusPrevious,
+        ShowHome,
+        ShowGroups,
+        ShowConnections,
+        ShowProfiles,
+        ShowLogs,
+        ShowTools,
+        ShowSettings
+    ]
+);
+
 // The Connections page's details panel: Esc closes it, Up / Down select the
 // neighbouring connection. Dispatched from `ConnectionsPage`.
 actions!(

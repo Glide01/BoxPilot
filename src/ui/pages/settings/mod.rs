@@ -21,6 +21,7 @@ use crate::core::settings::powershell_proxy_command;
 use crate::core::settings::{posix_proxy_command, StatusLevel, PROXY_PORT};
 use crate::i18n::s;
 use crate::state::AppState;
+use crate::ui::theme::FORM_MAX_WIDTH;
 use crate::ui::toast;
 use crate::ui::widgets::{grouped_card, page_header, section_heading, setting_row};
 use gpui::{prelude::FluentBuilder, *};
@@ -238,6 +239,13 @@ impl Render for SettingsPage {
             .size_full()
             .gap_4()
             .child(page_header(theme, t.title))
-            .child(div().flex_1().min_h_0().child(cards.overflow_y_scrollbar()))
+            .child(
+                div().flex_1().min_h_0().child(
+                    div()
+                        .w_full()
+                        .child(cards.max_w(px(FORM_MAX_WIDTH)))
+                        .overflow_y_scrollbar(),
+                ),
+            )
     }
 }

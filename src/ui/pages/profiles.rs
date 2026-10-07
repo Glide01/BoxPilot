@@ -11,7 +11,10 @@ use crate::state::app_state::FetchOrigin;
 use crate::state::AppState;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
-use crate::ui::widgets::{capitalize_first, empty_state, minute_ticker, page_header, usage_meter};
+use crate::ui::widgets::{
+    capitalize_first, empty_state, full_text_tooltip, minute_ticker, page_header, row_hover_bg,
+    usage_meter,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -30,6 +33,9 @@ const INFO_MIN_WIDTH: f32 = 220.;
 /// Width of the freshness lines ("Updated 25 min ago" over "Auto-updates
 /// every 60 min"); they ellipsize below it only on a narrow window.
 const FRESHNESS_WIDTH: f32 = 180.;
+/// Letters of a profile's name or source that `INFO_MIN_WIDTH` shows
+/// whole; longer ones get a tooltip with all of it.
+const PROFILE_TEXT_ROOM: usize = 28;
 
 pub struct ProfilesPage {
     app_state: Entity<AppState>,
@@ -352,7 +358,7 @@ impl ProfilesPage {
         let edit_profile = profile.clone();
 
         let primary = theme.primary;
-        let hover_bg = theme.muted.opacity(0.5);
+        let hover_bg = row_hover_bg(theme);
         // A radio mark: which profile sing-box runs with. Clicking anywhere
         // on another row (outside its buttons) switches to it.
         let radio = div()
@@ -405,23 +411,27 @@ impl ProfilesPage {
                     .gap_1()
                     .flex_1()
                     .min_w(px(INFO_MIN_WIDTH))
-                    .child(
+                    .child(full_text_tooltip(
                         div()
                             .min_w_0()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.foreground)
-                            .truncate()
-                            .child(profile.name.clone()),
-                    )
-                    .child(
+                            .truncate(),
+                        ("profile-name", ix),
+                        profile.name.clone(),
+                        PROFILE_TEXT_ROOM,
+                    ))
+                    .child(full_text_tooltip(
                         div()
                             .min_w_0()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(row_info.source),
-                    )
+                            .truncate(),
+                        ("profile-source", ix),
+                        row_info.source,
+                        PROFILE_TEXT_ROOM,
+                    ))
                     // Traffic / expiry the subscription server reported.
                     .children(profile.usage.as_ref().map(|usage| {
                         div().pt_1().w_full().child(usage_meter(

@@ -180,6 +180,40 @@ pub fn grouped_card(theme: &Theme, rows: impl IntoIterator<Item = AnyElement>) -
         }))
 }
 
+/// Rough width of `text` in Latin letters: a wide (CJK) character counts
+/// as two.
+fn text_units(text: &str) -> usize {
+    text.chars()
+        .map(|c| if (c as u32) < 0x1100 { 1 } else { 2 })
+        .sum()
+}
+
+/// `label`, a line that ellipsizes when its column runs short (a node,
+/// profile or host name), with the whole text in a tooltip — only when the
+/// text is long enough to be at risk of the ellipsis (more than `room`
+/// Latin letters), so a short name never repeats itself on hover.
+pub fn full_text_tooltip(
+    label: Div,
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    room: usize,
+) -> Stateful<Div> {
+    let text: SharedString = text.into();
+    let long = text_units(&text) > room;
+    label.id(id).child(text.clone()).when(long, |label| {
+        label.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+    })
+}
+
+/// Background of a clickable row under the pointer (a profile, a
+/// connection): a wash of the text colour, a little stronger on the dark
+/// theme, where the panel's muted tone barely shows.
+pub fn row_hover_bg(theme: &Theme) -> Hsla {
+    theme
+        .foreground
+        .opacity(if theme.is_dark() { 0.06 } else { 0.035 })
+}
+
 /// Secondary facts in one line, set apart by space rather than separators:
 /// `12.0 GB    from laptop    5 min ago`. Each item truncates on its own
 /// when the line runs short.
@@ -530,6 +564,13 @@ pub fn usage_meter(
 #[cfg(test)]
 mod tests {
     use super::capitalize_first;
+
+    #[test]
+    fn text_units_count_wide_characters_twice() {
+        assert_eq!(super::text_units("Hong Kong 01"), 12);
+        assert_eq!(super::text_units("香港 01"), 7);
+        assert_eq!(super::text_units(""), 0);
+    }
 
     #[test]
     fn capitalize_first_touches_only_the_first_letter() {

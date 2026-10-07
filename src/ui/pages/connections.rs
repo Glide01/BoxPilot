@@ -30,7 +30,9 @@ use crate::core::connections_view::{
 use crate::core::singbox_api::Connection;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
-use crate::ui::widgets::{connect_button, empty_state, meta_row, page_header, segmented, Segment};
+use crate::ui::widgets::{
+    connect_button, empty_state, full_text_tooltip, page_header, row_hover_bg, segmented, Segment,
+};
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -259,6 +261,14 @@ pub(super) fn unix_millis_now() -> i64 {
 }
 
 /// Single-line text that ellipsizes instead of wrapping.
+/// Letters of a host the narrowest row shows whole; longer ones get a
+/// tooltip with all of it.
+const HOST_ROOM: usize = 24;
+
+/// Flex-shrink factor for the part of a line that should give way first
+/// when it runs short (gpui shrinks in proportion to factor × width).
+const SHRINK_FIRST: f32 = 100.;
+
 fn clipped(text: impl Into<SharedString>) -> Div {
     div()
         .min_w_0()
@@ -279,18 +289,29 @@ fn connection_row(
     theme: &Theme,
 ) -> Stateful<Div> {
     let closed = connection.is_closed();
-    let hover_bg = theme.muted.opacity(0.5);
+    let hover_bg = row_hover_bg(theme);
 
-    let mut title = div().h_flex().items_center().gap_2().child(
-        clipped(host_label(connection))
-            .flex_shrink(1.)
-            .text_sm()
-            .text_color(if closed {
-                theme.muted_foreground
-            } else {
-                theme.foreground
-            }),
-    );
+    let mut title = div()
+        .h_flex()
+        .items_center()
+        .gap_2()
+        .child(full_text_tooltip(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .flex_shrink(1.)
+                .text_sm()
+                .text_color(if closed {
+                    theme.muted_foreground
+                } else {
+                    theme.foreground
+                }),
+            SharedString::from(format!("conn-host-{}", connection.id)),
+            host_label(connection),
+            HOST_ROOM,
+        ));
     if let Some(process) = process_name(connection) {
         title = title.child(
             clipped(process.to_string())
@@ -302,15 +323,21 @@ fn connection_row(
     }
 
     // Chain first (accented while open), then network, inbound and rule,
-    // set apart by space.
+    // set apart by space. Short of room (a narrow window), the rule gives
+    // way first, then the chain; network and inbound are a word each and
+    // stay whole rather than all four turning into a bare "…" each (the
+    // details panel has them all in full).
     let subtitle = div()
         .h_flex()
         .items_center()
         .gap_3()
+        .min_w_0()
+        .overflow_hidden()
         .text_xs()
         .child(
             clipped(chain_label(connection))
-                .flex_shrink_0()
+                .flex_shrink(1.)
+                .min_w(px(44.))
                 .max_w(relative(0.5))
                 .text_color(if closed {
                     theme.muted_foreground
@@ -319,15 +346,22 @@ fn connection_row(
                 }),
         )
         .child(
-            meta_row(
-                theme,
-                [
-                    network_label(connection),
-                    inbound_label(connection).to_string(),
-                    rule_label(connection).to_string(),
-                ],
-            )
-            .flex_1(),
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_color(theme.muted_foreground)
+                .child(network_label(connection)),
+        )
+        .child(
+            clipped(inbound_label(connection).to_string())
+                .flex_shrink_0()
+                .max_w(px(120.))
+                .text_color(theme.muted_foreground),
+        )
+        .child(
+            clipped(rule_label(connection).to_string())
+                .flex_shrink(SHRINK_FIRST)
+                .text_color(theme.muted_foreground),
         );
 
     let rate = if closed {
@@ -443,30 +477,43 @@ impl Render for ConnectionsPage {
         let has_any = live && summary.open + summary.closed > 0;
 
         // Live totals beside the title: open count, current rates, and the
-        // traffic so far — three groups set apart by space.
-        let summary_items = [
-            (t.open_count)(summary.open as u64),
-            format!(
+        // traffic so far — three groups set apart by space. On a narrow
+        // window the totals give way first, then the rates; the count
+        // stays whole.
+        let summary_items = div()
+            .h_flex()
+            .items_center()
+            .gap_4()
+            .min_w_0()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .child((t.open_count)(summary.open as u64)),
+            )
+            .child(clipped(format!(
                 "↑ {}  ↓ {}",
                 format_speed(summary.up_rate),
                 format_speed(summary.down_rate)
-            ),
-            format!(
-                "{} ↑ {}  ↓ {}",
-                t.total,
-                format_bytes(summary.up_total),
-                format_bytes(summary.down_total)
-            ),
-        ];
+            )))
+            .child(
+                clipped(format!(
+                    "{} ↑ {}  ↓ {}",
+                    t.total,
+                    format_bytes(summary.up_total),
+                    format_bytes(summary.down_total)
+                ))
+                .flex_shrink(SHRINK_FIRST),
+            );
         let title_block = div()
             .h_flex()
             .items_center()
             .gap_4()
             .min_w_0()
             .child(page_header(theme, t.title))
-            .when(has_any, |this| {
-                this.child(meta_row(theme, summary_items).gap_4().text_sm())
-            });
+            .when(has_any, |this| this.child(summary_items));
         let close_all = has_any.then(|| {
             let connections = connections.clone();
             Button::new("connections-close-all")

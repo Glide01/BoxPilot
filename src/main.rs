@@ -1,8 +1,10 @@
 #![windows_subsystem = "windows"]
 
 use box_pilot_gui::actions::{
-    CloseConnectionDetails, SelectNextConnection, SelectPreviousConnection, ToggleProcess,
-    UpdateSubscription, CONNECTION_DETAILS_CONTEXT, KEY_CONTEXT,
+    CloseConnectionDetails, FocusNext, FocusPrevious, SelectNextConnection,
+    SelectPreviousConnection, ShowConnections, ShowGroups, ShowHome, ShowLogs, ShowProfiles,
+    ShowSettings, ShowTools, ToggleProcess, UpdateSubscription, CONNECTION_DETAILS_CONTEXT,
+    KEY_CONTEXT,
 };
 use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
@@ -146,6 +148,19 @@ fn main() {
                 ToggleProcess,
                 Some(&format!("{KEY_CONTEXT} && !Input")),
             ),
+        ]);
+        // Keyboard navigation: Tab walks the controls (out of a text field
+        // too), Ctrl+1..7 open the pages in sidebar order.
+        cx.bind_keys([
+            KeyBinding::new("tab", FocusNext, Some(KEY_CONTEXT)),
+            KeyBinding::new("shift-tab", FocusPrevious, Some(KEY_CONTEXT)),
+            KeyBinding::new("ctrl-1", ShowHome, Some(KEY_CONTEXT)),
+            KeyBinding::new("ctrl-2", ShowGroups, Some(KEY_CONTEXT)),
+            KeyBinding::new("ctrl-3", ShowConnections, Some(KEY_CONTEXT)),
+            KeyBinding::new("ctrl-4", ShowProfiles, Some(KEY_CONTEXT)),
+            KeyBinding::new("ctrl-5", ShowLogs, Some(KEY_CONTEXT)),
+            KeyBinding::new("ctrl-6", ShowTools, Some(KEY_CONTEXT)),
+            KeyBinding::new("ctrl-7", ShowSettings, Some(KEY_CONTEXT)),
         ]);
         // Connections details panel, only while it is open (the page sets
         // the context then) and never while typing in the filter box, whose

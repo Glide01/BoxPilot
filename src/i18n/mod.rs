@@ -227,6 +227,9 @@ pub struct Home {
     pub running_for: Fmt1,
     /// Under "Disconnected": what Connect would start with.
     pub ready_with: Fmt1,
+    /// Under "Starting…": the profile sing-box is starting with (keeps the
+    /// hero's second line, so the card doesn't shrink and grow back).
+    pub starting_with: Fmt1,
     /// Heading of the Home card holding Proxy Mode / System Proxy / Clash
     /// Mode.
     pub quick_settings: &'static str,

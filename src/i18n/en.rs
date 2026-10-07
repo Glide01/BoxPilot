@@ -78,6 +78,7 @@ pub static EN: Strings = Strings {
         not_updated_yet: "not updated yet",
         running_for: |uptime| format!("Running for {uptime}"),
         ready_with: |profile| format!("Ready to connect with {profile}"),
+        starting_with: |profile| format!("Connecting with {profile}"),
         quick_settings: "Quick settings",
         subscription: "Subscription",
     },

@@ -76,6 +76,11 @@ pub const CARD_RADIUS: f32 = 10.;
 /// Corner radius of the content panel the pages sit in.
 pub const PANEL_RADIUS: f32 = 12.;
 
+/// Widest a form page's column (Settings, Tools) grows: past it, a label
+/// and its control drift apart across a wide window. Left-aligned, so the
+/// page title stays where every other page has it.
+pub const FORM_MAX_WIDTH: f32 = 880.;
+
 /// The mode a preference resolves to, given the OS appearance.
 pub fn resolve(pref: ThemePreference, system: WindowAppearance) -> ThemeMode {
     match pref {
