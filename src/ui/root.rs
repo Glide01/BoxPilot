@@ -401,13 +401,12 @@ impl Render for RootView {
             ActivePage::Settings => self.settings.clone().into(),
         };
 
-        // Our own title bar (Windows; Linux without server-side
+        // Our own title bar (Windows, macOS; Linux without server-side
         // decorations): the chrome runs up to the window's top edge, the
         // name moves from the sidebar into the bar, and the panel starts
         // below it.
         let client_drawn = title_bar::is_client_drawn(window);
-        let title_bar =
-            client_drawn.then(|| title_bar::title_bar(brand(true).pl(px(19.)), window, cx));
+        let title_bar = client_drawn.then(|| title_bar::title_bar(brand(true), window, cx));
 
         // 注意:不要用 gpui-component 的 `.h_flex()` —— 它附带
         // `items_center`,会把整列内容垂直居中而不是拉伸到全高。

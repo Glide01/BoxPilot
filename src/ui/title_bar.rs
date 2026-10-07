@@ -11,6 +11,16 @@
 //!   snap layouts appear over maximize and close posts `WM_CLOSE` like the
 //!   native button did, through `app_window`'s `on_window_should_close`
 //!   (ADR 0004's tray behaviour).
+//! - **macOS** always: the title bar is transparent and the content runs
+//!   under it (`appears_transparent`, full-size content view). The system's
+//!   traffic lights stay, moved to sit centred in the strip
+//!   (`traffic_light_position`), so the strip draws no buttons of its own,
+//!   only leaves room for them. The window opens with
+//!   `app_owns_titlebar_drag`: AppKit then leaves the strip to us — no
+//!   native drag or double-click there, which would race ours — and the
+//!   strip moves the window with `start_window_move` and handles the
+//!   double-click with `titlebar_double_click` (the user's Dock setting:
+//!   zoom, minimize or nothing).
 //! - **Linux** only when the window ends up client-decorated. BoxPilot asks
 //!   for server-side decorations, which X11 window managers and most
 //!   Wayland compositors (KDE, wlroots) grant; the WM's own title bar then
@@ -30,6 +40,13 @@ pub const TITLE_BAR_HEIGHT: Pixels = px(32.);
 /// Windows 11's caption buttons are 46 px wide.
 const CAPTION_BUTTON_WIDTH: Pixels = px(46.);
 const CAPTION_ICON_SIZE: Pixels = px(14.);
+/// Where macOS's traffic lights sit: inset like the sidebar items, and
+/// centred in the strip (AppKit's buttons are 16 px tall).
+const TRAFFIC_LIGHTS: Point<Pixels> = point(px(12.), px(8.));
+/// Room the traffic lights take at the strip's left, up to the title.
+const TRAFFIC_LIGHTS_WIDTH: Pixels = px(82.);
+/// The title's inset where nothing sits left of it, on the sidebar's line.
+const TITLE_INSET: Pixels = px(19.);
 /// The close button's hover colour on Windows 11, in both themes.
 const CLOSE_HOVER: u32 = 0xC42B1C;
 
@@ -38,16 +55,20 @@ const CLOSE_HOVER: u32 = 0xC42B1C;
 pub fn titlebar_options() -> TitlebarOptions {
     TitlebarOptions {
         title: Some("BoxPilot".into()),
-        appears_transparent: cfg!(target_os = "windows"),
-        traffic_light_position: None,
+        appears_transparent: cfg!(any(target_os = "windows", target_os = "macos")),
+        traffic_light_position: cfg!(target_os = "macos").then_some(TRAFFIC_LIGHTS),
     }
 }
+
+/// Whether AppKit should leave the title bar's dragging and double-click
+/// to the window (see the module docs). Ignored off macOS.
+pub const APP_OWNS_TITLEBAR_DRAG: bool = cfg!(target_os = "macos");
 
 /// Whether this window's title bar is BoxPilot's to draw (see the module
 /// docs). Changes only with the window's decorations, and a decoration
 /// change re-renders the window.
 pub fn is_client_drawn(window: &Window) -> bool {
-    if cfg!(target_os = "windows") {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
         true
     } else if cfg!(target_os = "linux") {
         matches!(window.window_decorations(), Decorations::Client { .. })
@@ -57,10 +78,19 @@ pub fn is_client_drawn(window: &Window) -> bool {
 }
 
 /// The strip: `title` (the app's name) at the left of the drag area, the
-/// caption buttons at the right.
+/// caption buttons at the right — on macOS the system's traffic lights at
+/// the left instead, and no buttons of ours.
 pub fn title_bar(title: impl IntoElement, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    let macos = cfg!(target_os = "macos");
     let controls = window.window_controls();
     let maximized = window.is_maximized();
+    // Full screen hides the traffic lights, the title moves back left.
+    let inset = if macos && !window.is_fullscreen() {
+        TRAFFIC_LIGHTS_WIDTH
+    } else {
+        TITLE_INSET
+    };
+    let title = div().pl(inset).child(title);
     div()
         .id("title-bar")
         .flex()
@@ -69,10 +99,10 @@ pub fn title_bar(title: impl IntoElement, window: &mut Window, cx: &mut App) -> 
         .w_full()
         .h(TITLE_BAR_HEIGHT)
         .child(drag_area(title, window, cx))
-        .when(controls.minimize, |bar| {
+        .when(!macos && controls.minimize, |bar| {
             bar.child(caption_button(Caption::Minimize, window, cx))
         })
-        .when(controls.maximize, |bar| {
+        .when(!macos && controls.maximize, |bar| {
             bar.child(caption_button(
                 if maximized {
                     Caption::Restore
@@ -83,7 +113,9 @@ pub fn title_bar(title: impl IntoElement, window: &mut Window, cx: &mut App) -> 
                 cx,
             ))
         })
-        .child(caption_button(Caption::Close, window, cx))
+        .when(!macos, |bar| {
+            bar.child(caption_button(Caption::Close, window, cx))
+        })
 }
 
 /// Everything left of the buttons moves the window.
@@ -99,9 +131,9 @@ fn drag_area(title: impl IntoElement, window: &mut Window, cx: &mut App) -> Stat
     if cfg!(target_os = "windows") {
         return area.window_control_area(WindowControlArea::Drag);
     }
-    // Linux: move on the first pointer motion after a press here — not on
-    // the press itself, which would swallow the double-click — and not for
-    // a drag that started elsewhere and crossed the strip.
+    // Linux and macOS: move on the first pointer motion after a press here —
+    // not on the press itself, which would swallow the double-click — and
+    // not for a drag that started elsewhere and crossed the strip.
     let pressed = window.use_keyed_state("title-bar-pressed", cx, |_, _| false);
     let on_down = pressed.clone();
     let on_up = pressed.clone();
@@ -109,7 +141,11 @@ fn drag_area(title: impl IntoElement, window: &mut Window, cx: &mut App) -> Stat
     area.on_mouse_down(MouseButton::Left, move |event, window, cx| {
         if event.click_count == 2 {
             on_down.update(cx, |pressed, _| *pressed = false);
-            window.zoom_window();
+            if cfg!(target_os = "macos") {
+                window.titlebar_double_click();
+            } else {
+                window.zoom_window();
+            }
         } else {
             on_down.update(cx, |pressed, _| *pressed = true);
         }
@@ -126,8 +162,10 @@ fn drag_area(title: impl IntoElement, window: &mut Window, cx: &mut App) -> Stat
             window.start_window_move();
         }
     })
-    .on_mouse_down(MouseButton::Right, |event, window, _| {
-        window.show_window_menu(event.position)
+    .when(cfg!(target_os = "linux"), |area| {
+        area.on_mouse_down(MouseButton::Right, |event, window, _| {
+            window.show_window_menu(event.position)
+        })
     })
 }
 

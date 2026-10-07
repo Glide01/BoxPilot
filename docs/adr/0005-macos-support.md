@@ -97,8 +97,11 @@ still matters: Apple silicon refuses to run unsigned code at all.
   LaunchServices knows) can start the app a second time; that process
   forwards a plain attempt and exits, and the link is lost. Launching the
   app normally avoids it.
-- The native title bar follows the system's light/dark setting, not
-  BoxPilot's Appearance choice.
+- The title bar is BoxPilot's own, as on Windows (`ui::title_bar`): the
+  native one is transparent with the content under it, so the sidebar's
+  colour runs to the top edge and the traffic lights sit on it. Only the
+  traffic lights' inactive grey still follows the system's light/dark
+  setting rather than BoxPilot's Appearance choice.
 
 ## TUN mode: deferred, decided
 
