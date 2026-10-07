@@ -64,6 +64,14 @@ Clash YAML, and read the version after the token to gate config-format
 features — so the token must always be present, and the version after it
 should be the real sing-box version whenever it is known.
 
+**Local proxy**:
+The mixed inbound BoxPilot injects on the local proxy port (Settings ›
+Network) in TUN and Proxy mode alike, always reachable on loopback. While
+sing-box runs, BoxPilot's own requests go through it: the update check, and
+the subscription fetches of profiles with "Update through sing-box" on
+(the default), which retry directly once if the proxied attempt fails.
+_Avoid_: core proxy, system proxy (that is the OS setting sing-box writes)
+
 **Clash mode**:
 The selector that a profile's `clash_mode` route/DNS rules match on (e.g.
 Rule / Global / Direct), switched live from Home while sing-box runs. The
@@ -106,3 +114,4 @@ durations such as 1小时23分 excepted).
 | Appearance: Light / Dark | 外观：浅色 / 深色 | |
 | Close button: Ask / Minimize to tray / Quit | 关闭按钮：询问 / 最小化到托盘 / 退出 | |
 | Update (a profile) | 更新 | Check for updates (BoxPilot) = 检查更新 |
+| Update through sing-box | 通过 sing-box 更新 | Per-subscription switch: fetch via the local proxy port, direct retry on failure |

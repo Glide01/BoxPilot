@@ -176,16 +176,10 @@ pub fn latest_release_api() -> String {
     LATEST_RELEASE_API.to_string()
 }
 
-/// The proxy the check goes through: sing-box's local mixed inbound while
-/// it runs in Proxy mode. In TUN mode the system route captures the request
-/// anyway, and with sing-box stopped there is nothing to go through.
-pub fn check_proxy(proxy_mode: bool, sing_box_running: bool, proxy_port: u16) -> Option<String> {
-    (proxy_mode && sing_box_running).then(|| format!("http://127.0.0.1:{proxy_port}"))
-}
-
 /// Ask GitHub for the latest release. Blocking (up to [`FETCH_TIMEOUT`]) —
-/// never call it on the UI thread. `proxy` (e.g. `http://127.0.0.1:7890`)
-/// routes the request through sing-box; `None` connects directly, ignoring
+/// never call it on the UI thread. `proxy` (e.g. `http://127.0.0.1:7890`,
+/// from `subscription::local_proxy`) routes the request through the running
+/// sing-box, in TUN and Proxy mode alike; `None` connects directly, ignoring
 /// any system/environment proxy (which may point at a sing-box that isn't
 /// running).
 pub fn fetch_latest(proxy: Option<&str>) -> Result<ReleaseInfo, String> {
@@ -456,17 +450,6 @@ mod tests {
         let err = fetch_latest_from(&url, None).unwrap_err();
         server.join().unwrap();
         assert_eq!(err, "no release published yet");
-    }
-
-    #[test]
-    fn proxy_only_while_running_in_proxy_mode() {
-        assert_eq!(
-            check_proxy(true, true, 18200).as_deref(),
-            Some("http://127.0.0.1:18200")
-        );
-        assert_eq!(check_proxy(true, false, 18200), None);
-        assert_eq!(check_proxy(false, true, 18200), None);
-        assert_eq!(check_proxy(false, false, 18200), None);
     }
 
     #[test]

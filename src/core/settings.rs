@@ -56,6 +56,12 @@ pub enum ProfileSource {
         /// scheduled independently by the auto-update loop, not just the active.
         #[serde(default = "default_auto_update_interval")]
         auto_update_interval_minutes: u64,
+        /// Fetch through the running sing-box's local proxy (its mixed
+        /// inbound), retrying directly if that fails; off = always direct,
+        /// for providers that refuse proxy IPs. Defaults on, settings files
+        /// that predate it included.
+        #[serde(default = "default_update_via_sing_box")]
+        update_via_sing_box: bool,
     },
     Local {
         /// The file the user picked; re-read by ⟳ to refresh the snapshot.
@@ -121,6 +127,7 @@ impl From<ProfileDe> for Profile {
             auto_update_interval_minutes: de
                 .auto_update_interval_minutes
                 .unwrap_or_else(default_auto_update_interval),
+            update_via_sing_box: default_update_via_sing_box(),
         });
         Profile {
             id: de.id,
@@ -164,6 +171,19 @@ impl Profile {
         match &self.source {
             ProfileSource::Local { path } => Some(path),
             ProfileSource::Remote { .. } => None,
+        }
+    }
+
+    /// Whether fetches of this profile go through the running sing-box
+    /// (`ProfileSource::Remote::update_via_sing_box`); always false for
+    /// `Local`, which is read from disk.
+    pub fn updates_via_sing_box(&self) -> bool {
+        match &self.source {
+            ProfileSource::Remote {
+                update_via_sing_box,
+                ..
+            } => *update_via_sing_box,
+            ProfileSource::Local { .. } => false,
         }
     }
 
@@ -268,6 +288,12 @@ pub fn default_true() -> bool {
 
 pub fn default_auto_update_interval() -> u64 {
     60
+}
+
+/// New subscriptions — and those in settings files that predate the
+/// setting — update through the running sing-box.
+pub fn default_update_via_sing_box() -> bool {
+    true
 }
 
 pub fn default_proxy_port() -> u16 {
@@ -577,6 +603,43 @@ mod tests {
         assert_eq!(back, with);
     }
 
+    /// Remote profiles from settings files that predate the switch load
+    /// with it on — current and legacy flat shape alike; an explicit off
+    /// survives a save/load, and Local profiles never update through it.
+    #[test]
+    fn update_via_sing_box_defaults_on_and_round_trips() {
+        let without = r#"{"id":"p1","name":"S","source":{"kind":"remote","url":"https://a/s","auto_update_interval_minutes":60}}"#;
+        let profile: Profile = serde_json::from_str(without).unwrap();
+        assert!(profile.updates_via_sing_box());
+        let flat: Profile =
+            serde_json::from_str(r#"{"id":"p1","name":"S","url":"https://a/s"}"#).unwrap();
+        assert!(flat.updates_via_sing_box());
+
+        let off = Profile {
+            source: ProfileSource::Remote {
+                url: "https://a/s".into(),
+                auto_update_interval_minutes: 60,
+                update_via_sing_box: false,
+            },
+            ..profile
+        };
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(json.contains(r#""update_via_sing_box":false"#), "{}", json);
+        let back: Profile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, off);
+        assert!(!back.updates_via_sing_box());
+
+        let local = Profile {
+            source: ProfileSource::Local {
+                path: "/home/u/box.json".into(),
+            },
+            ..off
+        };
+        assert!(!local.updates_via_sing_box());
+        let json = serde_json::to_string(&local).unwrap();
+        assert!(!json.contains("update_via_sing_box"), "{}", json);
+    }
+
     /// A settings file with no `profiles` array stays empty — no Default
     /// profile is fabricated — and has no active profile.
     #[test]
@@ -616,6 +679,7 @@ mod tests {
                 source: ProfileSource::Remote {
                     url: "https://a.example".into(),
                     auto_update_interval_minutes: 60,
+                    update_via_sing_box: true,
                 },
                 last_updated_secs: None,
                 last_checked_secs: None,
@@ -627,6 +691,7 @@ mod tests {
                 source: ProfileSource::Remote {
                     url: "https://b.example".into(),
                     auto_update_interval_minutes: 60,
+                    update_via_sing_box: true,
                 },
                 last_updated_secs: None,
                 last_checked_secs: None,
@@ -645,6 +710,7 @@ mod tests {
             source: ProfileSource::Remote {
                 url: String::new(),
                 auto_update_interval_minutes: 60,
+                update_via_sing_box: true,
             },
             last_updated_secs: None,
             last_checked_secs: None,
@@ -839,6 +905,7 @@ mod tests {
                     source: ProfileSource::Remote {
                         url: "https://example.com/sub?token=abc".into(),
                         auto_update_interval_minutes: 30,
+                        update_via_sing_box: false,
                     },
                     last_updated_secs: Some(1_700_000_000),
                     last_checked_secs: None,
@@ -898,6 +965,7 @@ mod tests {
             ProfileSource::Remote {
                 url: "https://a/s".into(),
                 auto_update_interval_minutes: 30,
+                update_via_sing_box: true,
             }
         );
     }
@@ -931,6 +999,7 @@ mod tests {
             source: ProfileSource::Remote {
                 url: "https://a/s".into(),
                 auto_update_interval_minutes: 15,
+                update_via_sing_box: true,
             },
             last_updated_secs: None,
             last_checked_secs: None,
@@ -989,6 +1058,7 @@ mod tests {
             ProfileSource::Remote {
                 url: "https://a/s".into(),
                 auto_update_interval_minutes: 45,
+                update_via_sing_box: true,
             }
         );
         let _ = fs::remove_dir_all(&dir);

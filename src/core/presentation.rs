@@ -234,6 +234,7 @@ pub fn profile_row_info(source: &ProfileSource) -> ProfileRowInfo {
         ProfileSource::Remote {
             url,
             auto_update_interval_minutes,
+            ..
         } => {
             let note = (*auto_update_interval_minutes == 0)
                 .then(|| t.profiles.auto_update_off.to_string());
@@ -452,6 +453,7 @@ mod tests {
         ProfileSource::Remote {
             url: "https://sub.example.com/s".into(),
             auto_update_interval_minutes: minutes,
+            update_via_sing_box: true,
         }
     }
 
@@ -556,6 +558,7 @@ mod tests {
             source: ProfileSource::Remote {
                 url: " ".into(),
                 auto_update_interval_minutes: 60,
+                update_via_sing_box: true,
             },
             ..empty
         };
@@ -576,6 +579,7 @@ mod tests {
         let on = profile_row_info(&ProfileSource::Remote {
             url: "https://a/s".into(),
             auto_update_interval_minutes: 30,
+            update_via_sing_box: true,
         });
         assert_eq!(on.source, "a");
         assert_eq!(on.source_full.as_deref(), Some("https://a/s"));
@@ -585,6 +589,7 @@ mod tests {
         let off = profile_row_info(&ProfileSource::Remote {
             url: "https://a/s".into(),
             auto_update_interval_minutes: 0,
+            update_via_sing_box: true,
         });
         assert_eq!(off.source, "a");
         assert_eq!(off.note.as_deref(), Some("Auto-update off"));
@@ -592,6 +597,7 @@ mod tests {
         let invalid = profile_row_info(&ProfileSource::Remote {
             url: "not a url".into(),
             auto_update_interval_minutes: 30,
+            update_via_sing_box: true,
         });
         assert_eq!(invalid.source, "Invalid URL");
         assert_eq!(invalid.source_full, None);
@@ -599,6 +605,7 @@ mod tests {
         let empty_remote = profile_row_info(&ProfileSource::Remote {
             url: "  ".into(),
             auto_update_interval_minutes: 60,
+            update_via_sing_box: true,
         });
         assert_eq!(empty_remote.source, "No subscription URL");
         assert_eq!(empty_remote.note, None);
@@ -627,6 +634,7 @@ mod tests {
         let row = profile_row_info(&ProfileSource::Remote {
             url: "https://sub.example.com/api/v1/client/subscribe?token=secret".into(),
             auto_update_interval_minutes: 30,
+            update_via_sing_box: true,
         });
         assert_eq!(row.source, "sub.example.com");
         assert_eq!(

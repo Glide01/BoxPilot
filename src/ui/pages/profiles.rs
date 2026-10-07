@@ -14,7 +14,7 @@ use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
     empty_state, freshness_button, full_text_tooltip, minute_ticker, page_header,
-    profile_source_line, row_hover_bg, usage_meter, IconLabel, CONTROL_LINE_HEIGHT,
+    profile_source_line, row_hover_bg, setting_row, usage_meter, IconLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -22,6 +22,7 @@ use gpui_component::{
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::{Input, InputState},
     scroll::ScrollableElement,
+    switch::Switch,
     tab::TabBar,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
 };
@@ -94,11 +95,13 @@ impl ProfilesPage {
                 .default_value(draft.path.clone())
         });
         let kind_cell = cx.new(|_| draft.kind.index());
+        let via_sing_box_cell = cx.new(|_| draft.update_via_sing_box);
 
         window.open_dialog(cx, move |dialog, _, cx| {
             let t = s();
             let theme = cx.theme();
             let kind = *kind_cell.read(cx);
+            let via_sing_box = *via_sing_box_cell.read(cx);
             let is_edit = editing_id.is_some();
 
             let field = |label: &'static str, input: AnyElement| {
@@ -186,7 +189,24 @@ impl ProfilesPage {
                         .w(px(120.))
                         .child(Input::new(&interval_input).cleanable(false))
                         .into_any_element(),
-                ));
+                ))
+                .child(
+                    setting_row(
+                        theme,
+                        t.profiles.update_via_sing_box,
+                        Some(t.profiles.update_via_sing_box_hint),
+                    )
+                    .child({
+                        let via_sing_box_cell = via_sing_box_cell.clone();
+                        Switch::new("profile-update-via-sing-box")
+                            .checked(via_sing_box)
+                            .on_click(move |checked: &bool, window, cx| {
+                                let checked = *checked;
+                                via_sing_box_cell.update(cx, |via, _| *via = checked);
+                                window.refresh();
+                            })
+                    }),
+                );
 
             let choose_file = {
                 let path_input = path_input.clone();
@@ -297,6 +317,7 @@ impl ProfilesPage {
                     let name_input = name_input.clone();
                     let url_input = url_input.clone();
                     let interval_input = interval_input.clone();
+                    let via_sing_box_cell = via_sing_box_cell.clone();
                     let path_input = path_input.clone();
                     move |_, _, cx| {
                         // 字段 → 草稿 → 模型;解析/裁剪/has_content 规则都在
@@ -306,6 +327,7 @@ impl ProfilesPage {
                             kind: DraftKind::from_index(*kind_cell.read(cx)),
                             url: url_input.read(cx).value().to_string(),
                             interval_raw: interval_input.read(cx).value().to_string(),
+                            update_via_sing_box: *via_sing_box_cell.read(cx),
                             path: path_input.read(cx).value().to_string(),
                         }
                         .build();

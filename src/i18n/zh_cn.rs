@@ -89,6 +89,8 @@ pub static ZH_CN: Strings = Strings {
         subscription_url: "订阅链接",
         url_placeholder: "输入订阅链接…",
         interval: "自动更新间隔（分钟，0 = 关闭）",
+        update_via_sing_box: "通过 sing-box 更新",
+        update_via_sing_box_hint: "通过运行中的 sing-box 获取此订阅，失败时 BoxPilot 会改为直连重试。若订阅服务商拒绝代理 IP，请关闭此项。",
         config_file: "配置文件",
         browse: "浏览…",
         no_file_selected: "未选择文件",

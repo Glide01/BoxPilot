@@ -8,6 +8,7 @@ use crate::core::sub_usage::{parse_userinfo, SubscriptionUsage, USERINFO_HEADER}
 use crate::core::timefmt::to_unix_secs;
 use crate::i18n::s;
 use reqwest::blocking::Client;
+use reqwest::Proxy;
 use serde_json::Value;
 use std::fs;
 use std::io;
@@ -346,17 +347,30 @@ pub fn save_runtime_config(path: &Path, prepared: &str) -> io::Result<()> {
     write_atomic(path, prepared.as_bytes(), FileAccess::OwnerOnly)
 }
 
+/// The local proxy BoxPilot's own HTTP requests (subscription fetches, the
+/// BoxPilot update check) go through: the mixed inbound `prepare_config`
+/// injects on `proxy_port`, which exists in TUN and Proxy mode alike and
+/// always answers on loopback (Allow LAN only widens it to `0.0.0.0`).
+/// `None` while sing-box isn't running (stopped, or still starting): there
+/// is nothing to go through.
+pub fn local_proxy(sing_box_running: bool, proxy_port: u16) -> Option<String> {
+    sing_box_running.then(|| format!("http://127.0.0.1:{proxy_port}"))
+}
+
 /// Fetch the subscription, strip its inbounds, and stage it for `config_path`
 /// (the profile's `configs/<id>.json`; see `UpdateOutcome`) — but only if
 /// the result differs from what's already on disk. `app_dir` is still needed separately: it's where
 /// the validation temp file goes so `sing-box check -D` resolves relative
-/// resources exactly like at runtime.
+/// resources exactly like at runtime. `proxy` is the route for the download
+/// (see `download`): the running sing-box's local proxy, or `None` for a
+/// direct connection.
 ///
 /// Settings persistence is the caller's responsibility (`AppState::save_settings`),
 /// so the caller doesn't risk clobbering settings fields not visible here —
 /// that includes storing the returned `Fetched::usage`.
 pub fn perform_update(
     sub_url: &str,
+    proxy: Option<&str>,
     app_dir: &Path,
     config_path: &Path,
     sing_box: Option<&Path>,
@@ -366,14 +380,55 @@ pub fn perform_update(
         return Err(s().errors.invalid_sub_url.to_string());
     }
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+    let (config_data, usage) = download(sub_url, proxy, &user_agent(sing_box_version))?;
+    let outcome = apply_config_text(&config_data, app_dir, config_path, sing_box)?;
+    Ok(Fetched { outcome, usage })
+}
+
+/// Download the subscription: its body, and the usage its
+/// `subscription-userinfo` header reports. With a `proxy` (the running
+/// sing-box), any failure of that attempt — no connection, a timeout, a
+/// non-2xx status (a provider refusing proxy IPs), a broken body — is
+/// followed by one direct attempt, whose result is the answer; the proxied
+/// failure only goes to stderr. Two attempts can take up to twice
+/// `HTTP_TIMEOUT_SECS`. In TUN mode "direct" still follows the system route,
+/// i.e. sing-box's TUN: BoxPilot never adds route rules to a profile's
+/// config (ADR 0002). With no `proxy`, one direct attempt; environment
+/// proxies are ignored either way, as they may point at a sing-box that
+/// isn't running.
+fn download(
+    sub_url: &str,
+    proxy: Option<&str>,
+    user_agent: &str,
+) -> Result<(String, Option<SubscriptionUsage>), String> {
+    if let Some(proxy) = proxy {
+        match download_once(sub_url, Some(proxy), user_agent) {
+            Ok(downloaded) => return Ok(downloaded),
+            Err(e) => eprintln!("Fetch through sing-box failed ({e}); retrying directly"),
+        }
+    }
+    download_once(sub_url, None, user_agent)
+}
+
+/// One download attempt, through `proxy` or direct.
+fn download_once(
+    sub_url: &str,
+    proxy: Option<&str>,
+    user_agent: &str,
+) -> Result<(String, Option<SubscriptionUsage>), String> {
+    let builder = Client::builder().timeout(Duration::from_secs(HTTP_TIMEOUT_SECS));
+    let builder = match proxy {
+        Some(proxy) => builder
+            .proxy(Proxy::all(proxy).map_err(|e| (s().errors.http_client)(&http_error_text(e)))?),
+        None => builder.no_proxy(),
+    };
+    let client = builder
         .build()
         .map_err(|e| (s().errors.http_client)(&e.to_string()))?;
 
     let response = client
         .get(sub_url)
-        .header("User-Agent", user_agent(sing_box_version))
+        .header("User-Agent", user_agent)
         .send()
         .map_err(|e| {
             if e.is_timeout() {
@@ -395,12 +450,10 @@ pub fn perform_update(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| parse_userinfo(value, now));
 
-    let config_data = response.text().map_err(|e| {
-        (s().errors.read_response)(&http_error_text(e))
-    })?;
-
-    let outcome = apply_config_text(&config_data, app_dir, config_path, sing_box)?;
-    Ok(Fetched { outcome, usage })
+    let config_data = response
+        .text()
+        .map_err(|e| (s().errors.read_response)(&http_error_text(e)))?;
+    Ok((config_data, usage))
 }
 
 /// A reqwest error for a message that reaches toasts and stderr. Its
@@ -1265,6 +1318,15 @@ mod tests {
         userinfo: &'static str,
         body: &'static str,
     ) -> (String, std::thread::JoinHandle<String>) {
+        serve_status_once("200 OK", userinfo, body)
+    }
+
+    /// `serve_once` with any status line, e.g. `403 Forbidden`.
+    fn serve_status_once(
+        status: &'static str,
+        userinfo: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1279,9 +1341,10 @@ mod tests {
                 head.push(byte[0]);
             }
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\n\
                  Subscription-Userinfo: {}\r\nContent-Length: {}\r\n\
                  Connection: close\r\n\r\n{}",
+                status,
                 userinfo,
                 body.len(),
                 body
@@ -1302,7 +1365,7 @@ mod tests {
             "upload=1024; download=2048; total=1e6; expire=1800000000",
             BODY,
         );
-        let fetched = perform_update(&url, &dir, &config_path, None, Some("1.14.0")).unwrap();
+        let fetched = perform_update(&url, None, &dir, &config_path, None, Some("1.14.0")).unwrap();
         let head = server.join().unwrap();
         assert!(head.contains("sing-box 1.14.0"), "User-Agent: {}", head);
         assert!(matches!(fetched.outcome, UpdateOutcome::Changed(_)));
@@ -1315,13 +1378,97 @@ mod tests {
         assert_eq!(fetched.outcome.commit(), Ok(true));
 
         let (url, server) = serve_once("upload=4096; download=8192; total=1e6", BODY);
-        let fetched = perform_update(&url, &dir, &config_path, None, None).unwrap();
+        let fetched = perform_update(&url, None, &dir, &config_path, None, None).unwrap();
         server.join().unwrap();
         assert!(matches!(fetched.outcome, UpdateOutcome::Unchanged));
         let usage = fetched.usage.expect("usage parsed on Unchanged too");
         assert_eq!((usage.upload, usage.download, usage.expire), (4096, 8192, None));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    const FETCH_BODY: &str = r#"{"outbounds":[{"type":"direct","tag":"direct"}]}"#;
+    const UA: &str = "BoxPilot/test";
+
+    /// A loopback port nothing listens on: bound, then let go.
+    fn dead_port() -> u16 {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[test]
+    fn local_proxy_only_while_sing_box_runs() {
+        assert_eq!(
+            local_proxy(true, 18200).as_deref(),
+            Some("http://127.0.0.1:18200")
+        );
+        assert_eq!(local_proxy(false, 18200), None);
+    }
+
+    #[test]
+    fn download_goes_through_the_given_proxy() {
+        // The "proxy" answers the forwarded request itself; the host in the
+        // URL never resolves, so only a proxied request can succeed.
+        let (proxy, server) = serve_once("upload=1; download=2; total=3", FETCH_BODY);
+        let proxy = proxy.trim_end_matches("/sub?token=abc").to_string();
+        let (body, usage) = download("http://sub.invalid/sub?token=abc", Some(&proxy), UA).unwrap();
+        assert_eq!(body, FETCH_BODY);
+        assert_eq!(usage.map(|u| u.total), Some(3));
+        let head = server.join().unwrap();
+        assert!(
+            head.starts_with("GET http://sub.invalid/sub?token=abc HTTP/1.1"),
+            "{head}"
+        );
+    }
+
+    /// sing-box isn't listening (yet): straight on to the direct attempt.
+    #[test]
+    fn download_falls_back_to_direct_when_the_proxy_is_down() {
+        let (url, server) = serve_once("upload=1; download=2; total=3", FETCH_BODY);
+        let proxy = format!("http://127.0.0.1:{}", dead_port());
+        let (body, _) = download(&url, Some(&proxy), UA).unwrap();
+        assert_eq!(body, FETCH_BODY);
+        assert!(server.join().unwrap().starts_with("GET /sub?token=abc "));
+    }
+
+    /// A provider refusing the proxy's IP: the direct attempt follows.
+    #[test]
+    fn download_falls_back_to_direct_on_an_error_status() {
+        let (proxy, proxy_server) = serve_status_once("403 Forbidden", "", "");
+        let proxy = proxy.trim_end_matches("/sub?token=abc").to_string();
+        let (url, server) = serve_once("upload=1; download=2; total=3", FETCH_BODY);
+        let (body, usage) = download(&url, Some(&proxy), UA).unwrap();
+        assert_eq!(body, FETCH_BODY);
+        assert!(usage.is_some(), "usage comes from the direct answer");
+        let proxied = proxy_server.join().unwrap();
+        assert!(proxied.starts_with("GET http://127.0.0.1:"), "{proxied}");
+        assert!(server.join().unwrap().starts_with("GET /sub?token=abc "));
+    }
+
+    /// Both attempts failed: the direct attempt's error is the one
+    /// reported, and it names no URL.
+    #[test]
+    fn failed_fallback_reports_the_direct_error() {
+        let (proxy, proxy_server) = serve_status_once("502 Bad Gateway", "", "");
+        let proxy = proxy.trim_end_matches("/sub?token=abc").to_string();
+        let url = format!("http://127.0.0.1:{}/sub?token=secret", dead_port());
+        let err = download(&url, Some(&proxy), UA).unwrap_err();
+        proxy_server.join().unwrap();
+        assert!(err.starts_with("Network error"), "{err}");
+        assert!(!err.contains("502"), "{err}");
+        assert!(!err.contains("secret"), "{err}");
+    }
+
+    /// No proxy: one direct attempt, whose status is the error.
+    #[test]
+    fn direct_download_reports_its_status() {
+        let (url, server) = serve_status_once("404 Not Found", "", "");
+        let err = download(&url, None, UA).unwrap_err();
+        server.join().unwrap();
+        assert!(err.contains("404"), "{err}");
     }
 
     #[test]

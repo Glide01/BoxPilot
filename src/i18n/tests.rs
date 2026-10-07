@@ -85,6 +85,8 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.home.system_proxy,
         t.profiles.add_title,
         t.profiles.interval,
+        t.profiles.update_via_sing_box,
+        t.profiles.update_via_sing_box_hint,
         t.profiles.delete_body,
         t.profiles.updating,
         t.profiles.update_failed,
@@ -244,6 +246,7 @@ fn chinese_uses_full_width_punctuation() {
     // ASCII ',' ':' ';' right after a CJK character reads wrong in Chinese.
     let samples = [
         ZH_CN.profiles.interval.to_string(),
+        ZH_CN.profiles.update_via_sing_box_hint.to_string(),
         ZH_CN.profiles.delete_body.to_string(),
         ZH_CN.settings.lan_off.to_string(),
         (ZH_CN.messages.clash_mode_failed)("x"),

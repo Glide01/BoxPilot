@@ -3,7 +3,9 @@
 //! parsing, kind selection, and the has-content gate all live here instead of
 //! inside the dialog's `on_ok` closure. No gpui dependency.
 
-use crate::core::settings::{default_auto_update_interval, Profile, ProfileSource};
+use crate::core::settings::{
+    default_auto_update_interval, default_update_via_sing_box, Profile, ProfileSource,
+};
 use std::path::Path;
 
 /// Which source type the dialog is editing. Index-mapped to the dialog's
@@ -43,6 +45,8 @@ pub struct ProfileDraft {
     pub url: String,
     /// Interval field as typed; parse failures mean 0 (= auto-update off).
     pub interval_raw: String,
+    /// The "Update through sing-box" switch (Remote only).
+    pub update_via_sing_box: bool,
     pub path: String,
 }
 
@@ -59,8 +63,9 @@ pub struct DraftOutput {
 }
 
 impl ProfileDraft {
-    /// Seed the dialog fields. `None` = Add (Remote kind, default interval);
-    /// `Some` = Edit (fields mirror the profile, kind locked by the dialog).
+    /// Seed the dialog fields. `None` = Add (Remote kind, default interval,
+    /// updates through sing-box); `Some` = Edit (fields mirror the profile,
+    /// kind locked by the dialog).
     pub fn from_profile(profile: Option<&Profile>) -> Self {
         let kind = if profile.map(|p| p.is_local()).unwrap_or(false) {
             DraftKind::Local
@@ -78,6 +83,13 @@ impl ProfileDraft {
                 .map(|p| p.auto_update_interval())
                 .unwrap_or_else(default_auto_update_interval)
                 .to_string(),
+            update_via_sing_box: match profile.map(|p| &p.source) {
+                Some(ProfileSource::Remote {
+                    update_via_sing_box,
+                    ..
+                }) => *update_via_sing_box,
+                _ => default_update_via_sing_box(),
+            },
             path: profile
                 .and_then(|p| p.local_path())
                 .unwrap_or_default()
@@ -95,6 +107,7 @@ impl ProfileDraft {
             DraftKind::Remote => ProfileSource::Remote {
                 url: self.url.trim().to_string(),
                 auto_update_interval_minutes: self.interval_raw.trim().parse().unwrap_or(0),
+                update_via_sing_box: self.update_via_sing_box,
             },
         };
         DraftOutput {
@@ -125,6 +138,7 @@ mod tests {
             source: ProfileSource::Remote {
                 url: url.into(),
                 auto_update_interval_minutes: interval,
+                update_via_sing_box: true,
             },
             last_updated_secs: None,
             last_checked_secs: None,
@@ -136,8 +150,28 @@ mod tests {
     fn add_draft_defaults_to_remote_with_default_interval() {
         let draft = ProfileDraft::from_profile(None);
         assert_eq!(draft.kind, DraftKind::Remote);
-        assert_eq!(draft.interval_raw, default_auto_update_interval().to_string());
+        assert_eq!(
+            draft.interval_raw,
+            default_auto_update_interval().to_string()
+        );
+        assert!(draft.update_via_sing_box);
         assert!(draft.name.is_empty() && draft.url.is_empty() && draft.path.is_empty());
+    }
+
+    /// Edit seeds the switch from the profile, and Save writes it back.
+    #[test]
+    fn update_via_sing_box_round_trips_through_the_draft() {
+        for via in [true, false] {
+            let mut profile = remote_profile("https://a/s", 60);
+            profile.source = ProfileSource::Remote {
+                url: "https://a/s".into(),
+                auto_update_interval_minutes: 60,
+                update_via_sing_box: via,
+            };
+            let draft = ProfileDraft::from_profile(Some(&profile));
+            assert_eq!(draft.update_via_sing_box, via);
+            assert_eq!(draft.build().source, profile.source);
+        }
     }
 
     #[test]
@@ -172,6 +206,7 @@ mod tests {
             ProfileSource::Remote {
                 url: "https://a/s".into(),
                 auto_update_interval_minutes: 30,
+                update_via_sing_box: true,
             }
         );
         assert!(out.has_content);

@@ -142,6 +142,7 @@ fn remote(url: &str) -> ProfileSource {
     ProfileSource::Remote {
         url: url.to_string(),
         auto_update_interval_minutes: 0,
+        update_via_sing_box: true,
     }
 }
 
@@ -212,6 +213,7 @@ fn main() {
                         ProfileSource::Remote {
                             url: URL_C.to_string(),
                             auto_update_interval_minutes: 0,
+                            update_via_sing_box: true,
                         },
                         cx,
                     );

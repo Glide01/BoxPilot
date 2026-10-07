@@ -249,6 +249,10 @@ pub struct Profiles {
     pub subscription_url: &'static str,
     pub url_placeholder: &'static str,
     pub interval: &'static str,
+    /// The subscription dialog's switch: fetch through the running sing-box.
+    pub update_via_sing_box: &'static str,
+    /// Under that switch: the fallback, and when to turn it off.
+    pub update_via_sing_box_hint: &'static str,
     pub config_file: &'static str,
     pub browse: &'static str,
     pub no_file_selected: &'static str,

@@ -11,18 +11,19 @@ use crate::core::paths::{
     runtime_config_path,
 };
 use crate::core::settings::{
-    default_auto_update_interval, AppSettings, CloseAction, LanguagePreference, Profile,
-    ProfileSource, StatusEvent, StatusLevel, ThemePreference, CONFIG_FILENAME, SING_EXECUTABLE,
+    default_auto_update_interval, default_update_via_sing_box, AppSettings, CloseAction,
+    LanguagePreference, Profile, ProfileSource, StatusEvent, StatusLevel, ThemePreference,
+    CONFIG_FILENAME, SING_EXECUTABLE,
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::sub_usage::{SubscriptionUsage, UsageLevel};
 use crate::core::subscription::{
-    import_local_config, perform_update, pick_api_port, prepare_config, save_runtime_config,
-    Fetched, RuntimeOptions,
+    import_local_config, local_proxy, perform_update, pick_api_port, prepare_config,
+    save_runtime_config, Fetched, RuntimeOptions,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
 use crate::core::update_check::{
-    check_proxy, fetch_latest, is_newer, same_version, should_notify, ReleaseInfo, CHECK_INTERVAL,
+    fetch_latest, is_newer, same_version, should_notify, ReleaseInfo, CHECK_INTERVAL,
     CURRENT_VERSION, FIRST_CHECK_DELAY,
 };
 use crate::i18n::s;
@@ -500,6 +501,7 @@ impl AppState {
                         let ProfileSource::Remote {
                             url,
                             auto_update_interval_minutes,
+                            ..
                         } = &profile.source
                         else {
                             continue;
@@ -528,11 +530,20 @@ impl AppState {
                                 profile_id: profile.id.clone(),
                                 fetch,
                             };
+                            // The route as of now, by the profile's current
+                            // setting (the snapshot may be a fetch old).
+                            let current = state
+                                .settings
+                                .profiles
+                                .iter()
+                                .find(|p| p.id == profile.id)
+                                .unwrap_or(&profile);
+                            let proxy = state.subscription_proxy(current, cx);
                             cx.notify();
-                            Some(fetch)
+                            Some((fetch, proxy))
                         });
-                        let fetch = match claimed {
-                            Ok(Some(fetch)) => fetch,
+                        let (fetch, proxy) = match claimed {
+                            Ok(Some(claim)) => claim,
                             Ok(None) => break,
                             Err(_) => return,
                         };
@@ -548,6 +559,7 @@ impl AppState {
                             .spawn(async move {
                                 perform_update(
                                     &url,
+                                    proxy.as_deref(),
                                     &app_dir,
                                     &config_path,
                                     Some(&sing_box),
@@ -1140,6 +1152,25 @@ impl AppState {
         .detach();
     }
 
+    /// The running sing-box's local proxy, for BoxPilot's own requests
+    /// (`local_proxy`); `None` unless sing-box runs. The port is the
+    /// setting's: changing it restarts sing-box, so a running one listens
+    /// there.
+    fn sing_box_proxy(&self, cx: &App) -> Option<String> {
+        local_proxy(self.process.read(cx).is_running(), self.settings.proxy_port)
+    }
+
+    /// The route for a fetch of `profile`, decided on the UI thread when the
+    /// fetch starts: the running sing-box if the profile updates through it
+    /// (`Profile::updates_via_sing_box`), else direct.
+    fn subscription_proxy(&self, profile: &Profile, cx: &App) -> Option<String> {
+        if profile.updates_via_sing_box() {
+            self.sing_box_proxy(cx)
+        } else {
+            None
+        }
+    }
+
     /// A start is under way: sing-box `Preparing`, or a Linux TUN gate
     /// (plan probe or pkexec prompt) still pending. What Home and the
     /// sidebar show as Starting, and what holds the power button off.
@@ -1319,18 +1350,14 @@ impl AppState {
     /// Ask GitHub for the latest BoxPilot release, off the UI thread. An
     /// automatic check (`manual` false) never runs while the setting is off;
     /// "Check now" always does. One check at a time. Goes through sing-box's
-    /// local proxy while it runs in Proxy mode (TUN mode captures it
-    /// anyway), directly otherwise. A newer release that isn't skipped gets
-    /// one Info toast per session.
+    /// local proxy while it runs, in either mode (`local_proxy`), directly
+    /// otherwise. A newer release that isn't skipped gets one Info toast per
+    /// session.
     pub fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
         if self.update_check == UpdateCheck::Checking || !(manual || self.settings.check_updates) {
             return;
         }
-        let proxy = check_proxy(
-            self.settings.proxy_mode,
-            self.process.read(cx).is_running(),
-            self.settings.proxy_port,
-        );
+        let proxy = self.sing_box_proxy(cx);
         self.update_check = UpdateCheck::Checking;
         self.last_update_check = Some(SystemTime::now());
         cx.notify();
@@ -1471,6 +1498,7 @@ impl AppState {
         };
         let profile_name = profile.name.clone();
         let source = profile.source.clone();
+        let proxy = self.subscription_proxy(profile, cx);
         // Reject an empty source up front, with a source-appropriate message.
         match &source {
             ProfileSource::Remote { url, .. } if url.trim().is_empty() => {
@@ -1522,6 +1550,7 @@ impl AppState {
                     match source {
                         ProfileSource::Remote { url, .. } => perform_update(
                             url.trim(),
+                            proxy.as_deref(),
                             &app_dir,
                             &config_path,
                             Some(sing_box.as_path()),
@@ -1626,7 +1655,8 @@ impl AppState {
         if !name.is_empty() {
             profile.name = name;
         }
-        // A new URL or file: the old one's failure no longer says anything.
+        // A new URL, file or route (Update through sing-box): the old
+        // failure no longer says anything.
         if profile.source != source {
             self.fetch_errors.remove(&id);
         }
@@ -1853,6 +1883,7 @@ impl AppState {
                     source: ProfileSource::Remote {
                         url,
                         auto_update_interval_minutes: default_auto_update_interval(),
+                        update_via_sing_box: default_update_via_sing_box(),
                     },
                     last_updated_secs: None,
                     last_checked_secs: None,

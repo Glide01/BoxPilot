@@ -93,6 +93,8 @@ pub static EN: Strings = Strings {
         subscription_url: "Subscription URL",
         url_placeholder: "Enter subscription URL…",
         interval: "Auto-update interval (minutes, 0 = off)",
+        update_via_sing_box: "Update through sing-box",
+        update_via_sing_box_hint: "Fetch this subscription through the running sing-box. If that fails, BoxPilot retries directly. Turn off for providers that refuse proxy IPs.",
         config_file: "Config file",
         browse: "Browse…",
         no_file_selected: "No file selected",
