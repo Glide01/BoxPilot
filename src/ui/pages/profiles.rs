@@ -13,9 +13,9 @@ use crate::state::AppState;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    choice_select, empty_state, form_input, freshness_button, full_text_tooltip, grouped_card,
-    minute_ticker, page_header, profile_source_line, row_hover_bg, section_heading, setting_row,
-    usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
+    choice_select, dialog_button, empty_state, form_input, freshness_button, full_text_tooltip,
+    grouped_card, minute_ticker, page_header, profile_source_line, row_hover_bg, section_heading,
+    setting_row, usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -132,7 +132,7 @@ impl ProfilesPage {
             let delete_button = editing_id.clone().map(|id| {
                 let app_state = app_state.clone();
                 let name = delete_name.clone();
-                Button::new("profile-dialog-delete")
+                dialog_button(Button::new("profile-dialog-delete"))
                     .outline()
                     .text_label(t.common.delete)
                     .text_color(theme.danger)
@@ -224,7 +224,7 @@ impl ProfilesPage {
             let choose_file = {
                 let path_input = path_input.clone();
                 let name_input = name_input.clone();
-                Button::new("profile-choose-file")
+                dialog_button(Button::new("profile-choose-file"))
                     .outline()
                     .text_label(t.profiles.browse)
                     .on_click(move |_, window, cx| {
@@ -299,6 +299,7 @@ impl ProfilesPage {
                         .v_flex()
                         .gap_5()
                         .pt_2()
+                        .pb(DIALOG_BODY_BOTTOM)
                         .children(kind_toggle)
                         .child(
                             div()
@@ -318,16 +319,20 @@ impl ProfilesPage {
                             div()
                                 .h_flex()
                                 .gap_2()
-                                .child(DialogClose::new().child(
-                                    Button::new("profile-dialog-cancel")
-                                        .outline()
-                                        .text_label(t.common.cancel),
-                                ))
-                                .child(DialogAction::new().child(
-                                    Button::new("profile-dialog-save")
-                                        .primary()
-                                        .text_label(t.common.save),
-                                )),
+                                .child(
+                                    DialogClose::new().child(dialog_button(
+                                        Button::new("profile-dialog-cancel")
+                                            .outline()
+                                            .text_label(t.common.cancel),
+                                    )),
+                                )
+                                .child(
+                                    DialogAction::new().child(dialog_button(
+                                        Button::new("profile-dialog-save")
+                                            .primary()
+                                            .text_label(t.common.save),
+                                    )),
+                                ),
                         ),
                 )
                 .on_ok({

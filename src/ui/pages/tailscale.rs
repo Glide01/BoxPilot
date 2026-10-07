@@ -21,7 +21,9 @@ use crate::state::tailscale::{CertificateFetched, PingSession, TailscaleAction};
 use crate::state::{AppState, TailscaleState};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{empty_state, meta_row, page_header, status_label, TextLabel};
+use crate::ui::widgets::{
+    dialog_button, empty_state, meta_row, page_header, status_label, TextLabel,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -832,7 +834,7 @@ fn show_certificate(
         let (cert_name, key_name) = crate::core::tailscale::certificate_file_names(&domain);
         let copy = {
             let pem = pem.clone();
-            Button::new("ts-cert-copy")
+            dialog_button(Button::new("ts-cert-copy"))
                 .outline()
                 .text_label(s().tailscale.copy_certificate)
                 .on_click(move |_, _, cx| {
@@ -843,7 +845,7 @@ fn show_certificate(
         let save = {
             let domain = domain.clone();
             let certificate = certificate.clone();
-            Button::new("ts-cert-save")
+            dialog_button(Button::new("ts-cert-save"))
                 .primary()
                 .text_label(s().common.save_as)
                 .on_click(move |_, window, cx| {
@@ -882,7 +884,7 @@ fn show_certificate(
                     .child(copy)
                     .child(
                         DialogClose::new().child(
-                            Button::new("ts-cert-close")
+                            dialog_button(Button::new("ts-cert-close"))
                                 .outline()
                                 .text_label(s().common.close),
                         ),

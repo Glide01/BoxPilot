@@ -26,7 +26,8 @@ use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    empty_state, form_input, meta_row, page_header, select_widths, IconLabel, Lead, TextLabel,
+    dialog_button, empty_state, form_input, meta_row, page_header, select_widths, IconLabel,
+    TextLabel, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -131,17 +132,16 @@ impl DialogHandle {
     /// means for this protocol.
     fn cancel_button(&self, label: &'static str) -> Button {
         let handle = self.clone();
-        Button::new("vpn-dialog-cancel")
-            .outline()
-            .text_label(label)
-            .on_click(move |_, window, cx| {
+        dialog_button(Button::new("vpn-dialog-cancel").outline().text_label(label)).on_click(
+            move |_, window, cx| {
                 let key = handle.key.clone();
                 handle
                     .vpn
                     .update(cx, |vpn, cx| vpn.cancel_challenge(key, cx));
                 handle.forget(cx);
                 window.close_dialog(cx);
-            })
+            },
+        )
     }
 
     /// Footer: the cancel button on the left; Close (keeps the challenge
@@ -156,20 +156,19 @@ impl DialogHandle {
         let right = div()
             .h_flex()
             .gap_2()
-            .child(
-                DialogClose::new().child(Button::new("vpn-dialog-close").outline().text_label(
+            .child(DialogClose::new().child(dialog_button(
+                Button::new("vpn-dialog-close").outline().text_label(
                     if pending && submit_label.is_some() {
                         s().vpn.later
                     } else {
                         s().common.close
                     },
-                )),
-            )
+                ),
+            )))
             .when_some(submit_label.filter(|_| pending), |this, label| {
-                this.child(
-                    DialogAction::new()
-                        .child(Button::new("vpn-dialog-submit").primary().text_label(label)),
-                )
+                this.child(DialogAction::new().child(dialog_button(
+                    Button::new("vpn-dialog-submit").primary().text_label(label),
+                )))
             });
         DialogFooter::new()
             .justify_between()
@@ -282,18 +281,9 @@ fn ended_notice(theme: &Theme) -> Div {
 }
 
 fn open_browser_button(id: &'static str, url: String) -> Button {
-    Button::new(id)
+    dialog_button(Button::new(id))
         .outline()
-        // A medium button's icon is 16px, a size up from its text.
-        .icon_label(
-            Lead::Sized(
-                Icon::new(IconName::ExternalLink)
-                    .size_4()
-                    .into_any_element(),
-                px(16.),
-            ),
-            s().vpn.open_sign_in_page,
-        )
+        .icon_label(IconName::ExternalLink, s().vpn.open_sign_in_page)
         .on_click(move |_, _, cx| cx.open_url(&url))
 }
 
@@ -356,7 +346,7 @@ fn open_openconnect_dialog(
                 dialog
                     .title(handle.title())
                     .w(px(DIALOG_WIDTH))
-                    .child(body)
+                    .child(body.pb(DIALOG_BODY_BOTTOM))
                     // A form without fields is a "click to continue" step.
                     .footer(handle.footer(
                         pending,
@@ -445,7 +435,7 @@ fn open_openconnect_dialog(
                 dialog
                     .title(handle.title())
                     .w(px(DIALOG_WIDTH))
-                    .child(body)
+                    .child(body.pb(DIALOG_BODY_BOTTOM))
                     .footer(handle.footer(
                         pending,
                         s().vpn.cancel_sign_in,
@@ -502,7 +492,7 @@ fn open_openconnect_dialog(
                 dialog
                     .title(handle.title())
                     .w(px(DIALOG_WIDTH))
-                    .child(body)
+                    .child(body.pb(DIALOG_BODY_BOTTOM))
                     .footer(handle.footer(pending, s().vpn.cancel_sign_in, None))
                     .on_close({
                         let handle = handle.clone();
@@ -633,7 +623,7 @@ fn open_openvpn_dialog(
         dialog
             .title(handle.title())
             .w(px(DIALOG_WIDTH))
-            .child(body)
+            .child(body.pb(DIALOG_BODY_BOTTOM))
             .footer(handle.footer(
                 pending,
                 s().vpn.disconnect,

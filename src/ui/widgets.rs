@@ -1025,6 +1025,30 @@ pub fn small_input(state: &Entity<InputState>) -> Input {
     Input::new(state).small().py(input_py(24.))
 }
 
+/// The narrowest a dialog's button gets, so short labels side by side
+/// ("Cancel" / "Save", "取消" / "保存") come out one width, as the system's
+/// own dialogs do. Longer labels widen their button as usual.
+const DIALOG_BUTTON_MIN_WIDTH: Pixels = px(80.);
+
+/// A button in a dialog, unlabelled: a [`form_input`]'s 32px height, so it
+/// lines up with the fields beside it, with the small size's 14px text —
+/// gpui-component's medium size jumps to 16px, larger than every label and
+/// field around it (as [`empty_state_button`] notes) — and at least
+/// [`DIALOG_BUTTON_MIN_WIDTH`] wide.
+pub fn dialog_button(button: Button) -> Button {
+    button
+        .small()
+        .h(px(32.))
+        .px_3()
+        .min_w(DIALOG_BUTTON_MIN_WIDTH)
+}
+
+/// Room a dialog's content leaves below its last control.
+/// gpui-component's dialog clips its body to the content's bounds, and a
+/// focused input's 3px ring is drawn outside the input: an input at the
+/// bottom of the body otherwise loses the bottom of its ring.
+pub const DIALOG_BODY_BOTTOM: Pixels = px(4.);
+
 #[cfg(test)]
 mod tests {
     use super::capitalize_first;

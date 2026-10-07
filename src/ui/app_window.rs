@@ -15,7 +15,7 @@ use crate::core::settings::{CloseAction, StatusEvent, StatusLevel};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
 use crate::state::{ActivateRequested, AppState};
-use crate::ui::widgets::TextLabel;
+use crate::ui::widgets::{dialog_button, TextLabel};
 use crate::ui::{theme, title_bar, toast, tray, RootView};
 use gpui::*;
 use gpui_component::{
@@ -429,16 +429,18 @@ fn ask_keep_running(window: &mut Window, cx: &mut App) {
             .on_close(|_, _, cx| set_close_prompt_open(false, cx))
             .footer(
                 DialogFooter::new()
-                    .child(Button::new("close-quit").text_label(t.quit).on_click(
-                        move |_, window, cx| {
-                            window.close_dialog(cx);
-                            set_close_prompt_open(false, cx);
-                            remember_close_action(remember_quit.get(), CloseAction::Quit, cx);
-                            cx.quit();
-                        },
-                    ))
                     .child(
-                        Button::new("close-keep")
+                        dialog_button(Button::new("close-quit"))
+                            .text_label(t.quit)
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                set_close_prompt_open(false, cx);
+                                remember_close_action(remember_quit.get(), CloseAction::Quit, cx);
+                                cx.quit();
+                            }),
+                    )
+                    .child(
+                        dialog_button(Button::new("close-keep"))
                             .primary()
                             .text_label(t.keep)
                             .on_click(move |_, window, cx| {
