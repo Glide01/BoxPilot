@@ -13,8 +13,8 @@ use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
 use crate::ui::theme::FORM_MAX_WIDTH;
 use crate::ui::widgets::{
-    choice_select_with, connect_button, empty_state, grouped_card, page_header, section_heading,
-    select_widths, setting_row, small_input, stat, status_label, text_centered, TextLabel,
+    choice_select_with, connect_button, empty_state, grouped_card, page_header, plain_select,
+    section_heading, setting_row, small_input, stat, status_label, text_centered, TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -29,7 +29,7 @@ use gpui_component::{
     switch::Switch,
     tab::{Tab, TabBar},
     theme::Theme,
-    ActiveTheme, Disableable, Icon, IndexPath, Sizable, Size, StyledExt,
+    ActiveTheme, Disableable, Icon, IndexPath, Sizable, StyledExt,
 };
 
 /// Width of the text fields.
@@ -266,6 +266,7 @@ impl ToolsPage {
                         &self.outbounds,
                         running,
                         window,
+                        cx,
                     ))
                     .into_any_element(),
                 setting_row(theme, t.tools.mode, None)
@@ -403,6 +404,7 @@ impl ToolsPage {
                         &self.outbounds,
                         running,
                         window,
+                        cx,
                     ))
                     .into_any_element(),
                 setting_row(theme, t.tools.stun_server, None)
@@ -552,30 +554,31 @@ fn section(
     )
 }
 
-/// The outbound a test runs through: as wide as the longest outbound
-/// name, its menu with room for the protocol beside each name.
+/// The outbound a test runs through ([`plain_select`]); its menu has
+/// room for the protocol beside each name.
 fn outbound_picker(
     select: &OutboundSelect,
     outbounds: &[OutboundChoice],
     disabled: bool,
     window: &Window,
+    cx: &App,
 ) -> Div {
-    let names: Vec<SharedString> = outbounds
+    let picked = ToolsPage::picked_outbound(select, cx);
+    let current = outbounds
         .iter()
+        .find(|o| o.tag == picked)
         .map(|o| SharedString::from(o.label().to_string()))
-        .collect();
+        .unwrap_or_default();
     let rows: Vec<SharedString> = outbounds
         .iter()
         .map(|o| format!("{}    {}", o.label(), o.outbound_type).into())
         .collect();
-    let (width, _) = select_widths(&names, Size::Small, window);
-    let (_, menu_width) = select_widths(&rows, Size::Small, window);
-    div().flex_none().w(width).child(
-        Select::new(select)
-            .small()
-            .menu_width(menu_width.max(width))
-            .search_placeholder(s().tools.search_outbounds)
-            .disabled(disabled),
+    plain_select(
+        Select::new(select).search_placeholder(s().tools.search_outbounds),
+        &current,
+        &rows,
+        disabled,
+        window,
     )
 }
 

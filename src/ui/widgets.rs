@@ -26,8 +26,9 @@
 //! all, is one short line. No paragraphs of explanation on a page.
 //!
 //! Choices: a setting with two options is a switch or a segmented control;
-//! one with three or more is a [`choice_select`] dropdown. Every dropdown
-//! is as wide as its longest choice ([`select_widths`]), not a fixed width.
+//! one with three or more is a [`choice_select`] dropdown. A dropdown in a
+//! setting row is a [`plain_select`]: no box, the current choice and a
+//! caret, as wide as that text.
 
 use crate::actions::{ToggleProcess, KEY_CONTEXT};
 use crate::core::presentation::{Freshness, FreshnessState, ProfileRowInfo};
@@ -45,7 +46,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     input::{Input, InputState},
     progress::Progress,
-    searchable_list::SearchableListItem,
+    searchable_list::{SearchableListDelegate, SearchableListItem},
     select::{Select, SelectEvent, SelectState},
     spinner::Spinner,
     theme::Theme,
@@ -585,11 +586,12 @@ pub fn segmented(
         }))
 }
 
-/// Widest a dropdown grows to fit its choices; a longer one ellipsizes.
+/// Widest a dropdown grows to fit its text; a longer one ellipsizes.
 pub const SELECT_MAX_WIDTH: f32 = 280.;
 
-/// What a dropdown's trigger adds around its text at `size`: border,
-/// padding, the gap and the caret (and a pixel each way for rounding).
+/// What a boxed dropdown's trigger adds around its text at `size`:
+/// border, padding, the gap and the caret (and a pixel each way for
+/// rounding).
 fn select_trigger_chrome(size: Size) -> Pixels {
     match size {
         Size::Small | Size::XSmall => px(2. + 16. + 4. + 14. + 2.),
@@ -597,24 +599,21 @@ fn select_trigger_chrome(size: Size) -> Pixels {
     }
 }
 
+/// What a [`plain_select`]'s trigger adds to its text: the (transparent)
+/// border, the gap and the small caret, and a pixel each way for rounding.
+const PLAIN_SELECT_CHROME: f32 = 2. + 4. + 14. + 2.;
+
 /// What the open menu adds around a choice: border, list padding, item
 /// padding, the gap and the check mark.
 const SELECT_MENU_CHROME: f32 = 2. + 8. + 16. + 4. + 12. + 6.;
 
-/// Widths for a dropdown that fits its choices: the trigger as wide as the
-/// longest of `labels` (so it doesn't change width as the choice does), up
-/// to [`SELECT_MAX_WIDTH`], and its menu at least as wide, with room for
-/// the check mark. Measured in the window's UI font at the dropdown's text
-/// size (`text_sm` for small and medium).
-pub fn select_widths<'a>(
-    labels: impl IntoIterator<Item = &'a SharedString>,
-    size: Size,
-    window: &Window,
-) -> (Pixels, Pixels) {
+/// The width of the longest of `labels` in the window's UI font at a
+/// dropdown's text size (`text_sm` for small and medium).
+fn widest_text<'a>(labels: impl IntoIterator<Item = &'a SharedString>, window: &Window) -> Pixels {
     let style = window.text_style();
     let font_size = rems(0.875).to_pixels(window.rem_size());
     let text_system = window.text_system();
-    let widest = labels
+    labels
         .into_iter()
         .filter(|label| !label.is_empty())
         .map(|label| {
@@ -622,14 +621,67 @@ pub fn select_widths<'a>(
                 .shape_line(label.clone(), font_size, &[style.to_run(label.len())], None)
                 .width
         })
-        .fold(Pixels::ZERO, Pixels::max);
-    let max = px(SELECT_MAX_WIDTH);
-    let trigger = (widest + select_trigger_chrome(size)).ceil().min(max);
-    let menu = (widest + px(SELECT_MENU_CHROME))
+        .fold(Pixels::ZERO, Pixels::max)
+}
+
+/// The open menu's width: the longest of `labels` with room for the check
+/// mark, at least `trigger` wide.
+fn select_menu_width<'a>(
+    labels: impl IntoIterator<Item = &'a SharedString>,
+    trigger: Pixels,
+    window: &Window,
+) -> Pixels {
+    (widest_text(labels, window) + px(SELECT_MENU_CHROME))
         .ceil()
-        .min(max)
-        .max(trigger);
-    (trigger, menu)
+        .min(px(SELECT_MAX_WIDTH))
+        .max(trigger)
+}
+
+/// Widths for a boxed dropdown (a form field): the box as wide as the
+/// longest of `labels`, up to [`SELECT_MAX_WIDTH`], so it doesn't change
+/// width as the choice does; its menu at least as wide.
+pub fn select_widths<'a>(
+    labels: impl IntoIterator<Item = &'a SharedString> + Clone,
+    size: Size,
+    window: &Window,
+) -> (Pixels, Pixels) {
+    let trigger = (widest_text(labels.clone(), window) + select_trigger_chrome(size))
+        .ceil()
+        .min(px(SELECT_MAX_WIDTH));
+    (trigger, select_menu_width(labels, trigger, window))
+}
+
+/// A dropdown in a setting row: no box, just the current choice and a
+/// caret after it, as wide as that text (up to [`SELECT_MAX_WIDTH`]); the
+/// menu below fits every choice in `labels`. Greyed out while `disabled`
+/// (the component only greys its box, which this has none of).
+pub fn plain_select<'a, D>(
+    select: Select<D>,
+    current: &SharedString,
+    labels: impl IntoIterator<Item = &'a SharedString>,
+    disabled: bool,
+    window: &Window,
+) -> Div
+where
+    D: SearchableListDelegate + 'static,
+    <D::Item as SearchableListItem>::Value: PartialEq + Clone,
+{
+    let width = (widest_text([current], window) + px(PLAIN_SELECT_CHROME))
+        .ceil()
+        .min(px(SELECT_MAX_WIDTH));
+    let menu_width = select_menu_width(labels, width, window);
+    div()
+        .flex_none()
+        .w(width)
+        .when(disabled, |this| this.opacity(0.5))
+        .child(
+            select
+                .small()
+                .appearance(false)
+                .px_0()
+                .menu_width(menu_width)
+                .disabled(disabled),
+        )
 }
 
 /// One option of a [`choice_select`]: what it shows, what it stands for.
@@ -652,8 +704,8 @@ impl<V: Clone + PartialEq> SearchableListItem for Choice<V> {
 }
 
 /// A small dropdown for a setting row with three or more choices
-/// (Language, Appearance, Close button): the current choice in an
-/// input-styled trigger, the rest in a menu below with a check on the
+/// (Language, Appearance, Close button): the current choice and a caret
+/// ([`plain_select`]), the rest in a menu below with a check on the
 /// current one. Mouse or keyboard (Tab to it, Up/Down/Enter, Esc);
 /// `on_select` runs as soon as a choice is picked, re-picking the current
 /// one included.
@@ -697,7 +749,11 @@ pub fn choice_select_with<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
         .map(|ix| IndexPath::default().row(ix));
 
     let labels: Vec<SharedString> = choices.iter().map(|choice| choice.label.clone()).collect();
-    let (width, menu_width) = select_widths(&labels, Size::Small, window);
+    let current = choices
+        .iter()
+        .find(|choice| choice.value == selected)
+        .map(|choice| choice.label.clone())
+        .unwrap_or_default();
 
     let mut created = false;
     let state = window.use_keyed_state(id, cx, |window, cx| {
@@ -722,16 +778,7 @@ pub fn choice_select_with<V: Copy + PartialEq + 'static, L: Into<SharedString>>(
         });
     }
 
-    div()
-        .flex_none()
-        .w(width)
-        .child(
-            Select::new(&state)
-                .small()
-                .menu_width(menu_width)
-                .disabled(disabled),
-        )
-        .into_any_element()
+    plain_select(Select::new(&state), &current, &labels, disabled, window).into_any_element()
 }
 
 /// A short stat: caption over a larger value ("Memory / 48.2 MB").
