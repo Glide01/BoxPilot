@@ -57,3 +57,8 @@ ADR 0004 lets the window close while BoxPilot keeps running in the tray.
 The invariant is unchanged ("seeing the window" can now mean reopening it),
 but the `ActivateRequested` subscriber moved from `RootView` to app level
 (`ui::app_window`), and a reopened window picks up a pending import itself.
+
+ADR 0005 adds macOS, where most launch attempts are not new processes at
+all: link clicks and reopens arrive at the running app as Apple events.
+`main` turns them into the same `LaunchAttempt`s on the same channel, so the
+invariant and the gate apply as they are.

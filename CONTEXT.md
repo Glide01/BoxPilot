@@ -1,6 +1,6 @@
 # BoxPilot
 
-Windows and Linux desktop manager for the sing-box proxy: fetches subscription
+Windows, Linux and macOS desktop manager for the sing-box proxy: fetches subscription
 configs, controls the sing-box process lifecycle, and surfaces its runtime
 state.
 
@@ -44,7 +44,8 @@ The version of the BoxPilot app itself (the Cargo package version).
 **Launch attempt**:
 One action by the user to start or reach BoxPilot — double-clicking the icon,
 launching it a second time, or clicking a link. Every attempt is routed to the
-single running instance, whatever it carried.
+single running instance, whatever it carried. On macOS most attempts arrive
+as Apple events (open URLs, reopen) rather than as new processes.
 _Avoid_: ping, second launch, inbound message
 
 **Deep link**:

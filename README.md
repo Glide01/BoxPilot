@@ -1,16 +1,16 @@
 # BoxPilot
 
-> sing-box 的 Windows / Linux 桌面 GUI 管理器，基于 GPUI 构建。
+> sing-box 的 Windows / Linux / macOS 桌面 GUI 管理器，基于 GPUI 构建。
 
 ## 功能
 
 - **多配置管理**：远程订阅 / 本地 JSON 文件两种来源，增删改、一键切换（「配置」页点一行，或首页配置卡点配置名打开菜单）；每个订阅可独立设置自动更新间隔
 - **通过 sing-box 更新订阅**：sing-box 运行时（TUN 和代理模式都一样），订阅更新经由本地代理端口走 sing-box，失败时自动改为直连重试；sing-box 未运行时直连。每个订阅可在编辑弹窗里关闭「通过 sing-box 更新」（适合拒绝代理 IP 的订阅服务商）。BoxPilot 自身的检查更新同样在 sing-box 运行时经由它
 - **订阅用量与到期**：订阅服务器在 `subscription-userinfo` 响应头里报告流量和到期时间时，「配置」页每一行和首页配置卡显示已用 / 总流量进度条与剩余天数；用掉 90% 或只剩 3 天时变黄，用完或过期时变红，并在启动和更新时提示一次
-- **一键连接**：首页大圆按钮启动 / 停止 sing-box，未连接 / 正在启动 / 已连接三态可视化（快捷键 Ctrl+S）
-- **双代理模式**：TUN ↔ 代理（mixed 入站）切换，系统代理一键开关（Windows 写注册表；Linux 支持 GNOME / KDE）
+- **一键连接**：首页大圆按钮启动 / 停止 sing-box，未连接 / 正在启动 / 已连接三态可视化（快捷键 Ctrl+S，macOS 为 ⌘S）
+- **双代理模式**：TUN ↔ 代理（mixed 入站）切换，系统代理一键开关（Windows 写注册表；Linux 支持 GNOME / KDE；macOS 用 `networksetup`）。macOS 暂只支持代理模式
 - **允许局域网连接**：「设置 › 网络」打开后代理监听 `0.0.0.0`，同一网络里的其他设备可以用 `<本机局域网地址>:<代理端口>` 上网（设置页会列出地址；无密码，防火墙可能会询问是否放行 sing-box）
-- **系统托盘**：托盘图标已连接时为彩色、未连接时为灰色，悬停显示连接状态；菜单可显示窗口、连接 / 断开、开关系统代理、切换代理模式、Clash 模式和配置、退出。「设置 › 常规 › 关闭按钮」决定关窗时询问 / 最小化到托盘 / 退出——最小化到托盘时 sing-box 保持连接，退出才会停止 sing-box。桌面没有托盘时（如未装 AppIndicator 扩展的 GNOME），关窗即退出
+- **系统托盘**：托盘图标已连接时为彩色、未连接时为灰色，悬停显示连接状态；菜单可显示窗口、连接 / 断开、开关系统代理、切换代理模式、Clash 模式和配置、退出。「设置 › 常规 › 关闭按钮」决定关窗时询问 / 最小化到托盘 / 退出——最小化到托盘时 sing-box 保持连接，退出才会停止 sing-box。桌面没有托盘时（如未装 AppIndicator 扩展的 GNOME），关窗即退出。macOS 上托盘图标在菜单栏，点击即打开菜单
 - **代理分组**：selector 分组手动选节点，urltest 分组自动选路（只读）；可按节点名或协议类型搜索、按延迟排序；点节点的延迟标记单独测速，也可整组测速或「全部测速」；上千个节点也流畅滚动；分组展开状态由 sing-box 记住
 - **运行状态**：侧边栏底部实时上行 / 下行速率；首页显示内存、连接数、累计流量、运行时长与 sing-box 版本，以及最近 2 分钟的上下行速率曲线
 - **Clash 模式切换**：配置的路由规则带 `clash_mode` 时，首页可在 Rule / Global / Direct 等模式间切换
@@ -21,7 +21,7 @@
 - **Tailscale**：配置含 Tailscale endpoint 时出现 Tailscale 页——登录 / 登出、设备列表、出口节点、Ping、Taildrop 收件、HTTPS 证书
 - **OpenConnect / OpenVPN / USB/IP**：配置含这些 endpoint 时出现 VPN 页——连接状态、隧道信息，以及登录表单 / 一次性验证码等交互式认证
 - **导入链接**：浏览器点击 `sing-box://import-remote-profile` 链接，确认后直接导入订阅
-- **键盘操作**：Ctrl+1…7 依次打开首页、分组、连接、配置、日志、工具、设置；Tab / Shift+Tab 在按钮、开关、下拉框和输入框之间移动焦点，Enter / 空格按下；Ctrl+S 连接 / 断开，Ctrl+U 更新订阅
+- **键盘操作**：Ctrl+1…7 依次打开首页、分组、连接、配置、日志、工具、设置；Tab / Shift+Tab 在按钮、开关、下拉框和输入框之间移动焦点，Enter / 空格按下；Ctrl+S 连接 / 断开，Ctrl+U 更新订阅。macOS 上以上快捷键用 ⌘ 代替 Ctrl，另有菜单栏的标准快捷键（⌘, 设置、⌘H 隐藏、⌘W 关闭窗口、⌘Q 退出）
 - **深色模式**：「设置 › 常规 › 外观」可选跟随系统 / 浅色 / 深色，即时生效；跟随系统时随桌面切换
 - **中英文界面**：「设置 › 常规 › 语言」可选跟随系统 / English / 简体中文，即时切换（托盘菜单一并切换）；跟随系统时，系统语言为中文即显示简体中文，否则显示英文
 - **检查更新**：每天在 GitHub 上检查一次 BoxPilot 新版本（可在「设置 › 关于」关闭）；有新版本时提示一次，侧边栏「设置」旁出现小圆点，可下载、跳过此版本或立即检查
@@ -49,12 +49,19 @@
   - 系统托盘需要 StatusNotifierItem 宿主（KDE、装了 AppIndicator 扩展的 GNOME 及多数面板）；没有时关窗即退出
 - BoxPilot 始终以普通用户运行，不需要也不应该用 root 启动；TUN 模式所需权限见下文
 
+### macOS
+
+- macOS 12 Monterey 或更新版本，Apple 芯片（arm64）或 Intel（x86_64）
+- 暂只支持代理模式，TUN 模式以后通过特权助手提供（见 [ADR 0005](docs/adr/0005-macos-support.md)）
+- 系统代理由 sing-box 通过 `networksetup` 设置，需要管理员账户
+
 ## 安装
 
 从 [Releases](../../releases) 下载最新版本：
 
 - `*.msi` —— Windows 安装包（含 `sing-box.exe`，并注册 `sing-box://` / `boxpilot://` 链接协议）；也可以用 `winget install Glide01.BoxPilot` 安装
 - `BoxPilot-<版本>-x86_64.AppImage` —— Linux 版（含 `sing-box`）
+- `BoxPilot-<版本>-macos-arm64.dmg` / `BoxPilot-<版本>-macos-x86_64.dmg` —— macOS 版（Apple 芯片 / Intel，含 `sing-box`）
 
 ### Linux（AppImage）
 
@@ -68,11 +75,22 @@ chmod +x BoxPilot-*-x86_64.AppImage
 - **系统代理**：GNOME 和 KDE 下可用（由 sing-box 的 `set_system_proxy` 设置）。
 - 配置和设置保存在 `~/.config/BoxPilot`。
 
+### macOS（DMG）
+
+打开 DMG，把 BoxPilot 拖进「应用程序」。安装后 `sing-box://` / `boxpilot://` 链接协议由系统自动注册。
+
+BoxPilot 没有 Apple 开发者签名（只做了 ad-hoc 签名，未经公证），第一次打开会被 Gatekeeper 拦下。任选一种方式放行：
+
+- 先尝试打开一次，然后在「系统设置 › 隐私与安全性」底部点「仍要打开」；
+- 或在终端运行 `xattr -dr com.apple.quarantine /Applications/BoxPilot.app`。
+
+配置和设置保存在 `~/Library/Application Support/BoxPilot`。
+
 ## 使用
 
 界面语言默认跟随系统（中文系统显示简体中文），可在「设置 › 常规 › 语言」切换。下文用中文界面的名称，括号里是英文界面的名称。
 
-1. 启动 BoxPilot（Windows 上同意 UAC 提权）。
+1. 启动 BoxPilot（Windows 上同意 UAC 提权；macOS 第一次打开见上文）。
 2. 在「配置」（Profiles）页点「添加」（Add）添加配置——粘贴订阅链接或选择本地 JSON 文件；也可以直接点击浏览器中的 `sing-box://` 导入链接。
 3. 回到「首页」（Home），点大圆按钮连接。
 4. 用「代理模式」（Proxy Mode：TUN / 代理）和「系统代理」（System Proxy）开关控制代理行为。
@@ -109,9 +127,24 @@ cargo build --release
 packaging/linux/build-appimage.sh target/release/box_pilot_gui /path/to/sing-box <版本> release
 ```
 
+### macOS
+
+需要完整的 Xcode（GPUI 用 `xcrun metal` 编译 Metal 着色器，只装命令行工具不够），只能在 Mac 上构建，不能从 Linux 交叉编译：
+
+```bash
+cargo test
+cargo build --release --target aarch64-apple-darwin   # Intel：x86_64-apple-darwin
+```
+
+打包 DMG（需要对应架构的 macOS 版 `sing-box` 二进制，版本 ≥ 1.14.0）：
+
+```bash
+packaging/macos/build-dmg.sh target/aarch64-apple-darwin/release/box_pilot_gui /path/to/sing-box <版本> arm64 release
+```
+
 ### 发布
 
-发布产物（Windows MSI + Linux AppImage）由 GitHub Actions 构建（[`.github/workflows/release.yml`](.github/workflows/release.yml)），捆绑的 sing-box 版本通过仓库变量 `SINGBOX_VERSION` 钉定。
+发布产物（Windows MSI + Linux AppImage + macOS DMG）由 GitHub Actions 构建（[`.github/workflows/release.yml`](.github/workflows/release.yml)），捆绑的 sing-box 版本通过仓库变量 `SINGBOX_VERSION` 钉定。
 
 ## 许可证
 
