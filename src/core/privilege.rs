@@ -8,15 +8,12 @@
 //!
 //! The decision and the command are pure fns, unit-tested; the rest is a
 //! thin shell over `getxattr`, `geteuid` and `pkexec`. No gpui dependency.
-//! Also here: the pid file that lets a start stop a granted copy orphaned
-//! by a BoxPilot crash.
+//! The pid file that lets a start stop a granted copy orphaned by a
+//! BoxPilot crash is `core::pid_file`, shared with macOS.
 
-use crate::core::paths::get_install_dir;
 use crate::core::process::query_sing_box_version;
-use crate::core::settings::SING_EXECUTABLE;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use crate::i18n::s;
 
@@ -226,108 +223,6 @@ fn grant_error_message(code: Option<i32>, stderr: &str) -> String {
     }
 }
 
-/// Records the running sing-box's pid in the data dir. `PR_SET_PDEATHSIG`
-/// (set in `start_sing_box`) is cleared by the kernel when it execs a
-/// binary with file capabilities, so if BoxPilot crashes the granted copy
-/// keeps running with its TUN device, routes and ports, and the next start
-/// fails. The next start reads this file and stops that orphan first
-/// ([`stop_stale_sing_box`]).
-const PID_FILENAME: &str = "sing-box.pid";
-
-/// Note a freshly started sing-box. Best effort: without the file only the
-/// crash recovery is lost.
-pub fn record_sing_box_pid(working_dir: &Path, pid: u32) {
-    let _ = std::fs::write(working_dir.join(PID_FILENAME), format!("{}\n", pid));
-}
-
-/// Drop the record after a stop has reaped `pid`. Leaves a file naming some
-/// other pid alone (a newer start already wrote its own).
-pub fn forget_sing_box_pid(working_dir: &Path, pid: u32) {
-    let path = working_dir.join(PID_FILENAME);
-    let recorded = std::fs::read_to_string(&path).ok();
-    if recorded.as_deref().and_then(parse_pid) == Some(pid as libc::pid_t) {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-/// Before a start: stop the sing-box a crashed BoxPilot left behind, if the
-/// recorded pid is still one of ours — SIGTERM, up to `grace` to exit, then
-/// SIGKILL. Never signals a pid that isn't (pid reuse). Blocking: call on
-/// the background executor. The orphan runs as the same uid, so it can be
-/// signalled without privilege.
-pub fn stop_stale_sing_box(working_dir: &Path, grace: Duration) {
-    let path = working_dir.join(PID_FILENAME);
-    let Some(pid) = std::fs::read_to_string(&path).ok().as_deref().and_then(parse_pid) else {
-        let _ = std::fs::remove_file(&path);
-        return;
-    };
-    let mut candidates = vec![PathBuf::from(PRIVILEGED_COPY_PATH)];
-    if let Ok(install_dir) = get_install_dir() {
-        candidates.push(install_dir.join(SING_EXECUTABLE));
-    }
-    let ours = || {
-        let exe = std::fs::read_link(format!("/proc/{}/exe", pid)).ok();
-        let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).unwrap_or_default();
-        is_our_sing_box(exe.as_deref(), &cmdline, &candidates, working_dir)
-    };
-    let wait_gone = |limit: Duration| {
-        let deadline = Instant::now() + limit;
-        while ours() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    };
-
-    if ours() {
-        eprintln!("Stopping sing-box (pid {}) left running by a previous BoxPilot", pid);
-        // SAFETY: plain syscalls; `pid` is positive and was just confirmed
-        // to be our sing-box.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-        wait_gone(grace);
-        if ours() {
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-            // Let the kernel release its TUN device and ports before the
-            // new sing-box asks for them.
-            wait_gone(Duration::from_secs(1));
-        }
-    }
-    let _ = std::fs::remove_file(&path);
-}
-
-/// A positive pid, or nothing: 0 and negatives would make `kill` signal a
-/// whole process group.
-fn parse_pid(text: &str) -> Option<libc::pid_t> {
-    text.trim().parse::<libc::pid_t>().ok().filter(|pid| *pid > 0)
-}
-
-/// Whether a process is a sing-box BoxPilot started: its executable is one
-/// of `candidates`. A process that gained file capabilities at exec is
-/// non-dumpable, so its `/proc/<pid>/exe` is unreadable even to the same
-/// user — exactly the granted copy this exists for. Then its command line
-/// decides: argv[0] a candidate (`start_sing_box` spawns by full path) and
-/// `-D` our data dir. A readable exe always decides alone.
-fn is_our_sing_box(
-    exe: Option<&Path>,
-    cmdline: &[u8],
-    candidates: &[PathBuf],
-    working_dir: &Path,
-) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    if let Some(exe) = exe {
-        // The binary may have been replaced since (a re-grant reinstalls
-        // the copy); the kernel then appends " (deleted)".
-        let exe = exe.as_os_str().as_bytes();
-        let exe = exe.strip_suffix(b" (deleted)").unwrap_or(exe);
-        return candidates.iter().any(|c| c.as_os_str().as_bytes() == exe);
-    }
-    let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
-    let Some(argv0) = args.first() else {
-        return false;
-    };
-    let dir = working_dir.as_os_str().as_bytes();
-    candidates.iter().any(|c| c.as_os_str().as_bytes() == *argv0)
-        && args.windows(2).any(|w| w[0] == b"-D" && w[1] == dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,92 +418,6 @@ mod tests {
                 "1000",
             ]
         );
-    }
-
-    fn candidates() -> Vec<PathBuf> {
-        vec![
-            PathBuf::from(PRIVILEGED_COPY_PATH),
-            PathBuf::from("/tmp/.mount_BoxPiX/usr/bin/sing-box"),
-        ]
-    }
-
-    fn cmdline(args: &[&str]) -> Vec<u8> {
-        args.iter().flat_map(|a| a.bytes().chain([0])).collect()
-    }
-
-    const DATA: &str = "/home/u/.config/BoxPilot";
-
-    #[test]
-    fn readable_exe_decides() {
-        let data = Path::new(DATA);
-        let ours = cmdline(&[PRIVILEGED_COPY_PATH, "run", "-D", DATA, "-c", "x.json"]);
-        for exe in [
-            PRIVILEGED_COPY_PATH,
-            "/tmp/.mount_BoxPiX/usr/bin/sing-box",
-            // Re-granted since: the running image's file was replaced.
-            "/usr/local/lib/boxpilot/sing-box (deleted)",
-        ] {
-            assert!(is_our_sing_box(Some(Path::new(exe)), b"", &candidates(), data), "{exe}");
-        }
-        // Pid reused by something else: a matching-looking cmdline can't
-        // outvote the exe.
-        for exe in ["/usr/bin/bash", "/usr/local/lib/boxpilot/sing-box.bak", "/usr/bin/sing-box"] {
-            assert!(!is_our_sing_box(Some(Path::new(exe)), &ours, &candidates(), data), "{exe}");
-        }
-    }
-
-    #[test]
-    fn unreadable_exe_falls_back_to_cmdline() {
-        let data = Path::new(DATA);
-        let check = |args: &[&str]| is_our_sing_box(None, &cmdline(args), &candidates(), data);
-        assert!(check(&[PRIVILEGED_COPY_PATH, "run", "-D", DATA, "-c", "x.json"]));
-        // Another user's / data dir's sing-box.
-        assert!(!check(&[PRIVILEGED_COPY_PATH, "run", "-D", "/home/v/.config/BoxPilot"]));
-        // Some other program, or another sing-box binary.
-        assert!(!check(&["/usr/bin/sleep", "-D", DATA]));
-        assert!(!check(&["sing-box", "run", "-D", DATA]));
-        // `-D` must be followed by the dir, not just mention it.
-        assert!(!check(&[PRIVILEGED_COPY_PATH, "run", DATA]));
-        // Gone, or a zombie (empty cmdline).
-        assert!(!is_our_sing_box(None, b"", &candidates(), data));
-    }
-
-    #[test]
-    fn pid_must_be_positive() {
-        assert_eq!(parse_pid("1234\n"), Some(1234));
-        assert_eq!(parse_pid(" 42 "), Some(42));
-        assert_eq!(parse_pid("0"), None);
-        assert_eq!(parse_pid("-1"), None);
-        assert_eq!(parse_pid("-1234"), None);
-        assert_eq!(parse_pid(""), None);
-        assert_eq!(parse_pid("12ab"), None);
-        assert_eq!(parse_pid("99999999999"), None);
-    }
-
-    #[test]
-    fn pid_file_round_trip() {
-        let dir = std::env::temp_dir().join(format!("boxpilot-pid-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join(PID_FILENAME);
-
-        record_sing_box_pid(&dir, 4321);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "4321\n");
-        // A stop of some older run doesn't remove a newer record.
-        forget_sing_box_pid(&dir, 1111);
-        assert!(file.exists());
-        forget_sing_box_pid(&dir, 4321);
-        assert!(!file.exists());
-
-        // A record whose pid is no sing-box of ours: nothing signalled, the
-        // record is cleared. (pid 1 is never ours.)
-        record_sing_box_pid(&dir, 1);
-        stop_stale_sing_box(&dir, Duration::from_millis(100));
-        assert!(!file.exists());
-        std::fs::write(&file, "garbage").unwrap();
-        stop_stale_sing_box(&dir, Duration::from_millis(100));
-        assert!(!file.exists());
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

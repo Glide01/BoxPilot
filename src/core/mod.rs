@@ -11,6 +11,8 @@ pub mod desktop_integration;
 pub mod log_merge;
 pub mod network_tools;
 pub mod orchestration;
+#[cfg(unix)]
+pub mod pid_file;
 pub mod presentation;
 #[cfg(target_os = "linux")]
 pub mod privilege;
