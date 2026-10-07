@@ -4,19 +4,20 @@
 //! closing the window can leave BoxPilot running (`ui::app_window`); see
 //! `docs/adr/0004-tray-and-window-lifecycle.md`.
 //!
-//! Backends (`windows`: tray-icon, `linux`: StatusNotifierItem via ksni)
-//! only render a [`TraySnapshot`] and forward clicks as [`TrayCommand`]s
-//! into a channel; the task drained here on the UI thread is the only place
-//! a click turns into an `AppState` call. No tray (a Linux desktop without
-//! a StatusNotifier host, or a failed registration) = [`is_available`] stays
-//! false and BoxPilot behaves exactly as it does without this module.
+//! Backends (`native`: tray-icon on Windows and as the macOS menu bar icon,
+//! `linux`: StatusNotifierItem via ksni) only render a [`TraySnapshot`] and
+//! forward clicks as [`TrayCommand`]s into a channel; the task drained here
+//! on the UI thread is the only place a click turns into an `AppState`
+//! call. No tray (a Linux desktop without a StatusNotifier host, or a failed
+//! registration) = [`is_available`] stays false and BoxPilot behaves exactly
+//! as it does without this module.
 
 mod icon;
 #[cfg(target_os = "linux")]
 mod linux;
 mod model;
-#[cfg(target_os = "windows")]
-mod windows;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+mod native;
 
 pub use model::{menu_entries, MenuEntry, TrayCommand, TraySnapshot};
 
@@ -29,14 +30,14 @@ use gpui::{App, BorrowAppContext, Entity, Global, Subscription, WeakEntity};
 
 #[cfg(target_os = "linux")]
 use linux::Backend;
-#[cfg(target_os = "windows")]
-use windows::Backend;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use native::Backend;
 
 /// The tray, as a gpui global: the backend once it is up, and the snapshot
 /// it last showed.
 pub struct TrayController {
     app_state: WeakEntity<AppState>,
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     backend: Option<Backend>,
     /// A tray icon is on screen, so the window may close without quitting.
     available: bool,
@@ -67,7 +68,7 @@ pub fn init(app_state: &Entity<AppState>, cx: &mut App) {
     let snapshot = snapshot_of(app_state, cx);
     cx.set_global(TrayController {
         app_state: app_state.downgrade(),
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         backend: None,
         available: false,
         snapshot: Some(snapshot.clone()),
@@ -84,7 +85,8 @@ pub fn init(app_state: &Entity<AppState>, cx: &mut App) {
     start_backend(snapshot, commands, cx);
 
     // Take the icon down with the app. Dropping the backend removes the
-    // Windows icon at once (otherwise it lingers until hovered).
+    // Windows icon at once (otherwise it lingers until hovered), and the
+    // macOS status item.
     cx.on_app_quit(|cx| {
         if cx.has_global::<TrayController>() {
             let tray = cx.remove_global::<TrayController>();
@@ -99,9 +101,10 @@ pub fn init(app_state: &Entity<AppState>, cx: &mut App) {
     .detach();
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn start_backend(snapshot: TraySnapshot, commands: UnboundedSender<TrayCommand>, cx: &mut App) {
-    // tray-icon's window must live on the thread gpui pumps: this one.
+    // tray-icon's window must live on the thread gpui pumps, and AppKit's
+    // status item on the main thread: this one either way.
     match Backend::new(&snapshot, commands) {
         Ok(backend) => backend_ready(backend, cx),
         Err(e) => eprintln!("System tray unavailable: {e}"),
@@ -130,10 +133,10 @@ fn start_backend(snapshot: TraySnapshot, commands: UnboundedSender<TrayCommand>,
     .detach();
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn start_backend(_: TraySnapshot, _: UnboundedSender<TrayCommand>, _: &mut App) {}
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 fn backend_ready(backend: Backend, cx: &mut App) {
     if !cx.has_global::<TrayController>() {
         return;
@@ -167,6 +170,7 @@ fn snapshot_of(app_state: &Entity<AppState>, cx: &App) -> TraySnapshot {
     TraySnapshot {
         status: ConnectionStatus::from_flags(state.is_starting(cx), running),
         proxy_mode: state.settings.proxy_mode,
+        tun_available: crate::core::settings::TUN_AVAILABLE,
         system_proxy: state.settings.set_system_proxy,
         clash_modes,
         clash_current,
@@ -196,7 +200,7 @@ fn refresh(cx: &mut App, force: bool) {
         if !force && tray.snapshot.as_ref() == Some(&snapshot) {
             return;
         }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         if let Some(backend) = tray.backend.as_mut() {
             backend.update(&snapshot);
         }

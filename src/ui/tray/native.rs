@@ -1,11 +1,18 @@
-//! Windows tray: `tray-icon` + its `muda` menu. Built on the UI thread; the
-//! icon's hidden window is pumped by gpui's own `GetMessageW` loop. Left
-//! click opens the window, right click shows the menu.
+//! Windows tray and macOS menu bar icon: `tray-icon` + its `muda` menu.
+//! Built on the UI thread. On Windows the icon's hidden window is pumped by
+//! gpui's own `GetMessageW` loop; left click opens the window, right click
+//! shows the menu. On macOS it is an `NSStatusItem` on gpui's main run
+//! loop; any click shows the menu, as menu bar icons do there, and "Show
+//! BoxPilot" is its first item.
 //!
-//! tray-icon reports clicks from inside that window's procedure, through
-//! process-wide handlers: they only look up and forward a `TrayCommand`
-//! into the channel and never touch gpui.
+//! tray-icon reports clicks from inside its window procedure (Windows) or
+//! AppKit's menu actions (macOS), through process-wide handlers: they only
+//! look up and forward a `TrayCommand` into the channel and never touch
+//! gpui.
 
+#[cfg(target_os = "macos")]
+use super::icon::padded_tray_icon;
+#[cfg(target_os = "windows")]
 use super::icon::tray_icon;
 use super::model::{menu_entries, MenuEntry, TrayCommand, TraySnapshot};
 use futures_channel::mpsc::UnboundedSender;
@@ -14,7 +21,9 @@ use std::sync::{Arc, Mutex, Once};
 use tray_icon::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
 };
-use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+#[cfg(target_os = "windows")]
+use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
 
 /// Menu item id → the command it sends, for the current menu. Shared with
 /// the menu event handler.
@@ -44,7 +53,8 @@ pub struct Backend {
     tooltip: String,
 }
 
-/// `&` starts a mnemonic in Win32 menu text; profile names may contain one.
+/// `&` starts a mnemonic in Win32 menu text, and muda strips it on macOS
+/// too; profile names may contain one.
 fn menu_text(label: &str) -> String {
     label.replace('&', "&&")
 }
@@ -180,7 +190,11 @@ fn update_in_place(built: &BuiltMenu, entries: &[MenuEntry]) {
 }
 
 fn icon(connected: bool) -> Result<Icon, String> {
+    #[cfg(target_os = "windows")]
     let image = tray_icon(32, connected);
+    // 22pt at 2x, the box itself ~16pt (see `padded_tray_icon`).
+    #[cfg(target_os = "macos")]
+    let image = padded_tray_icon(44, 32, connected);
     Icon::from_rgba(image.rgba, image.size, image.size).map_err(|e| e.to_string())
 }
 
@@ -188,7 +202,10 @@ fn icon(connected: bool) -> Result<Icon, String> {
 fn install_handlers(commands: UnboundedSender<TrayCommand>, commands_by_id: CommandMap) {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(move || {
+        // macOS: a click opens the menu instead (`with_menu_on_left_click`).
+        #[cfg(target_os = "windows")]
         let clicks = commands.clone();
+        #[cfg(target_os = "windows")]
         TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
             let show = matches!(
                 event,
@@ -219,7 +236,7 @@ fn install_handlers(commands: UnboundedSender<TrayCommand>, commands_by_id: Comm
 
 impl Backend {
     /// Create the tray icon. UI thread only (tray-icon's window lives on the
-    /// thread that pumps it).
+    /// thread that pumps it; AppKit's status items on the main thread).
     pub fn new(
         snapshot: &TraySnapshot,
         commands: UnboundedSender<TrayCommand>,
@@ -237,7 +254,7 @@ impl Backend {
             .with_tooltip(&tooltip)
             .with_icon(icons[usize::from(connected)].clone())
             .with_menu(Box::new(menu))
-            .with_menu_on_left_click(false)
+            .with_menu_on_left_click(cfg!(target_os = "macos"))
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Self {

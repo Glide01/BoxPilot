@@ -38,6 +38,24 @@ pub fn tray_icon(size: u32, connected: bool) -> IconImage {
     }
 }
 
+/// [`tray_icon`] at `size`, centred on a transparent `canvas`-sized square.
+/// The macOS menu bar draws one bitmap pixel per point, capped at its 22pt
+/// height: a 44px canvas stays sharp on a Retina screen, and the margin
+/// brings the box down to about the size of the system's own icons there.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn padded_tray_icon(canvas: u32, size: u32, connected: bool) -> IconImage {
+    let icon = tray_icon(size.min(canvas), connected);
+    let mut padded = RgbaImage::new(canvas, canvas);
+    if let Some(icon_image) = RgbaImage::from_raw(icon.size, icon.size, icon.rgba) {
+        let offset = i64::from((canvas - icon.size) / 2);
+        image::imageops::replace(&mut padded, &icon_image, offset, offset);
+    }
+    IconImage {
+        size: canvas,
+        rgba: padded.into_raw(),
+    }
+}
+
 /// Luma (Rec. 601) in place of each pixel's colour, alpha kept. Slightly
 /// faded too, so a disconnected icon reads as "off" next to coloured ones.
 fn greyscale_in_place(image: &mut RgbaImage) {
@@ -92,6 +110,20 @@ mod tests {
         for (c, g) in colour.rgba.chunks_exact(4).zip(grey.rgba.chunks_exact(4)) {
             assert_eq!(c[3] == 0, g[3] == 0);
         }
+    }
+
+    #[test]
+    fn padded_icon_keeps_a_transparent_margin() {
+        let icon = padded_tray_icon(44, 32, true);
+        assert_eq!(icon.size, 44);
+        assert_eq!(icon.rgba.len(), 44 * 44 * 4);
+        let alpha = |x: usize, y: usize| icon.rgba[(y * 44 + x) * 4 + 3];
+        for i in 0..44 {
+            for (x, y) in [(i, 0), (i, 43), (0, i), (43, i), (i, 5), (5, i)] {
+                assert_eq!(alpha(x, y), 0, "({x}, {y})");
+            }
+        }
+        assert!(icon.rgba.chunks_exact(4).any(|px| px[3] > 0));
     }
 
     #[test]
