@@ -576,8 +576,7 @@ pub static EN: Strings = Strings {
     },
     close_dialog: CloseDialog {
         title: "Keep BoxPilot running in the tray?",
-        body: "BoxPilot can stay in the system tray when its window closes, so \
-               sing-box stays connected. Quit stops sing-box.",
+        body: "In the tray, sing-box stays connected. Quit stops it.",
         dont_ask_again: "Don't ask again",
         quit: "Quit",
         keep: "Keep in tray",

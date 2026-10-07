@@ -539,7 +539,7 @@ pub static ZH_CN: Strings = Strings {
     },
     close_dialog: CloseDialog {
         title: "让 BoxPilot 在托盘中继续运行？",
-        body: "关闭窗口后 BoxPilot 可以留在系统托盘中，sing-box 保持连接。退出则会停止 sing-box。",
+        body: "留在托盘中时 sing-box 保持连接，退出则停止。",
         dont_ask_again: "不再询问",
         quit: "退出",
         keep: "留在托盘",
