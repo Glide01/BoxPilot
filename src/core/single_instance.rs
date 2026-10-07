@@ -1,9 +1,12 @@
-//! Single-instance plumbing for the URL scheme (Windows and Linux).
+//! Single-instance plumbing for the URL scheme (Windows, Linux, macOS).
 //!
-//! When the browser opens a `sing-box://` / `boxpilot://` link, the OS
-//! always launches a **new** BoxPilot process with the URI as argv[1] — it
-//! never reuses the running instance (Windows' shell handler and Linux's
-//! `xdg-open` behave the same here). So:
+//! When the browser opens a `sing-box://` / `boxpilot://` link on Windows or
+//! Linux, the OS always launches a **new** BoxPilot process with the URI as
+//! argv[1] — it never reuses the running instance (Windows' shell handler
+//! and Linux's `xdg-open` behave the same here). macOS doesn't: link clicks
+//! and Dock / Finder launches reach the running app as Apple events (`main`
+//! forwards those itself), so only a second process started from a terminal
+//! (or `open -n`) goes through here. So:
 //!
 //! 1. Every fresh process first calls [`try_forward`] **before** the
 //!    elevation check in `main`: if a primary instance is already listening,
@@ -31,8 +34,9 @@
 //! pipe only carries import-link strings, and every import goes through an
 //! explicit user confirmation dialog before anything is fetched.
 //!
-//! **Linux** — a Unix socket plus an `flock` on a lock file, both in
-//! `$XDG_RUNTIME_DIR` (falling back to `boxpilot-<uid>.*` in the temp dir).
+//! **Linux and macOS** — a Unix socket plus an `flock` on a lock file, both
+//! in `$XDG_RUNTIME_DIR` (falling back to `boxpilot-<uid>.*` in the temp
+//! dir: `$TMPDIR`, which macOS makes per-user, else `/tmp`).
 //! The lock, not the socket, decides who is primary: a crashed instance
 //! leaves its socket file behind, but the kernel drops its lock. The winner
 //! deletes any stale socket, binds a fresh one and makes it owner-only
@@ -91,12 +95,12 @@ pub fn try_forward(uri: Option<&str>) -> bool {
     true
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn try_forward(uri: Option<&str>) -> bool {
-    linux::try_forward_at(&linux::InstancePaths::from_env(), uri)
+    unix::try_forward_at(&unix::InstancePaths::from_env(), uri)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", unix)))]
 pub fn try_forward(_uri: Option<&str>) -> bool {
     false
 }
@@ -131,12 +135,12 @@ pub fn start_server(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStar
     ServerStart::Primary
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn start_server(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStart {
-    linux::start_server_at(&linux::InstancePaths::from_env(), on_attempt)
+    unix::start_server_at(&unix::InstancePaths::from_env(), on_attempt)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", unix)))]
 pub fn start_server(_on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStart {
     ServerStart::Primary
 }
@@ -236,12 +240,12 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
     }
 }
 
-/// Linux backend. Paths are parameters rather than read from the
+/// Linux and macOS backend. Paths are parameters rather than read from the
 /// environment inside, so the tests run against a temp dir instead of the
 /// real `$XDG_RUNTIME_DIR` (where they would collide with a running
 /// BoxPilot).
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(unix)]
+mod unix {
     use super::ServerStart;
     use crate::core::deeplink::LaunchAttempt;
     use std::fs::{File, OpenOptions, TryLockError};
@@ -262,6 +266,9 @@ mod linux {
         pub fn from_env() -> Self {
             // SAFETY: getuid has no preconditions and cannot fail.
             let uid = unsafe { libc::getuid() };
+            // `temp_dir` is `$TMPDIR`, else `/tmp`. macOS sets `$TMPDIR` to
+            // a per-user dir for GUI and terminal launches alike (it has no
+            // `$XDG_RUNTIME_DIR`), so both kinds of launch meet there.
             Self::resolve(
                 std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
                 &std::env::temp_dir(),
@@ -270,7 +277,7 @@ mod linux {
         }
 
         /// `$XDG_RUNTIME_DIR` is per-user and 0700 already, so plain names
-        /// suffice there. The shared temp dir needs the uid in the name, or
+        /// suffice there. A shared temp dir needs the uid in the name, or
         /// two users on one machine would fight over a single lock.
         pub fn resolve(runtime_dir: Option<PathBuf>, temp_dir: &Path, uid: u32) -> Self {
             match runtime_dir.filter(|dir| !dir.as_os_str().is_empty()) {
@@ -298,7 +305,8 @@ mod linux {
                 // The lock, not the socket, says whether an instance is
                 // running: a crashed one leaves a stale socket file behind
                 // (ECONNREFUSED), and a socket that can't be used at all
-                // (e.g. a path past the 108-byte `sun_path` limit) must not
+                // (e.g. a path past the `sun_path` limit: 108 bytes on
+                // Linux, 104 on macOS) must not
                 // stop the first launch from starting. No lock holder ⇒
                 // start up normally.
                 Err(_) if !lock_is_held(&paths.lock) => return false,
@@ -467,7 +475,8 @@ mod linux {
         #[test]
         fn unusable_socket_path_still_lets_the_first_launch_start() {
             let mut paths = temp_paths("long");
-            // Past the 108-byte `sun_path` limit: connect and bind both fail.
+            // Past the `sun_path` limit (108 bytes on Linux, 104 on macOS):
+            // connect and bind both fail.
             paths.socket = paths.socket.with_file_name("s".repeat(120));
             assert!(!try_forward_at(&paths, Some("sing-box://x")));
             let (on_attempt, _rx) = channel_callback();
