@@ -1,12 +1,16 @@
 # .github/workflows/release.yml
-# Build and package the Windows and Linux releases of BoxPilot.
+# Build and package the Windows, Linux and macOS releases of BoxPilot.
 #
 # windows — MSI. GPUI's Windows backend (DirectX 11 + MSVC `windows` crate
 #           bindings) does not support MinGW cross-compilation; Zed upstream
 #           rejects MinGW builds, so this runs natively on `windows-latest`.
 # linux   — x86_64 AppImage, built on ubuntu-22.04 so the binary only needs
 #           the older glibc that ships there.
-# publish — attaches both to the GitHub release once both builds succeed.
+# macos   — one DMG per architecture (arm64, x86_64), signed ad hoc. GPUI's
+#           Metal shaders are compiled with Xcode's `xcrun metal`, so this
+#           runs natively on a macOS runner, never cross from Linux.
+# publish — attaches all of them to the GitHub release once every build
+#           succeeds; only for the release branches and version tags.
 
 name: Build Release
 
@@ -32,12 +36,13 @@ on:
         required: false
         default: ""
 
-# sing-box version bundled into the MSI and the AppImage. Pinned explicitly
+# sing-box version bundled into the MSI, the AppImage and the DMGs. Pinned explicitly
 # (no implicit "latest") so builds are reproducible and never silently grab
 # the wrong version. Set the repo/org Actions variable SINGBOX_VERSION, or
 # override per-run via the workflow_dispatch input above. The download steps
-# fail fast if neither is set. Optionally set SINGBOX_SHA256 (Windows .zip)
-# and SINGBOX_SHA256_LINUX (linux-amd64 .tar.gz) to the asset digests shown
+# fail fast if neither is set. Optionally set SINGBOX_SHA256 (Windows .zip),
+# SINGBOX_SHA256_LINUX (linux-amd64 .tar.gz), SINGBOX_SHA256_DARWIN_ARM64 and
+# SINGBOX_SHA256_DARWIN_AMD64 (darwin-* .tar.gz) to the asset digests shown
 # on the sing-box release page to pin the archive contents.
 env:
   SINGBOX_VERSION: ${{ inputs.singbox_version || vars.SINGBOX_VERSION }}
@@ -320,8 +325,167 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  macos:
+    # macos-14 is Apple silicon: arm64 builds natively and runs the tests;
+    # x86_64 is cross-compiled with the same Xcode (its tests would only
+    # run under Rosetta).
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            singbox_asset: darwin-arm64
+            test: true
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            singbox_asset: darwin-amd64
+            test: false
+    env:
+      # Matches LSMinimumSystemVersion in packaging/macos/Info.plist.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read Cargo.toml version
+        run: |
+          cargo_version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$cargo_version" ]; then
+            echo "::error::Could not read the package version from Cargo.toml."
+            exit 1
+          fi
+          echo "CARGO_VERSION=$cargo_version" >> "$GITHUB_ENV"
+
+      # Same check as the Windows and Linux jobs: the DMG names come from
+      # Cargo.toml. The tag name is read via the runner-provided env var,
+      # never interpolated into the script.
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag 'v$tag' does not match Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml (and Cargo.lock) before tagging."
+            exit 1
+          fi
+          echo "Tag v$tag matches Cargo.toml version $CARGO_VERSION"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      # Same keying and fallback as the Windows cache (see there), per
+      # target. Restored and saved as two steps so that a failed build
+      # still saves its compiled dependencies (gpui dominates).
+      - name: Restore cargo registry and target
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Test
+        if: matrix.test
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Save cargo registry and target
+        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Download sing-box from official GitHub release
+        env:
+          SINGBOX_ASSET: ${{ matrix.singbox_asset }}
+        run: |
+          # Read the version from the env var (set at workflow level), never
+          # interpolated into the script — avoids workflow injection.
+          ver=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
+          ver="${ver#v}"
+          if [ -z "$ver" ]; then
+            echo "::error::SINGBOX_VERSION is not set. Set the repo variable SINGBOX_VERSION (e.g. 1.11.0) or pass 'singbox_version' via Run workflow."
+            exit 1
+          fi
+          # Validate the format up front: digits + dots, optional pre-release
+          # suffix. Rejects anything that isn't a plausible sing-box tag.
+          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::SINGBOX_VERSION '$ver' is not a valid version (expected e.g. 1.11.0)."
+            exit 1
+          fi
+          asset="sing-box-$ver-$SINGBOX_ASSET"
+          url="https://github.com/SagerNet/sing-box/releases/download/v$ver/$asset.tar.gz"
+          echo "Downloading sing-box $ver from $url"
+          curl -fsSL --retry 3 -o sing-box.tar.gz "$url"
+
+      # Verify the archive as downloaded, before anything touches it. The
+      # expected hash is the asset digest GitHub shows on the sing-box release
+      # page — copy it into SINGBOX_SHA256_DARWIN_ARM64 / _AMD64 when bumping
+      # SINGBOX_VERSION (it hashes the .tar.gz, not the inner binary).
+      - name: Verify sing-box archive integrity
+        if: (matrix.arch == 'arm64' && vars.SINGBOX_SHA256_DARWIN_ARM64 != '') || (matrix.arch == 'x86_64' && vars.SINGBOX_SHA256_DARWIN_AMD64 != '')
+        env:
+          EXPECTED_SHA256: ${{ matrix.arch == 'arm64' && vars.SINGBOX_SHA256_DARWIN_ARM64 || vars.SINGBOX_SHA256_DARWIN_AMD64 }}
+        run: |
+          expected=$(printf '%s' "$EXPECTED_SHA256" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          expected="${expected#sha256:}"
+          hash=$(shasum -a 256 sing-box.tar.gz | cut -d ' ' -f 1)
+          if [ "$hash" != "$expected" ]; then
+            echo "::error::sing-box.tar.gz SHA256 mismatch! Expected: $expected, Got: $hash"
+            exit 1
+          fi
+          echo "sing-box.tar.gz SHA256 verified: $hash"
+
+      - name: Extract and stage sing-box
+        run: |
+          mkdir -p release singbox-extract
+          tar -xzf sing-box.tar.gz -C singbox-extract
+          # Robust against future folder-layout changes: just find the binary.
+          bin=$(find singbox-extract -type f -name sing-box | head -n 1)
+          if [ -z "$bin" ]; then
+            echo "::error::sing-box not found inside the downloaded archive."
+            exit 1
+          fi
+          install -m 0755 "$bin" release/sing-box
+          echo "Bundled sing-box from $bin"
+
+      - name: Build DMG
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          packaging/macos/build-dmg.sh \
+            "target/$TARGET/release/box_pilot_gui" \
+            release/sing-box \
+            "$CARGO_VERSION" \
+            "$ARCH" \
+            release
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxpilot-macos-${{ matrix.arch }}
+          path: release/*.dmg
+          if-no-files-found: error
+          retention-days: 3
+
   publish:
-    needs: [windows, linux]
+    needs: [windows, linux, macos]
     # Only the release branches and version tags publish. PRs only build/test
     # (fork PRs lack write access anyway), and a manual run on any other
     # branch must not overwrite the rolling ci-latest release.
@@ -356,10 +520,13 @@ jobs:
           prerelease: true
           body: |
             Rolling CI build from `${{ github.ref_name }}` @ `${{ github.sha }}`.
-            sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI and the AppImage.
+            sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI, the AppImage and the macOS DMGs.
+
+            macOS DMGs are not notarized: after copying BoxPilot to Applications, allow its first open in System Settings › Privacy & Security › "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/BoxPilot.app`.
           files: |
             release/*.msi
             release/*.AppImage
+            release/*.dmg
 
       # Version tags publish a real (non-prerelease) release with immutable
       # assets. The winget manifest records this URL + the MSI's SHA256, so
@@ -371,10 +538,11 @@ jobs:
         with:
           name: BoxPilot ${{ github.ref_name }}
           body: |
-            BoxPilot ${{ github.ref_name }} — sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI and the AppImage.
+            BoxPilot ${{ github.ref_name }} — sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI, the AppImage and the macOS DMGs.
 
             Windows: install via winget: `winget install Glide01.BoxPilot`, or run the MSI.
             Linux (x86_64): download the AppImage, `chmod +x` it and run it.
+            macOS 12 or later: download the DMG for your Mac (`arm64` for Apple silicon, `x86_64` for Intel) and drag BoxPilot to Applications. It is signed ad hoc, not notarized, so macOS blocks the first open: allow it in System Settings › Privacy & Security › "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/BoxPilot.app`. Proxy mode only for now: TUN mode is not available on macOS yet.
 
             BoxPilot is MIT licensed. The bundled `sing-box` binaries are the official
             [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binaries,
@@ -382,3 +550,4 @@ jobs:
           files: |
             release/*.msi
             release/*.AppImage
+            release/*.dmg
