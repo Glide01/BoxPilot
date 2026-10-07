@@ -11,6 +11,13 @@ use std::time::{Duration, SystemTime};
 pub const SING_EXECUTABLE: &str = "sing-box.exe";
 #[cfg(not(target_os = "windows"))]
 pub const SING_EXECUTABLE: &str = "sing-box";
+/// Whether BoxPilot can run sing-box in TUN mode on this platform. Not on
+/// macOS yet: a TUN device there needs root, which waits for a privileged
+/// helper (ADR 0005). While false, Proxy mode is forced — a saved TUN
+/// choice loads as Proxy (`AppSettings::load`), `set_proxy_mode` refuses
+/// TUN, Home greys the choice out, the tray menu has no Proxy Mode submenu
+/// and Settings no TUN section. The helper work lifts it here.
+pub const TUN_AVAILABLE: bool = !cfg!(target_os = "macos");
 pub const CONFIG_FILENAME: &str = "config.json";
 /// Per-profile configs live in `<app_dir>/configs/<profile_id>.json`. The
 /// legacy single `config.json` is migrated into here on first launch.
@@ -385,7 +392,16 @@ impl AppSettings {
             }
         };
         loaded.settings.normalize_profiles();
+        loaded.settings.restrict_proxy_mode(TUN_AVAILABLE);
         loaded
+    }
+
+    /// Without TUN on this platform, Proxy mode is the only mode — whatever
+    /// the file (or the TUN default of a first run) says.
+    pub fn restrict_proxy_mode(&mut self, tun_available: bool) {
+        if !tun_available {
+            self.proxy_mode = true;
+        }
     }
 
     /// Enforce the profile invariants every other consumer relies on:
@@ -511,6 +527,18 @@ fn back_up_bad_file(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_tun_proxy_mode_is_forced() {
+        let mut settings = AppSettings::default();
+        assert!(!settings.proxy_mode, "the default is TUN");
+        settings.restrict_proxy_mode(true);
+        assert!(!settings.proxy_mode);
+        settings.restrict_proxy_mode(false);
+        assert!(settings.proxy_mode);
+        settings.restrict_proxy_mode(false);
+        assert!(settings.proxy_mode);
+    }
 
     /// Settings files written by releases that predate `set_system_proxy` /
     /// `proxy_port` / `tun_ipv6` must still deserialize with the documented

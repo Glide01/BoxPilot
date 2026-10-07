@@ -13,6 +13,7 @@ use crate::core::bytefmt::format_bytes;
 use crate::core::presentation::{
     profile_freshness, profile_row_info, runtime_info, ConnectionStatus,
 };
+use crate::core::settings::TUN_AVAILABLE;
 use crate::i18n::s;
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
@@ -29,7 +30,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     spinner::Spinner,
     switch::Switch,
-    tab::TabBar,
+    tab::{Tab, TabBar},
     theme::Theme,
     tooltip::Tooltip,
     ActiveTheme, Icon, IconName, Sizable, StyledExt, ThemeStyled,
@@ -416,18 +417,25 @@ impl Render for HomePage {
 
         // —— 快捷设置:代理模式 / 系统代理 / Clash 模式,一张分组卡 ——
         let mut quick_rows = vec![
-            setting_row(theme, t.home.proxy_mode, None)
-                .child(
-                    TabBar::new("proxy-mode")
-                        .segmented()
-                        .selected_index(if proxy_mode { 1 } else { 0 })
-                        .on_click(move |ix: &usize, _, cx| {
-                            let value = *ix == 1;
-                            app_state_mode.update(cx, |state, cx| state.set_proxy_mode(value, cx));
-                        })
-                        .children(vec![t.home.mode_tun, t.home.mode_proxy]),
-                )
-                .into_any_element(),
+            // Without TUN on this platform (macOS, for now) its tab stays,
+            // greyed out, with the reason under the label.
+            setting_row(
+                theme,
+                t.home.proxy_mode,
+                (!TUN_AVAILABLE).then_some(t.home.tun_unavailable),
+            )
+            .child(
+                TabBar::new("proxy-mode")
+                    .segmented()
+                    .selected_index(if proxy_mode { 1 } else { 0 })
+                    .on_click(move |ix: &usize, _, cx| {
+                        let value = *ix == 1;
+                        app_state_mode.update(cx, |state, cx| state.set_proxy_mode(value, cx));
+                    })
+                    .child(Tab::new().label(t.home.mode_tun).disabled(!TUN_AVAILABLE))
+                    .child(Tab::new().label(t.home.mode_proxy)),
+            )
+            .into_any_element(),
             setting_row(theme, t.home.system_proxy, None)
                 .child(Switch::new("system-proxy").checked(system_proxy).on_click(
                     move |checked: &bool, _, cx| {

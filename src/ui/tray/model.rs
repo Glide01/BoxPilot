@@ -31,7 +31,7 @@ pub enum TrayCommand {
 impl TrayCommand {
     /// A stable string id for a menu item that sends this command
     /// (tray-icon's `MenuId`): distinct commands get distinct ids.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
     pub fn menu_id(&self) -> String {
         match self {
             TrayCommand::ShowWindow => "show".into(),
@@ -54,6 +54,9 @@ pub struct TraySnapshot {
     pub status: ConnectionStatus,
     /// `AppSettings::proxy_mode`: `true` = Proxy, `false` = TUN.
     pub proxy_mode: bool,
+    /// TUN can be chosen here (`settings::TUN_AVAILABLE`). Without it the
+    /// menu has no Proxy Mode submenu: one option is no choice.
+    pub tun_available: bool,
     pub system_proxy: bool,
     /// Selectable Clash modes; empty unless switchable right now (running,
     /// two or more modes).
@@ -123,15 +126,17 @@ pub fn menu_entries(snapshot: &TraySnapshot) -> Vec<MenuEntry> {
             checked: snapshot.system_proxy,
             command: TrayCommand::SetSystemProxy(!snapshot.system_proxy),
         },
-        MenuEntry::Radio {
+    ];
+    if snapshot.tun_available {
+        entries.push(MenuEntry::Radio {
             label: t.tray.proxy_mode.into(),
             options: vec![
                 (t.home.mode_tun.into(), TrayCommand::SetProxyMode(false)),
                 (t.home.mode_proxy.into(), TrayCommand::SetProxyMode(true)),
             ],
             selected: Some(usize::from(snapshot.proxy_mode)),
-        },
-    ];
+        });
+    }
     if crate::core::singbox_api::is_switchable(&snapshot.clash_modes) {
         entries.push(MenuEntry::Radio {
             label: t.tray.clash_mode.into(),
@@ -177,6 +182,7 @@ mod tests {
         TraySnapshot {
             status: ConnectionStatus::Disconnected,
             proxy_mode: false,
+            tun_available: true,
             system_proxy: false,
             clash_modes: Vec::new(),
             clash_current: String::new(),
@@ -281,6 +287,24 @@ mod tests {
         assert_eq!(selected, Some(1));
         assert_eq!(options[0].1, TrayCommand::SetProxyMode(false));
         assert_eq!(options[1].1, TrayCommand::SetProxyMode(true));
+    }
+
+    #[test]
+    fn no_proxy_mode_submenu_without_tun() {
+        let mut snap = snapshot();
+        snap.proxy_mode = true;
+        snap.tun_available = false;
+        assert_eq!(
+            labels(&menu_entries(&snap)),
+            [
+                "Show BoxPilot",
+                "-",
+                "Connect",
+                "System Proxy",
+                "-",
+                "Quit BoxPilot"
+            ]
+        );
     }
 
     #[test]

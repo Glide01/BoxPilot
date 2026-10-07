@@ -137,6 +137,7 @@ pub struct Strings {
     pub config_viewer: ConfigViewer,
     pub chart: Chart,
     pub tray: Tray,
+    pub app_menu: AppMenu,
     pub close_dialog: CloseDialog,
     pub dialogs: Dialogs,
     pub messages: Messages,
@@ -235,6 +236,8 @@ pub struct Home {
     pub profile: &'static str,
     /// Last item of the Home profile switcher: opens the Profiles page.
     pub manage_profiles: &'static str,
+    /// Under Proxy Mode where TUN can't be chosen (macOS, for now).
+    pub tun_unavailable: &'static str,
 }
 
 pub struct Profiles {
@@ -712,7 +715,6 @@ pub struct ConfigViewer {
     pub no_config_title: &'static str,
     pub no_config_hint: &'static str,
     pub load_failed_title: &'static str,
-    pub search_tooltip: &'static str,
     pub open_folder: &'static str,
     pub open_folder_tooltip: &'static str,
     pub not_json: Fmt1,
@@ -739,6 +741,26 @@ pub struct Tray {
     pub quit: &'static str,
     /// "BoxPilot — Connected".
     pub tooltip: Fmt1,
+}
+
+/// The macOS menu bar (the app, Edit and Window menus). Quit is
+/// `tray.quit`.
+pub struct AppMenu {
+    pub settings: &'static str,
+    pub services: &'static str,
+    pub hide: &'static str,
+    pub hide_others: &'static str,
+    pub show_all: &'static str,
+    pub edit: &'static str,
+    pub undo: &'static str,
+    pub redo: &'static str,
+    pub cut: &'static str,
+    pub copy: &'static str,
+    pub paste: &'static str,
+    pub select_all: &'static str,
+    pub window: &'static str,
+    pub minimize: &'static str,
+    pub close_window: &'static str,
 }
 
 /// The first-close "keep running in the tray?" dialog.

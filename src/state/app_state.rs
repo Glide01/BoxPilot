@@ -13,7 +13,7 @@ use crate::core::paths::{
 use crate::core::settings::{
     default_auto_update_interval, default_update_via_sing_box, AppSettings, CloseAction,
     LanguagePreference, Profile, ProfileSource, StatusEvent, StatusLevel, ThemePreference,
-    CONFIG_FILENAME, SING_EXECUTABLE,
+    CONFIG_FILENAME, SING_EXECUTABLE, TUN_AVAILABLE,
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::sub_usage::{SubscriptionUsage, UsageLevel};
@@ -1212,7 +1212,8 @@ impl AppState {
     }
 
     pub fn set_proxy_mode(&mut self, value: bool, cx: &mut Context<Self>) {
-        if self.settings.proxy_mode == value {
+        // No TUN here yet (macOS): Proxy mode stays.
+        if self.settings.proxy_mode == value || (!value && !TUN_AVAILABLE) {
             return;
         }
         self.settings.proxy_mode = value;

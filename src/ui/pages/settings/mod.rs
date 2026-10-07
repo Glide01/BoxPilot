@@ -15,7 +15,7 @@ mod updates;
 mod window;
 
 use crate::core::presentation::sanitize_port;
-use crate::core::settings::PROXY_PORT;
+use crate::core::settings::{PROXY_PORT, TUN_AVAILABLE};
 use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::theme::FORM_MAX_WIDTH;
@@ -191,7 +191,8 @@ impl Render for SettingsPage {
                 cards.child(section(t.general, general_rows))
             })
             .child(section(t.network, network_rows))
-            .child(section(t.tun, tun_rows))
+            // No TUN on this platform yet (macOS): nothing to set for it.
+            .when(TUN_AVAILABLE, |cards| cards.child(section(t.tun, tun_rows)))
             .child(section(t.troubleshooting, troubleshooting_rows))
             .child(section(t.about, about_rows));
 
