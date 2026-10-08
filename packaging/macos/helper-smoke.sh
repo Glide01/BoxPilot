@@ -421,7 +421,14 @@ step_inspect() {
     expect_stat "$STATE_DIR" "root:wheel 700 Directory"
     expect_stat "$OWNER_FILE" "root:wheel 600 Regular File"
     expect_stat "$PLIST_PATH" "root:wheel 644 Regular File"
-    expect_stat "$SOCKET_PATH" "root:wheel 666 Socket"
+    # launchd makes the socket root's, mode 0666. Its group is launchd's
+    # choice (daemon on macOS 14, whatever SockPathGroup says), which 0666
+    # makes moot: the helper authorizes each connection by its uid.
+    got=$(describe "$SOCKET_PATH") || fail "$SOCKET_PATH is missing"
+    case $got in
+        root:*' 666 Socket') ok "$SOCKET_PATH: $got" ;;
+        *) fail "$SOCKET_PATH is $got, not root's, mode 666, a socket" ;;
+    esac
 
     owner=$(sudo cat "$OWNER_FILE")
     [ "$owner" = "$(id -u)" ] || fail "the owner record says '$owner', not $(id -u)"

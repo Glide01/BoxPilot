@@ -170,6 +170,17 @@ as another account:
         });
     }
 
+    /// A socket timeout set, or the helper already gone: macOS fails
+    /// `setsockopt` with `EINVAL` once the peer has closed its end, and the
+    /// read or write that follows reports that itself (the helper's
+    /// `posix::transport` does the same).
+    fn gone_peer_ok(result: io::Result<()>) -> io::Result<()> {
+        match result {
+            Err(error) if error.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+            other => other,
+        }
+    }
+
     // ---- The command line ----
 
     enum Failure {
@@ -345,8 +356,7 @@ as another account:
             let name = request_name(request);
             let bytes = encode_request(request, &self.limits)
                 .map_err(|error| format!("encoding {name}: {error}"))?;
-            self.stream
-                .set_write_timeout(Some(REPLY_TIMEOUT))
+            gone_peer_ok(self.stream.set_write_timeout(Some(REPLY_TIMEOUT)))
                 .map_err(|error| error.to_string())?;
             self.stream
                 .write_all(&bytes)
@@ -354,6 +364,7 @@ as another account:
         }
 
         /// The next message, the end of the stream, or nothing by `deadline`.
+        /// (`gone_peer_ok`: the helper may have closed its end already.)
         fn next(&mut self, deadline: Instant) -> Result<Next, String> {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
@@ -383,8 +394,7 @@ as another account:
                 if left.is_zero() {
                     return Ok(Next::TimedOut);
                 }
-                self.stream
-                    .set_read_timeout(Some(left))
+                gone_peer_ok(self.stream.set_read_timeout(Some(left)))
                     .map_err(|error| error.to_string())?;
                 match self.stream.read(&mut buf) {
                     Ok(0) => return Ok(Next::Eof),
