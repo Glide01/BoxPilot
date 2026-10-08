@@ -22,10 +22,15 @@
 //!   what lies below. Adding files beside it is fine: users may create
 //!   folders in `C:\` and in `C:\ProgramData`.
 //!
-//! Inherit-only ACEs don't apply to the object, so they are skipped. Deny
-//! ACEs only take rights away, so they never make an object unsafe. An
-//! allow ACE of a type the helper doesn't read fails closed. Generic rights
-//! count both as themselves and as the file rights they map to.
+//! Inherit-only ACEs don't apply to the object itself. On an ancestor they
+//! are skipped: what the helper uses below it is judged on its own. On the
+//! object they are not: the helper and sing-box create files in their
+//! directories (the log, the cache file, Tailscale state), and those files
+//! inherit them. Only `CREATOR OWNER` is skipped there, since it becomes
+//! the creator, SYSTEM. Deny ACEs only take rights away, so they never make
+//! an object unsafe. An allow ACE of a type the helper doesn't read fails
+//! closed. Generic rights count both as themselves and as the file rights
+//! they map to.
 
 #![forbid(unsafe_code)]
 
@@ -290,7 +295,7 @@ pub fn judge(security: &Security, role: Role, trusted: &Trusted) -> Result<(), A
         Role::Ancestor => ANCESTOR_FORBIDDEN,
     };
     for ace in dacl {
-        if ace.flags & ace_flag::INHERIT_ONLY != 0 {
+        if !applies(ace, role) {
             continue;
         }
         match ace.ace_type {
@@ -313,6 +318,17 @@ pub fn judge(security: &Security, role: Role, trusted: &Trusted) -> Result<(), A
         }
     }
     Ok(())
+}
+
+/// Whether `ace` counts for an object in `role`: every ACE that applies to
+/// the object itself, and on the object, also every ACE its new files and
+/// folders inherit, `CREATOR OWNER` aside (it becomes their creator).
+fn applies(ace: &Ace, role: Role) -> bool {
+    if ace.flags & ace_flag::INHERIT_ONLY == 0 {
+        return true;
+    }
+    let inherited = ace.flags & (ace_flag::OBJECT_INHERIT | ace_flag::CONTAINER_INHERIT) != 0;
+    role == Role::Object && inherited && ace.sid != sid::CREATOR_OWNER
 }
 
 #[cfg(test)]
@@ -517,8 +533,23 @@ mod tests {
     #[test]
     fn a_folder_users_may_add_to_is_no_helper_or_state_dir() {
         let trusted = admins();
+        // What its new folders inherit (Modify for Authenticated Users)
+        // refuses it first; its own `AD` would too.
         assert_eq!(
             judge(&drive_root(), Role::Object, &trusted),
+            Err(AclRefusal::Grants {
+                sid: AUTHENTICATED_USERS.into(),
+                mask: DELETE | GENERIC_EXECUTE | GENERIC_WRITE | GENERIC_READ
+            })
+        );
+        let mut without_inheritance = drive_root();
+        without_inheritance
+            .dacl
+            .as_mut()
+            .unwrap()
+            .retain(|ace| ace.flags & IO == 0);
+        assert_eq!(
+            judge(&without_inheritance, Role::Object, &trusted),
             Err(AclRefusal::Grants {
                 sid: AUTHENTICATED_USERS.into(),
                 mask: FILE_APPEND_DATA
@@ -713,11 +744,11 @@ mod tests {
     }
 
     #[test]
-    fn inherit_only_and_deny_aces_grant_nothing_here() {
+    fn deny_aces_grant_nothing() {
         let mut security = protected(SYSTEM);
         let dacl = security.dacl.as_mut().unwrap();
-        dacl.push(Ace::allow(OI | CI | IO, GENERIC_ALL, USERS));
         dacl.push(Ace::deny(0, FILE_ALL_ACCESS, EVERYONE));
+        dacl.push(Ace::deny(OI | CI | IO, FILE_ALL_ACCESS, EVERYONE));
         dacl.push(Ace {
             ace_type: ace_type::DENIED_OBJECT,
             flags: 0,
@@ -725,6 +756,112 @@ mod tests {
             sid: String::new(),
         });
         assert_eq!(judge(&security, Role::Object, &admins()), Ok(()));
+    }
+
+    /// On an ancestor, what children inherit is judged where the helper
+    /// uses them.
+    #[test]
+    fn an_ancestors_inherit_only_aces_grant_nothing_here() {
+        for flags in [
+            OI | IO,
+            CI | IO,
+            OI | CI | IO,
+            OI | CI | IO | NO_PROPAGATE_INHERIT,
+        ] {
+            let mut security = program_files();
+            security
+                .dacl
+                .as_mut()
+                .unwrap()
+                .push(Ace::allow(flags, GENERIC_ALL, USERS));
+            assert_eq!(
+                judge(&security, Role::Ancestor, &admins()),
+                Ok(()),
+                "{flags:#x}"
+            );
+        }
+    }
+
+    /// The state directory and each caller's are where the helper's log,
+    /// the cache file and the Tailscale state are created: a right they
+    /// would inherit counts as a right on the directory.
+    #[test]
+    fn what_the_objects_new_files_inherit_counts() {
+        for flags in [
+            OI | IO,
+            CI | IO,
+            OI | CI | IO,
+            OI | IO | NO_PROPAGATE_INHERIT,
+        ] {
+            for mask in [
+                GENERIC_WRITE,
+                GENERIC_ALL,
+                FILE_WRITE_DATA,
+                DELETE,
+                WRITE_DAC,
+            ] {
+                let mut security = protected(SYSTEM);
+                security
+                    .dacl
+                    .as_mut()
+                    .unwrap()
+                    .push(Ace::allow(flags, mask, USERS));
+                assert_eq!(
+                    judge(&security, Role::Object, &admins()),
+                    Err(AclRefusal::Grants {
+                        sid: USERS.into(),
+                        mask
+                    }),
+                    "{flags:#x} {mask:#x}"
+                );
+            }
+        }
+        // Reading and running are as fine for children as for the object.
+        let mut readable = protected(SYSTEM);
+        readable.dacl.as_mut().unwrap().push(Ace::allow(
+            OI | CI | IO,
+            GENERIC_READ | GENERIC_EXECUTE,
+            USERS,
+        ));
+        assert_eq!(judge(&readable, Role::Object, &admins()), Ok(()));
+        // An inherit-only ACE that names no child applies to nothing.
+        let mut inert = protected(SYSTEM);
+        inert
+            .dacl
+            .as_mut()
+            .unwrap()
+            .push(Ace::allow(IO, GENERIC_ALL, USERS));
+        assert_eq!(judge(&inert, Role::Object, &admins()), Ok(()));
+        // An ACE type the helper doesn't read fails closed here too.
+        let mut unknown = protected(SYSTEM);
+        unknown.dacl.as_mut().unwrap().push(Ace {
+            ace_type: ace_type::ALLOWED_OBJECT,
+            flags: OI | CI | IO,
+            mask: FILE_GENERIC_READ,
+            sid: String::new(),
+        });
+        assert_eq!(
+            judge(&unknown, Role::Object, &admins()),
+            Err(AclRefusal::UnknownAce {
+                ace_type: ace_type::ALLOWED_OBJECT
+            })
+        );
+    }
+
+    /// `CREATOR OWNER` becomes whoever creates the child: in the helper's
+    /// trees, the helper or sing-box, as SYSTEM.
+    #[test]
+    fn creator_owner_passes_to_the_creator() {
+        let mut security = protected(SYSTEM);
+        security
+            .dacl
+            .as_mut()
+            .unwrap()
+            .push(Ace::allow(OI | CI | IO, GENERIC_ALL, CREATOR_OWNER));
+        assert_eq!(judge(&security, Role::Object, &admins()), Ok(()));
+        // Not where it applies to the object itself.
+        security.dacl.as_mut().unwrap().last_mut().unwrap().flags = OI | CI;
+        assert!(judge(&security, Role::Object, &admins()).is_err());
     }
 
     #[test]
