@@ -80,6 +80,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod endpoint;
 mod error;
 mod frame;
 mod message;

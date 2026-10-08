@@ -8,14 +8,12 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// The Windows service's name, which the MSI installs it under and the GUI
-/// starts it by.
-pub const SERVICE_NAME: &str = "BoxPilotHelper";
+/// The Windows service's name (`boxpilot_protocol::endpoint`, shared with
+/// the GUI).
+pub const SERVICE_NAME: &str = boxpilot_protocol::endpoint::SERVICE_NAME;
 
-/// The service's pipe. Only administrators (and SYSTEM) can create names
-/// under `ProtectedPrefix\Administrators`, so nobody else can squat it
-/// (ADR 0006 rule 5).
-pub const SERVICE_PIPE: &str = r"\\.\pipe\ProtectedPrefix\Administrators\BoxPilot\helper";
+/// The service's pipe (`boxpilot_protocol::endpoint`, shared with the GUI).
+pub const SERVICE_PIPE: &str = boxpilot_protocol::endpoint::PIPE_NAME;
 
 /// The console seam's pipe by default. Unprivileged, it can't create the
 /// service's name, and must not pretend to be the service.
