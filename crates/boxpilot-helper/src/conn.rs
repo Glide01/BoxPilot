@@ -183,7 +183,7 @@ impl ReadOnlySlots {
             return Some(Admitted { slots: None });
         }
         self.used
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                 (used < self.limit).then_some(used + 1)
             })
             .ok()
