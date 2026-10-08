@@ -1,8 +1,10 @@
 # TUN goes through a privileged helper that runs its own sing-box on a config it has checked
 
-**Status: proposed.** The config policy (rule 2) and the protocol
-(rule 1) are implemented, in `crates/boxpilot-policy` and
-`crates/boxpilot-protocol`; the helper itself is not built yet. Its
+**Status: proposed.** Windows (phase 1) is built: the policy, the
+protocol, the helper service, the MSI and the GUI client. It has been
+type-checked and unit-tested on Linux, and reviewed adversarially, but it
+has **not run on Windows yet**; `docs/helper-windows-checklist.md` lists
+what must be verified there first. macOS (phase 2) is not started. Its
 trade-offs are settled by separation of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
 without changing it (see "Conflicts with earlier ADRs").
@@ -352,12 +354,42 @@ the user's own privilege never meets it.
   - Add a fixture for each new field.
   - The shape rule makes a missed field fail closed. The audit keeps the
     refusal message helpful.
+- **The `api` service's RPCs are pinned too.** Every authorized caller
+  gets the secret of the SYSTEM sing-box's API, so its RPCs run as
+  SYSTEM. All 42 of 1.14.2's were audited: none runs or controls a
+  process, changes a system setting or takes a host path. What reaches
+  furthest is the caller's own Tailscale node (its certificate key, its
+  Taildrop files, confined to its per-user directory) and other users'
+  connection metadata. `tests/api_rpcs.rs` lists them with that
+  classification, and a CI step compares the list with the `.proto` of
+  the sing-box being bundled: a new RPC fails the build until someone
+  audits it. A filtering proxy in front of the API would put an HTTP/2
+  parser in the SYSTEM process to block nothing reachable today, so it
+  waits until an RPC appears that the policy can't neutralize.
+- **Loopback, as hygiene.** The helper puts a first route rule that
+  rejects literal loopback destinations (`127.0.0.0/8`, `::1`, their
+  IPv4-mapped forms, `0.0.0.0/8`, `localhost`). This is not a boundary:
+  a name that resolves to `127.0.0.1` still gets there, through the local
+  proxy or through TUN with sniffing, and so does a profile's
+  `override_address`. A socket-level TUN proxy run as SYSTEM opens
+  SYSTEM's sockets on behalf of everyone's traffic; that is what bringing
+  TUN up means here, and sing-box's own Windows client does the same.
+  Trusting a connection because it comes from SYSTEM is the task of the
+  loopback service that does so. The restricted token below is what
+  would narrow it further.
 
 **Defense in depth, under the policy.** Neither layer replaces the
 policy.
 
 - **Windows:** sing-box runs in a job object with `KILL_ON_JOB_CLOSE` and
-  an active-process limit of 1, so it can't start child processes.
+  an active-process limit of 1, so it can't start child processes, and
+  with three process mitigations: no images from remote shares, no
+  low-integrity images, extension points disabled.
+  - **Not yet:** sing-box still holds the helper's full SYSTEM token.
+    WireGuard's tunnel service keeps only `SeLoadDriverPrivilege`; the
+    same for sing-box (a restricted token) waits until what wintun needs
+    has been measured on Windows. A SYSTEM process with code execution
+    is not contained by a job.
 - **macOS:** sing-box runs under a sandbox profile that denies file writes
   outside the helper's tree, and execution of anything but
   `/usr/sbin/networksetup`. The profile is measured before it is
@@ -393,9 +425,14 @@ policy.
 **Authorization** is the administrator's task, so it comes from the OS,
 not from a BoxPilot setting:
 
-- **Windows:** members of Administrators (elevated or not) and of Network
-  Configuration Operators may `Start` and `Stop`, as in WireGuard for
-  Windows. Who belongs to those groups is the administrator's call.
+- **Windows:** members of Administrators and of Network Configuration
+  Operators may `Start` and `Stop`, as in WireGuard for Windows, whether
+  or not their session is elevated: UAC turns both groups deny-only in
+  an unelevated token, and who belongs to them is the administrator's
+  call either way. A restricted, AppContainer or below-medium-integrity
+  token is read-only, and so is any token the helper can't read.
+  Read-only connections are capped at 4 of the 8, so another account
+  can't hold every slot and keep an administrator from starting.
 - **macOS:** the *owner*, the account an administrator authorized
   through the install prompt, recorded in a root-owned file.
   - Another account takes over with its own administrator prompt.
@@ -417,8 +454,12 @@ not from a BoxPilot setting:
     squatted;
   - `PIPE_REJECT_REMOTE_CLIENTS`. A remotely reachable service pipe was
     OpenVPN's CVE-2024-24974;
-  - the SDDL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)`, with no
-    low-integrity label.
+  - the SDDL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12008b;;;IU)`, with no
+    low-integrity label. Interactive users get read plus
+    `FILE_WRITE_DATA` (`0x12008b`), not `GENERIC_WRITE`: on a pipe,
+    `GENERIC_WRITE` includes `FILE_CREATE_PIPE_INSTANCE`, which would let
+    a user add a server instance of our pipe and impersonate the next
+    client. ProtectedPrefix stops new names, not new instances.
 - **macOS:** a Unix socket that **launchd creates** from the daemon's
   plist (`Sockets`, adopted with `launch_activate_socket`), in root-owned
   `/var/run`.
@@ -436,14 +477,19 @@ not from a BoxPilot setting:
   stops sing-box". It also replaces the macOS pid file for TUN.
 - **The helper starts on demand and exits when idle,** so no root process
   lingers while TUN is off.
-  - **Windows:** a demand-start service whose DACL grants interactive
-    users `SERVICE_START` and `SERVICE_QUERY_STATUS` only, never
-    `SERVICE_CHANGE_CONFIG`, which would let them repoint its binary.
+  - **Windows:** a demand-start service. Its DACL is Windows' default
+    plus start (`RP`) for interactive users; never
+    `SERVICE_CHANGE_CONFIG` (which would let them repoint its binary),
+    stop, or write access to the descriptor. A client that connects
+    just as the idle helper exits gets a broken pipe and retries.
   - **macOS:** launchd socket activation.
 - **Crash cleanup belongs to the helper,** which runs as root, under
   ADR 0005's conservative rules:
-  - **Windows:** remove stale `sing-tun` adapters
-    (`remove_tun_adapter`).
+  - **Windows:** remove `sing-tun` adapters that are no longer present.
+    A present one may be another program's live tunnel (v2rayN, Hiddify,
+    a sing-box the user runs as Administrator), and any interactive user
+    can start the service; if presence can't be read, nothing is
+    removed.
   - **macOS:** reset the system proxy only while it still points at
     `127.0.0.1`, and flush mDNSResponder (which needs root; see
     ADR 0005).
@@ -463,10 +509,28 @@ not from a BoxPilot setting:
   `[ProgramFiles64Folder]BoxPilot\Helper`, which is *not* configurable.
   Today's MSI lets the user choose `APPLICATIONFOLDER`, and a SYSTEM
   service must never run from a folder its user picked.
-- **State** goes in `%ProgramData%\BoxPilot\Helper`, created with a
-  protected SYSTEM + Administrators DACL. On start, the service checks
-  that ACL, and refuses a folder a user created first: `ProgramData`
-  lets users create subfolders.
+- **State** goes in `[ProgramFiles64Folder]BoxPilot\HelperState`, a
+  sibling of `Helper`, never inside it. The MSI creates it with
+  `O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`: owner SYSTEM, protected,
+  SYSTEM and Administrators only, and nobody else may even read it (it
+  holds each user's `cache.db` and Tailscale node keys). The service
+  checks that on start and before every spawn.
+  - **Why not `ProgramData`:** any user can create folders there. A user
+    who pre-creates `ProgramData\BoxPilot` blocks the helper; one who
+    pre-creates it as a junction (to System32, say) would have the MSI,
+    running as SYSTEM, apply its descriptor through the junction to the
+    target. Users can't create anything under Program Files.
+  - **Uninstall** removes the service and the binaries; once used,
+    `HelperState` stays, and an administrator deletes it.
+- **The manifest** (`manifest.json` beside the helper) names sing-box's
+  file, version and SHA-256 and the extra files beside it. sing-box
+  1.14.2's Windows zip ships `libcronet.dll`, so that is one. CI hashes
+  exactly the files that go into the MSI, and fails on any unexpected
+  file in the sing-box archive.
+- **A broken install** can't answer `hello`: the helper exits with a
+  service-specific code (`boxpilot_protocol::endpoint::exit`: helper
+  directory, state directory, manifest, squatted pipe …), and the GUI
+  reads it with `QueryServiceStatus` to say why TUN is unavailable.
 
 **macOS** (no Developer ID, and macOS 12 is supported):
 
@@ -680,9 +744,10 @@ any of them.
 ## Consequences
 
 - **Code.**
-  - The repository is a Cargo workspace. The helper will be its own
-    crate (`boxpilot-helper`), so the privileged binary's dependency
-    graph has no gpui and no reqwest.
+  - The repository is a Cargo workspace. The helper is its own crate
+    (`boxpilot-helper`), so the privileged binary's dependency graph has
+    no gpui and no reqwest; the run-config injection the GUI and the
+    helper share is `crates/boxpilot-runconfig`.
   - The config policy (`crates/boxpilot-policy`) and the protocol
     (`crates/boxpilot-protocol`) are separate pure crates, no I/O, no
     gpui, for both the GUI and the helper: what may run, and how it is
@@ -711,6 +776,16 @@ any of them.
     accounts, which closes a gap ADR 0005 notes.
 - **Profiles that need a refused feature** run in Proxy mode only. A TUN
   start says which field was refused and why.
+- **Windows system proxy cleanup** is now conservative, as on Linux and
+  macOS: only a manual proxy still on `127.0.0.1` is cleared. If the GUI
+  crashes in helper TUN mode, sing-box stops with the connection, but the
+  user's proxy keeps pointing at it until BoxPilot's next start or stop.
+- **Settings › Clear cache** clears the user's own `cache.db`, not the
+  one in `HelperState` that helper TUN mode uses.
+- **The MSI is about 33 MB larger:** the helper's own sing-box and
+  `libcronet.dll`. (The Proxy-mode sing-box in the app folder has no
+  `libcronet.dll` beside it, so naive outbounds don't run there; that
+  predates this ADR.)
 
 ## Verification before shipping
 
@@ -720,18 +795,28 @@ any of them.
   - an unknown path-shaped key fails closed;
   - attachments land only in the run directory.
 - **Fuzzing** (`cargo fuzz`) of the frame decoder and the policy.
-- **An integration test** through a `--root <dir>` test seam, like
-  `BOXPILOT_DATA_DIR`, so the helper runs unprivileged in CI against a
-  temporary tree.
+- **An integration test** through the `--console --root <dir>` test
+  seam, so the helper runs unprivileged against a temporary tree. It
+  refuses to run elevated, and GitHub's Windows runners are elevated, so
+  CI covers the pipe, protocol and policy path through the pure crates
+  and the Linux transport tests; the seam is for a developer's machine.
+  It can't bring TUN up either way.
 - **A release checklist on real machines.** Each of these must hold:
   - an account the administrator hasn't authorized gets no `Start`;
   - a remote client is refused, and so is an oversized frame;
-  - a squatted pipe, socket or `ProgramData` folder is refused;
+  - a squatted pipe or socket is refused, and so is a `HelperState`
+    with a non-admin ACE;
   - sing-box dies with its session;
   - a sing-box that was swapped or `chmod`ed is refused;
   - nothing listens on TCP except sing-box's own ports.
+- **The Windows checklist** in `docs/helper-windows-checklist.md`, run
+  on clean Windows 10 and 11 before the first release that ships the
+  helper.
 - **An external review** of the helper and the policy before the first
-  release that ships them.
+  release that ships them. (An internal adversarial review has been done;
+  it found and fixed five defects, among them inherited write ACEs in the
+  state folder and adapter cleanup that could cut other programs'
+  tunnels.)
 
 ## Considered options
 
