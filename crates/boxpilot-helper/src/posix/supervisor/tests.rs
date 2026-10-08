@@ -1,6 +1,9 @@
 //! The POSIX supervisor over a real tree and a real child: a shell script
 //! standing in for sing-box (tests only; the helper never runs a shell),
-//! installed as the install script would, with its manifest.
+//! installed as the install script would, with its manifest, and another
+//! standing in for `/usr/bin/sandbox-exec`, which records what it was given
+//! and executes sing-box as the real one does. On macOS, one test runs the
+//! real sandbox-exec with the shipped profile.
 
 use super::*;
 use crate::helper::RunEvents;
@@ -37,6 +40,25 @@ while :; do sleep 0.1; done"#;
 const CRASHING: &str = r#"echo "sing-box started"
 exit 7"#;
 
+/// A stand-in for `/usr/bin/sandbox-exec`: records its arguments,
+/// NUL-separated, in the file put in place of `"$RECORD"`, then executes
+/// the command after `--`, keeping its PID, as the real one does once the
+/// profile is applied.
+const SANDBOX_EXEC: &str = r#"for arg in "$@"; do printf '%s\0' "$arg"; done >"$RECORD"
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --) shift; exec "$@" ;;
+        -p | -f | -n | -D) shift 2 ;;
+        *) exec "$@" ;;
+    esac
+done
+echo "sandbox-exec: no command" >&2
+exit 64"#;
+
+/// One that can't apply the profile: it says why, and never runs sing-box.
+const SANDBOX_EXEC_REFUSING: &str = r#"echo "sandbox-exec: the profile was refused" >&2
+exit 65"#;
+
 /// A helper tree as the install leaves it: `bin` (sing-box, manifest) and
 /// `state` (0700, the owner record), all this test's user's.
 struct Install {
@@ -44,6 +66,10 @@ struct Install {
     layout: Layout,
     trust: Trust,
     cleanups: Arc<Mutex<Vec<Cleanup>>>,
+    /// The stand-in for sandbox-exec, in a directory of its own.
+    sandbox_exec: PathBuf,
+    /// Where it records its arguments.
+    sandbox_record: PathBuf,
 }
 
 impl Install {
@@ -58,6 +84,13 @@ impl Install {
             return None;
         }
         let root = fs::canonicalize(&temp.0).unwrap();
+        if !root.to_str().is_some_and(sandboxplan::is_plain_path) {
+            eprintln!(
+                "note: skipped, the build directory's path can't be a sandbox parameter: {}",
+                root.display()
+            );
+            return None;
+        }
         let layout = Layout::new(root.join("bin"), root.join("state"));
         DirBuilder::new()
             .mode(0o755)
@@ -68,15 +101,38 @@ impl Install {
             .mode(0o700)
             .create(layout.state_dir())
             .unwrap();
+        let system = root.join("system");
+        DirBuilder::new().mode(0o755).create(&system).unwrap();
+        fs::set_permissions(&system, fs::Permissions::from_mode(0o755)).unwrap();
         let install = Self {
             _temp: temp,
             layout,
             trust,
             cleanups: Arc::new(Mutex::new(Vec::new())),
+            sandbox_exec: system.join("sandbox-exec"),
+            sandbox_record: root.join("sandbox-exec.args"),
         };
         install.put_sing_box(script);
+        install.put_sandbox_exec(&SANDBOX_EXEC.replace(
+            "\"$RECORD\"",
+            &format!("'{}'", install.sandbox_record.display()),
+        ));
         install.write_owner(&format!("{}\n", me()));
         Some(install)
+    }
+
+    fn put_sandbox_exec(&self, script: &str) {
+        fs::write(&self.sandbox_exec, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&self.sandbox_exec, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// What the stand-in for sandbox-exec was last given.
+    fn sandbox_args(&self) -> Vec<String> {
+        let bytes = fs::read(&self.sandbox_record).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        let mut args: Vec<String> = text.split('\0').map(str::to_owned).collect();
+        assert_eq!(args.pop().as_deref(), Some(""), "NUL-terminated");
+        args
     }
 
     fn sing_box(&self) -> PathBuf {
@@ -118,6 +174,7 @@ impl Install {
             own_exe: None,
             cleanup: Arc::new(move |plan: &Cleanup| cleanups.lock().unwrap().push(*plan)),
             stop_grace: Duration::from_millis(300),
+            sandbox_exec: self.sandbox_exec.clone(),
         }
     }
 
@@ -256,6 +313,33 @@ fn a_run_starts_with_its_plan_and_stops_cleanly_on_sigterm() {
     );
     assert!(lines.contains(&"env=PATH=/usr/bin:/bin:/usr/sbin:/sbin".to_owned()));
     assert!(lines.contains(&format!("pwd={run_text}")), "{lines:?}");
+    // It ran through sandbox-exec: the constant profile, the helper's own
+    // paths as its parameters, then exactly the verified sing-box.
+    let state = install.layout.state_dir().to_str().unwrap();
+    let sing_box = install.sing_box().to_str().unwrap().to_owned();
+    assert_eq!(
+        install.sandbox_args(),
+        [
+            "-p".to_owned(),
+            sandboxplan::SING_BOX_PROFILE.to_owned(),
+            "-D".to_owned(),
+            format!("SING_BOX={sing_box}"),
+            "-D".to_owned(),
+            format!("STATE_DIR={state}"),
+            "-D".to_owned(),
+            format!("RUN_DIR={run_text}"),
+            "-D".to_owned(),
+            format!("USER_DIR={state}/users/{}", me()),
+            "--".to_owned(),
+            sing_box,
+            "run".to_owned(),
+            "-D".to_owned(),
+            run_text.clone(),
+            "-c".to_owned(),
+            format!("{run_text}/config.json"),
+            "--disable-color".to_owned(),
+        ]
+    );
     // The marker says what this run may leave behind.
     assert_eq!(
         fs::read_to_string(install.layout.run_marker()).unwrap(),
@@ -342,6 +426,103 @@ fn a_sing_box_that_dies_on_its_own_is_cleaned_up_after() {
     );
     assert!(!install.layout.run_marker().exists());
     assert!(!run_dir.exists());
+}
+
+/// sing-box runs under its sandbox or not at all: a sandbox-exec that is
+/// missing or others may write fails the start, before anything runs; one
+/// that can't apply the profile never runs sing-box, and the run ends with
+/// its words and its exit code.
+#[test]
+fn sing_box_never_runs_without_its_sandbox() {
+    let Some(install) = Install::new("sup-sandbox", POLITE) else {
+        return;
+    };
+    let supervisor = install.start().unwrap();
+
+    let refused_before_the_spawn = |what: &str| {
+        let (run_dir, seen, process) = run(&supervisor, &me().to_string(), true);
+        let error = process.err().expect(what);
+        assert!(
+            error
+                .0
+                .contains("sandbox can't be applied, so it doesn't start"),
+            "{what}: {error}"
+        );
+        assert_eq!(seen.exit(), None, "{what}");
+        assert!(!run_dir.exists(), "{what}");
+        assert!(!install.layout.run_marker().exists(), "{what}");
+        assert!(!install.sandbox_record.exists(), "{what}: nothing ran");
+    };
+    fs::set_permissions(&install.sandbox_exec, fs::Permissions::from_mode(0o775)).unwrap();
+    refused_before_the_spawn("a group-writable sandbox-exec");
+    fs::remove_file(&install.sandbox_exec).unwrap();
+    refused_before_the_spawn("no sandbox-exec");
+
+    install.put_sandbox_exec(SANDBOX_EXEC_REFUSING);
+    let (run_dir, seen, process) = run(&supervisor, &me().to_string(), false);
+    let mut process = process.unwrap();
+    assert_eq!(
+        seen.wait_for_exit(),
+        ExitInfo {
+            code: Some(65),
+            signal: None
+        }
+    );
+    process.stop();
+    let lines = seen.lines();
+    assert_eq!(
+        lines,
+        ["sandbox-exec: the profile was refused"],
+        "{lines:?}"
+    );
+    assert!(!run_dir.exists());
+    assert!(!install.layout.run_marker().exists());
+    assert_eq!(
+        install.cleanups(),
+        [Cleanup {
+            reset_proxy: None,
+            flush_dns: true
+        }]
+    );
+}
+
+/// The real `/usr/bin/sandbox-exec` takes the shipped profile and its
+/// parameters, and runs sing-box under them, in the PID it was spawned as
+/// (unprivileged here: the measuring profile denies nothing).
+#[cfg(target_os = "macos")]
+#[test]
+fn the_real_sandbox_exec_runs_sing_box_under_the_shipped_profile() {
+    let Some(install) = Install::new("sup-real-sandbox", POLITE) else {
+        return;
+    };
+    let mut setup = install.setup();
+    setup.sandbox_exec = PathBuf::from(sandboxplan::SANDBOX_EXEC);
+    let supervisor = PosixSupervisor::start(setup, 8 * 1024).unwrap();
+    let (run_dir, seen, process) = run(&supervisor, &me().to_string(), false);
+    let mut process = process.unwrap();
+    seen.wait_for_line("sing-box started");
+    let run_text = run_dir.to_str().unwrap().to_owned();
+    assert_eq!(
+        seen.lines()[..6],
+        [
+            "arg=run".to_owned(),
+            "arg=-D".to_owned(),
+            format!("arg={run_text}"),
+            "arg=-c".to_owned(),
+            format!("arg={run_text}/config.json"),
+            "arg=--disable-color".to_owned(),
+        ]
+    );
+    process.stop();
+    assert_eq!(
+        seen.exit(),
+        Some(ExitInfo {
+            code: Some(0),
+            signal: None
+        }),
+        "{:?}",
+        seen.lines()
+    );
 }
 
 /// ADR 0006 rule 3: checked on every spawn, not just at start.

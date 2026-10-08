@@ -3,7 +3,11 @@
 //! signalling a PID that may have been reused.
 //!
 //! **Start** ([`spawn`]): `posix_spawn` by absolute path, never
-//! `posix_spawnp`, a shell or `system`:
+//! `posix_spawnp`, a shell or `system`. The supervisor starts sing-box
+//! through `/usr/bin/sandbox-exec`, which applies sing-box's sandbox
+//! profile and then executes sing-box in its place (`sandboxplan`): one
+//! process, the PID spawned here. What follows is what that process starts
+//! with, and what sing-box keeps through the exec:
 //!
 //! - argv and the environment exactly as given (`spawnplan`: the
 //!   environment is built from nothing);
@@ -54,9 +58,11 @@ use libc::posix_spawn_file_actions_addchdir_np;
 /// What to start.
 #[derive(Debug)]
 pub struct Launch<'a> {
-    /// sing-box's absolute path, in the verified helper directory.
+    /// The absolute path of what is started: sandbox-exec, verified, which
+    /// executes sing-box from the verified helper directory.
     pub program: &'a Path,
-    /// The arguments after the program (`spawnplan::sing_box_args`).
+    /// The arguments after the program (`sandboxplan::sandbox_exec_args`,
+    /// with `spawnplan::sing_box_args` at its end).
     pub args: &'a [String],
     /// Its whole environment (`spawnplan::posix_environment`).
     pub env: &'a [(String, String)],

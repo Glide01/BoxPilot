@@ -18,6 +18,11 @@
 //!   marker (`cleanup`); once sing-box has exited it carries out
 //!   `cleanup::after_run` through the platform's [`Setup::cleanup`], removes
 //!   the marker and the run directory, and only then reports `exited`.
+//! - **sing-box runs only under its sandbox** (`sandboxplan`): spawned
+//!   through [`Setup::sandbox_exec`], verified like the binaries before
+//!   every spawn, which applies the profile and then executes the verified
+//!   sing-box in its place, same PID. There is no other way to start it: a
+//!   sandbox that can't be applied fails the start, or the run.
 //! - **Stopping** is SIGTERM, then SIGKILL once [`Setup::stop_grace`] has
 //!   passed, always to sing-box's own PID while it is unreaped (`child`).
 //!
@@ -36,6 +41,7 @@ use crate::modes::{Role, Trust};
 use crate::owner::{self, MAX_OWNER_BYTES};
 use crate::paths::{self, is_uid, Layout};
 use crate::rundir::RunDir;
+use crate::sandboxplan;
 use crate::spawnplan;
 use boxpilot_policy::Placement;
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -69,6 +75,11 @@ pub struct Setup {
     pub cleanup: CleanupFn,
     /// Between SIGTERM and SIGKILL.
     pub stop_grace: Duration,
+    /// What sing-box is started through, which applies its sandbox profile
+    /// and then executes it (`sandboxplan`): `/usr/bin/sandbox-exec` for the
+    /// installed daemon, a stand-in in the Linux tests. Verified as a file
+    /// the helper runs, with its directory chain, before every spawn.
+    pub sandbox_exec: PathBuf,
 }
 
 /// Why the helper won't start: its exit code and what to log.
@@ -333,7 +344,7 @@ impl Supervisor for PosixSupervisor {
         if !self.create(&run_dir)? {
             return Err(HelperError::new("a fresh run directory already existed"));
         }
-        let run = RunDir::adopt(run_dir);
+        let run = RunDir::adopt(run_dir).with_account_dir(user_dir.clone());
         verify::dir_only(run.path(), Role::Private, &self.setup.trust)
             .map_err(|refused| HelperError::new(refused.to_string()))?;
         let placement = paths::placement(run.path(), &user_dir)
@@ -351,6 +362,14 @@ impl Supervisor for PosixSupervisor {
             .open_binaries()
             .map_err(|(_, message)| HelperError::new(message))?;
         self.verify_state()?;
+        // sing-box runs under its sandbox, or not at all.
+        let sandbox_exec = &self.setup.sandbox_exec;
+        let held_sandbox_exec =
+            verify::file_chain(sandbox_exec, &self.setup.trust).map_err(|refused| {
+                HelperError::new(format!(
+                    "sing-box's sandbox can't be applied, so it doesn't start: {refused}"
+                ))
+            })?;
         let io_error = |what: &str, error: io::Error| HelperError::new(format!("{what}: {error}"));
         let tmp = run
             .create_dir("tmp")
@@ -360,22 +379,36 @@ impl Supervisor for PosixSupervisor {
             .map_err(|error| io_error("HOME", error))?;
         let program = self.setup.layout.helper_file(&self.manifest.sing_box.file);
         let config = run.config_path();
-        let args = spawnplan::sing_box_args(path_text(run.path())?, path_text(&config)?);
+        let sing_box_args = spawnplan::sing_box_args(path_text(run.path())?, path_text(&config)?);
+        let account_dir = run
+            .account_dir()
+            .ok_or_else(|| HelperError::new("the run names no account directory"))?;
+        let params =
+            sandboxplan::Params::for_run(&self.setup.layout, &program, run.path(), account_dir)
+                .map_err(|error| HelperError::new(error.to_string()))?;
+        let args = sandboxplan::sandbox_exec_args(&params, &sing_box_args);
         let env = spawnplan::posix_environment(path_text(&home)?, path_text(&tmp)?);
         let system_proxy = run.system_proxy_port();
         self.write_marker(&Marker { system_proxy })?;
         let marker = self.setup.layout.run_marker();
         let child = child::spawn(&Launch {
-            program: &program,
+            program: sandbox_exec,
             args: &args,
             env: &env,
             cwd: run.path(),
         })
         .map_err(|error| {
             let _ = fs::remove_file(&marker);
-            io_error("sing-box did not start", error)
+            io_error(
+                &format!(
+                    "sing-box did not start under its sandbox ({})",
+                    sandbox_exec.display()
+                ),
+                error,
+            )
         })?;
         drop(held);
+        drop(held_sandbox_exec);
 
         let reaper = Arc::new(child.reaper);
         let done = Arc::new(Done::default());
@@ -404,7 +437,10 @@ impl Supervisor for PosixSupervisor {
             let _ = fs::remove_file(self.setup.layout.run_marker());
             return Err(io_error("no thread to watch sing-box", error));
         }
-        helper_log!("sing-box started, pid {pid}");
+        helper_log!(
+            "sing-box started under its sandbox profile ({}), pid {pid}",
+            sandboxplan::STATUS
+        );
         Ok(Box::new(PosixProcess {
             reaper,
             done,

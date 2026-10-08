@@ -17,7 +17,9 @@
 //!    (and to the system log), the clients already waiting are turned away,
 //!    and it exits with the matching `endpoint::exit` code.
 //! 5. It leads its own process group, which sing-box joins, so launchd
-//!    ends sing-box with the helper's job however the helper dies.
+//!    ends sing-box with the helper's job however the helper dies. sing-box
+//!    runs under its sandbox profile, through `/usr/bin/sandbox-exec`
+//!    (`sandboxplan`: measuring; not enforced yet).
 //! 6. It serves (`posix::server`): each caller's authority from its uid
 //!    and the owner record, read again for each connection (`owner`).
 //! 7. Idle for a minute, or on SIGTERM from launchd, it stops sing-box
@@ -39,6 +41,7 @@ use crate::posix::peer;
 use crate::posix::server::{self, Identify, ServerConfig, Stopped};
 use crate::posix::signals;
 use crate::posix::supervisor::{PosixSupervisor, Setup, STOP_GRACE};
+use crate::sandboxplan::SANDBOX_EXEC;
 use boxpilot_protocol::endpoint::macos::{HELPER_PATH, PLIST_PATH, SOCKET_NAME};
 use boxpilot_protocol::Limits;
 use std::fs::OpenOptions;
@@ -117,6 +120,7 @@ pub fn main() -> i32 {
         own_exe: Some(PathBuf::from(HELPER_PATH)),
         cleanup: Arc::new(system::carry_out),
         stop_grace: STOP_GRACE,
+        sandbox_exec: PathBuf::from(SANDBOX_EXEC),
     };
     let supervisor = match PosixSupervisor::start(setup, limits.max_log_line) {
         Ok(supervisor) => supervisor,

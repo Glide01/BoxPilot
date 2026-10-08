@@ -198,6 +198,14 @@ pub fn run_name(random: &[u8; 16]) -> String {
     random.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Whether `name` is one [`run_name`] makes: 32 lowercase hex digits.
+pub fn is_run_name(name: &str) -> bool {
+    name.len() == 32
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// A path the policy's `Placement` can't carry: not valid Unicode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotUnicode;
@@ -351,6 +359,18 @@ mod tests {
         bytes[0] = 0xab;
         bytes[15] = 0x01;
         assert_eq!(run_name(&bytes), "ab000000000000000000000000000001");
+        assert!(is_run_name(&run_name(&bytes)));
+        assert!(is_run_name(&run_name(&[0xff; 16])));
+        for not_run in [
+            "",
+            "ab",
+            "AB000000000000000000000000000001",
+            "ab00000000000000000000000000000g",
+            "ab0000000000000000000000000000001",
+            "../00000000000000000000000000000",
+        ] {
+            assert!(!is_run_name(not_run), "{not_run}");
+        }
     }
 
     #[test]

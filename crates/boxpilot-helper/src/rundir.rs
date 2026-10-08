@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 pub struct RunDir {
     path: PathBuf,
     system_proxy: Option<u16>,
+    account_dir: Option<PathBuf>,
 }
 
 impl RunDir {
@@ -30,7 +31,20 @@ impl RunDir {
         Self {
             path,
             system_proxy: None,
+            account_dir: None,
         }
+    }
+
+    /// The starting account's own state directory, beside the run: where
+    /// its cache file and Tailscale state are. macOS names it to sing-box's
+    /// sandbox (`sandboxplan`); it is never removed with the run.
+    pub fn with_account_dir(mut self, dir: PathBuf) -> Self {
+        self.account_dir = Some(dir);
+        self
+    }
+
+    pub fn account_dir(&self) -> Option<&Path> {
+        self.account_dir.as_deref()
     }
 
     pub fn path(&self) -> &Path {
@@ -189,6 +203,23 @@ mod tests {
         drop(run);
         assert!(!path.exists(), "the run directory goes with the run");
         assert_eq!(names(&temp.0), Vec::<String>::new());
+    }
+
+    /// The account's own state is named, never removed with the run.
+    #[test]
+    fn the_account_directory_outlives_the_run() {
+        let temp = TempDir::new("rundir-account");
+        let path = temp.0.join("run");
+        let account = temp.0.join("account");
+        fs::create_dir(&path).unwrap();
+        fs::create_dir(&account).unwrap();
+        let run = RunDir::adopt(path.clone());
+        assert_eq!(run.account_dir(), None);
+        let run = run.with_account_dir(account.clone());
+        assert_eq!(run.account_dir(), Some(account.as_path()));
+        drop(run);
+        assert!(!path.exists());
+        assert!(account.exists());
     }
 
     /// What the config sets outside the run directory travels with it, for
