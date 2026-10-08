@@ -18,8 +18,8 @@
 //!    and it exits with the matching `endpoint::exit` code.
 //! 5. It leads its own process group, which sing-box joins, so launchd
 //!    ends sing-box with the helper's job however the helper dies. sing-box
-//!    runs under its sandbox profile, through `/usr/bin/sandbox-exec`
-//!    (`sandboxplan`: measuring; not enforced yet).
+//!    runs under its enforced sandbox profile, through
+//!    `/usr/bin/sandbox-exec` (`sandboxplan`).
 //! 6. It serves (`posix::server`): each caller's authority from its uid
 //!    and the owner record, read again for each connection (`owner`).
 //! 7. Idle for a minute, or on SIGTERM from launchd, it stops sing-box

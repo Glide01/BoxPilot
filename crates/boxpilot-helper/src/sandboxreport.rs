@@ -1,30 +1,29 @@
 //! Reading what sing-box's sandbox reported (ADR 0006, "Defense in depth";
-//! `sandboxplan`): the measurement CI's macOS job takes while the measuring
-//! profile runs, summed up by operation and target, so that the enforced
-//! profile is written from what sing-box was seen to do.
-//! `examples/sandbox_report.rs` prints it from `log show`'s output; the
-//! reading is here, pure, so it is tested on every OS.
+//! `sandboxplan`): what CI's macOS job collects over its smoke steps,
+//! summed up by operation and target, with sing-box's denials sorted into
+//! those `sandboxplan::KNOWN_DENIALS` explains and the unexpected ones,
+//! which fail the job. `examples/sandbox_report.rs` prints it from `log
+//! show`'s output; the reading is here, pure, so it is tested on every OS.
 //!
 //! The kernel's sandbox writes one line per report to the unified log
-//! (process 0, the sandbox kext as its sender), as macOS writes them, with
-//! `log show`'s timestamp and process in front:
+//! (process 0, the sandbox kext as its sender), as CI's runner wrote them,
+//! with `log show --style compact`'s timestamp, level and process in front:
 //!
 //! ```text
-//! Sandbox: icdd(2124) allow file-read-data /Library/Image Capture/Devices
-//! Sandbox: kernelmanagerd(545) deny(1) file-write-create /private/var/db/x
-//! 1 duplicate report for Sandbox: icdd(2124) allow file-read-data /Library/Image Capture/Devices
+//! 2026-10-08 17:43:10.173 Df kernel[0:ad30] (Sandbox) Sandbox: sing-box(15588) allow file-read-data /dev/dtracehelper
+//! 2026-10-08 17:42:48.134 E  kernel[0:9b86] (Sandbox) Sandbox: mapssyncd(14783) deny(1) file-read-data /Users/x
+//! 2026-10-08 17:42:48.134 E  kernel[0:9b86] (Sandbox) 1 duplicate report for Sandbox: mds(53) deny(1) mach-lookup com.apple.x
+//! 2026-10-08 17:43:12.548 Df kernel[0:ade4] (Sandbox) System Policy: diskutil(15622) allow file-read-data /dev/rdisk0
 //! ```
 //!
+//! - **Allows** carry no `(1)`; denials do. The last form, another policy
+//!   than a process's own profile, has no `Sandbox: ` and is not read.
 //! - **Repeats** are folded into a "duplicate report(s)" line, which counts
 //!   that many more.
-//! - **sing-box's processes.** A process is named as the kernel knows it,
-//!   with its PID. What sing-box starts inherits its sandbox and reports
-//!   under sing-box's name until it executes, then under its own, with the
-//!   same PID. So sing-box's processes are the PIDs ever reported as
-//!   `sing-box`, and every name those PIDs carried (`sandbox-exec`, before
-//!   it executes sing-box; `networksetup`) with all their PIDs, until
-//!   nothing more is added ([`Summary::of`]). Other sandboxed processes'
-//!   reports are counted apart.
+//! - **sing-box's processes** are the PIDs ever reported as `sing-box`,
+//!   whatever they are called in other reports: before its exec, the same
+//!   PID is `sandbox-exec`. (sing-box may start nothing: its profile denies
+//!   `fork`.) Other sandboxed processes' reports are counted apart.
 //! - **Targets** are written with the profile's parameters for the helper's
 //!   own paths (`${RUN_DIR}/config.json`, [`HelperPaths`]), so one run's
 //!   reports read like the next one's, and like the profile.
@@ -34,7 +33,9 @@
 #![forbid(unsafe_code)]
 
 use crate::paths::{is_run_name, is_uid};
-use crate::sandboxplan::{PARAM_RUN_DIR, PARAM_SING_BOX, PARAM_STATE_DIR, PARAM_USER_DIR};
+use crate::sandboxplan::{
+    KnownDenial, KNOWN_DENIALS, PARAM_RUN_DIR, PARAM_SING_BOX, PARAM_USER_DIR,
+};
 use boxpilot_protocol::endpoint::macos;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -52,14 +53,17 @@ pub const SAMPLE: usize = 20;
 /// the rest.
 pub const MAX_TARGETS: usize = 400;
 
+/// What a summary writes for the state directory beyond the profile's
+/// parameters (the profile itself never names it).
+const STATE_DIR: &str = "STATE_DIR";
+
 /// One report: `<process>(<pid>) <verdict> <operation> <target>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     /// The process, as the kernel names it.
     pub process: String,
     pub pid: u32,
-    /// `allow` or `deny` (its `(n)` left out), with `System Policy: ` in
-    /// front when the platform's own policy decided, not the profile.
+    /// `allow` or `deny`, its `(n)` left out.
     pub verdict: String,
     /// The sandbox operation, e.g. `file-write-create`, `process-exec*`.
     pub operation: String,
@@ -103,13 +107,9 @@ fn duplicates(before: &str) -> Option<u64> {
     }
 }
 
-/// `<process>(<pid>) [System Policy: ]<verdict>[(<n>)] <operation>[ <target>]`.
+/// `<process>(<pid>) <verdict>[(<n>)] <operation>[ <target>]`.
 fn report(text: &str) -> Option<Report> {
     let (process, pid, rest) = process(text)?;
-    let (policy, rest) = match rest.strip_prefix("System Policy: ") {
-        Some(rest) => ("System Policy: ", rest),
-        None => ("", rest),
-    };
     let (verdict, rest) = rest.split_once(' ')?;
     let verdict = verdict_word(verdict)?;
     let (operation, target) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -122,7 +122,7 @@ fn report(text: &str) -> Option<Report> {
     Some(Report {
         process: process.to_owned(),
         pid,
-        verdict: format!("{policy}{verdict}"),
+        verdict: verdict.to_owned(),
         operation: operation.to_owned(),
         target: target.trim().to_owned(),
         count: 1,
@@ -226,31 +226,28 @@ fn in_state(rest: &str) -> String {
     };
     named("runs", is_run_name, PARAM_RUN_DIR)
         .or_else(|| named("users", is_uid, PARAM_USER_DIR))
-        .unwrap_or_else(|| format!("${{{PARAM_STATE_DIR}}}{rest}"))
+        .unwrap_or_else(|| format!("${{{STATE_DIR}}}{rest}"))
 }
 
 /// The PIDs of sing-box's processes among `reports`: every PID reported as
-/// `sing-box`, and every PID of each name those PIDs carried, until nothing
-/// more is added.
+/// `sing-box`.
 fn sing_box_pids(reports: &[Report]) -> BTreeSet<u32> {
-    let mut names: BTreeSet<&str> = BTreeSet::from([SING_BOX]);
-    let mut pids = BTreeSet::new();
-    loop {
-        let before = (names.len(), pids.len());
-        for report in reports {
-            if names.contains(report.process.as_str()) {
-                pids.insert(report.pid);
-            }
-        }
-        for report in reports {
-            if pids.contains(&report.pid) {
-                names.insert(report.process.as_str());
-            }
-        }
-        if (names.len(), pids.len()) == before {
-            return pids;
-        }
-    }
+    reports
+        .iter()
+        .filter(|report| report.process == SING_BOX)
+        .map(|report| report.pid)
+        .collect()
+}
+
+/// One of sing-box's denials, and the known denial that explains it, if
+/// one does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Denial {
+    pub operation: String,
+    /// Normalized, as the summary writes it.
+    pub target: String,
+    pub count: u64,
+    pub known: Option<&'static KnownDenial>,
 }
 
 /// Everything a `log show` held, summed up.
@@ -329,6 +326,35 @@ impl Summary {
         unreported.sort_unstable();
         unreported.dedup();
         unreported
+    }
+
+    /// sing-box's denials, each with the known denial that explains it.
+    pub fn denials(&self) -> Vec<Denial> {
+        let mut denials = Vec::new();
+        for (operation, targets) in &self.reports {
+            for ((target, verdict), count) in targets {
+                if verdict != "deny" {
+                    continue;
+                }
+                denials.push(Denial {
+                    operation: operation.clone(),
+                    target: target.clone(),
+                    count: *count,
+                    known: KNOWN_DENIALS
+                        .iter()
+                        .find(|known| known.matches(operation, target)),
+                });
+            }
+        }
+        denials
+    }
+
+    /// sing-box's denials no known denial explains: each fails CI.
+    pub fn unexpected_denials(&self) -> Vec<Denial> {
+        self.denials()
+            .into_iter()
+            .filter(|denial| denial.known.is_none())
+            .collect()
     }
 
     /// sing-box's reports by verdict.
@@ -421,6 +447,37 @@ impl fmt::Display for Summary {
             }
         }
 
+        let denials = self.denials();
+        writeln!(f)?;
+        writeln!(
+            f,
+            "---- sing-box's denials: {} ({} unexpected)",
+            denials.len(),
+            denials
+                .iter()
+                .filter(|denial| denial.known.is_none())
+                .count()
+        )?;
+        for denial in &denials {
+            let target = if denial.target.is_empty() {
+                "(no target)"
+            } else {
+                &denial.target
+            };
+            match denial.known {
+                Some(known) => writeln!(
+                    f,
+                    "  {:>8}  known       {} {target}: {}",
+                    denial.count, denial.operation, known.why
+                )?,
+                None => writeln!(
+                    f,
+                    "  {:>8}  UNEXPECTED  {} {target}",
+                    denial.count, denial.operation
+                )?,
+            }
+        }
+
         if !self.others.is_empty() {
             writeln!(f)?;
             writeln!(
@@ -496,8 +553,6 @@ mod tests {
         );
         assert_eq!((many.count, many.operation.as_str()), (12, "mach-lookup"));
         assert_eq!(many.target, "com.apple.x");
-        let policy = report("Sandbox: mds(99) System Policy: deny(1) file-read-data /Users/a");
-        assert_eq!(policy.verdict, "System Policy: deny");
         let spaced = report("Sandbox: Google Chrome He(123) deny(1) mach-lookup com.apple.y");
         assert_eq!(
             (spaced.process.as_str(), spaced.pid),
@@ -512,6 +567,92 @@ mod tests {
         assert_eq!(exec.operation, "process-exec*");
         let parens = report("Sandbox: odd (name)(8) allow sysctl-read kern.hostname");
         assert_eq!((parens.process.as_str(), parens.pid), ("odd (name)", 8));
+    }
+
+    /// Lines exactly as `log show --style compact` printed them on CI's
+    /// runner (macOS 14, Apple silicon) under the measuring profile.
+    #[test]
+    fn the_lines_ci_recorded_are_read() {
+        let allow = report(
+            "2026-10-08 17:43:10.173 Df kernel[0:ad30] (Sandbox) Sandbox: sing-box(15588) allow \
+             file-read-data /dev/dtracehelper",
+        );
+        assert_eq!(
+            allow,
+            Report {
+                process: "sing-box".into(),
+                pid: 15588,
+                verdict: "allow".into(),
+                operation: "file-read-data".into(),
+                target: "/dev/dtracehelper".into(),
+                count: 1,
+            }
+        );
+        let exec = report(
+            "2026-10-08 17:43:10.173 Df kernel[0:ad30] (Sandbox) Sandbox: sandbox-exec(15588) \
+             allow process-exec* /Library/Application Support/BoxPilot Helper/bin/sing-box",
+        );
+        assert_eq!(
+            (
+                exec.process.as_str(),
+                exec.operation.as_str(),
+                exec.target.as_str()
+            ),
+            (
+                "sandbox-exec",
+                "process-exec*",
+                "/Library/Application Support/BoxPilot Helper/bin/sing-box"
+            )
+        );
+        let ioctl = report(
+            "2026-10-08 17:43:10.174 Df kernel[0:ad30] (Sandbox) Sandbox: sing-box(15588) allow \
+             file-ioctl path:/dev/dtracehelper ioctl-command:(_IO \"h\" 4)",
+        );
+        assert_eq!(
+            ioctl.target,
+            "path:/dev/dtracehelper ioctl-command:(_IO \"h\" 4)"
+        );
+        let socket = report(
+            "2026-10-08 17:43:10.300 Df kernel[0:ad30] (Sandbox) Sandbox: sing-box(15588) allow \
+             system-socket domain:32 type:2 protocol:2",
+        );
+        assert_eq!(socket.target, "domain:32 type:2 protocol:2");
+        let bind = report(
+            "2026-10-08 17:43:10.301 Df kernel[0:ad30] (Sandbox) Sandbox: sing-box(15588) allow \
+             network-bind local:*:49272",
+        );
+        assert_eq!(bind.target, "local:*:49272");
+        let deny = report(
+            "2026-10-08 17:42:48.845 E  kernel[0:a4f7] (Sandbox) Sandbox: mapssyncd(14783) \
+             deny(1) file-read-data /Users/runner/Library/Containers",
+        );
+        assert_eq!((deny.verdict.as_str(), deny.count), ("deny", 1));
+        let repeated = report(
+            "2026-10-08 17:42:48.134 E  kernel[0:9b86] (Sandbox) 1 duplicate report for Sandbox: \
+             RemoteManagementAgent(14528) deny(1) mach-lookup com.apple.metadata.mds",
+        );
+        assert_eq!(
+            (
+                repeated.process.as_str(),
+                repeated.count,
+                repeated.target.as_str()
+            ),
+            ("RemoteManagementAgent", 1, "com.apple.metadata.mds")
+        );
+        let folded = report(
+            "2026-10-08 17:43:10.200 Df kernel[0:ad30] (Sandbox) 3 duplicate reports for \
+             Sandbox: sing-box(15588) allow sysctl-read net.routetable.0.0.1.0",
+        );
+        assert_eq!((folded.count, folded.pid), (3, 15588));
+        // Another policy than the process's own profile: not read.
+        for other in [
+            "2026-10-08 17:43:12.548 Df kernel[0:ade4] (Sandbox) System Policy: diskutil(15622) \
+             allow file-read-data /dev/rdisk0",
+            "2026-10-08 17:44:44.360 I  kernel[0:c965] (Sandbox) successfully truncated homedirs \
+             to 22 bytes",
+        ] {
+            assert_eq!(parse_line(other), Line::Other, "{other}");
+        }
     }
 
     #[test]
@@ -593,10 +734,12 @@ mod tests {
         }
     }
 
-    /// sing-box, what it forked and executed, and sandbox-exec before it
-    /// executed sing-box are sing-box's; another sandboxed program isn't.
+    /// sing-box's processes are its PIDs, sandbox-exec before its exec
+    /// included; another program under the same profile (CI's probe) or its
+    /// own isn't sing-box's. Its denials are sorted into known and
+    /// unexpected ones.
     #[test]
-    fn sing_boxs_processes_are_followed_through_fork_and_exec() {
+    fn sing_boxs_reports_and_denials_are_summed_up() {
         let state = macos::STATE_DIR;
         let run = "0123456789abcdef0123456789abcdef";
         let text = format!(
@@ -606,24 +749,27 @@ Timestamp               Ty Process[PID:TID]
 2026-10-01 11:00:00.001 Df kernel[0:1] (Sandbox) Sandbox: sing-box(100) allow file-read-data {state}/runs/{run}/config.json
 2026-10-01 11:00:00.002 Df kernel[0:1] (Sandbox) 3 duplicate reports for Sandbox: sing-box(100) allow file-read-data {state}/runs/{run}/config.json
 2026-10-01 11:00:00.003 Df kernel[0:1] (Sandbox) Sandbox: sing-box(100) allow file-write-create {state}/users/501/cache.db
-2026-10-01 11:00:00.004 Df kernel[0:1] (Sandbox) Sandbox: sing-box(100) allow process-fork
-2026-10-01 11:00:00.005 Df kernel[0:1] (Sandbox) Sandbox: sing-box(101) allow process-exec* /usr/sbin/networksetup
-2026-10-01 11:00:00.006 Df kernel[0:1] (Sandbox) Sandbox: networksetup(101) allow mach-lookup com.apple.SystemConfiguration.configd
-2026-10-01 11:00:00.007 E  kernel[0:1] (Sandbox) Sandbox: mds(55) deny(1) file-read-data /Users/a/b
-2026-10-01 11:00:00.008 Df kernel[0:1] (Sandbox) Sandbox: sing-box(300) allow file-read-data {state}/runs/{run}/config.json
-2026-10-01 11:00:00.009 Df kernel[0:1] (Sandbox) Sandbox: sing-box(300) gibberish
-2026-10-01 11:00:00.010 Df kernel[0:1] (Sandbox) Sandbox: networksetup(102) allow file-read-data /usr/sbin/networksetup
+2026-10-01 11:00:00.004 E  kernel[0:1] (Sandbox) Sandbox: sing-box(100) deny(1) process-fork
+2026-10-01 11:00:00.005 E  kernel[0:1] (Sandbox) Sandbox: sing-box(100) deny(1) file-read-data /private/etc/master.passwd
+2026-10-01 11:00:00.006 E  kernel[0:1] (Sandbox) 1 duplicate report for Sandbox: sing-box(100) deny(1) process-fork
+2026-10-01 11:00:00.007 E  kernel[0:1] (Sandbox) Sandbox: sing-box(100) deny(1) file-write-create /Library/Preferences/x.plist
+2026-10-01 11:00:00.008 Df kernel[0:1] (Sandbox) Sandbox: sandbox-exec(200) allow process-exec* /private/var/tmp/probe/bin/sandbox-probe
+2026-10-01 11:00:00.009 E  kernel[0:1] (Sandbox) Sandbox: sandbox-probe(200) deny(1) file-read-data /Users/runner/x
+2026-10-01 11:00:00.010 E  kernel[0:1] (Sandbox) Sandbox: mds(55) deny(1) file-read-data /Users/a/b
+2026-10-01 11:00:00.011 Df kernel[0:1] (Sandbox) Sandbox: sing-box(300) allow file-read-data {state}/runs/{run}/config.json
+2026-10-01 11:00:00.012 Df kernel[0:1] (Sandbox) Sandbox: sing-box(300) gibberish
+2026-10-01 11:00:00.013 Df kernel[0:1] (Sandbox) System Policy: diskutil(15622) allow file-read-data /dev/rdisk0
 ",
             sing_box = macos::SING_BOX_PATH,
         );
         let summary = Summary::of(text.lines(), &HelperPaths::installed_macos());
         let names: Vec<&str> = summary.processes.keys().map(String::as_str).collect();
-        assert_eq!(names, ["networksetup", "sandbox-exec", "sing-box"]);
-        assert_eq!(summary.pids(), BTreeSet::from([100, 101, 102, 300]));
+        assert_eq!(names, ["sandbox-exec", "sing-box"]);
+        assert_eq!(summary.pids(), BTreeSet::from([100, 300]));
         assert_eq!(summary.processes["sandbox-exec"], BTreeSet::from([100]));
-        // Every line of 100, 101, 102 and 300 but the gibberish; the duplicates
-        // count 3.
-        assert_eq!(summary.total(), 11);
+        // Every line of 100 and 300 but the gibberish; the duplicates count
+        // as many as they say.
+        assert_eq!(summary.total(), 1 + 1 + 3 + 1 + 1 + 1 + 1 + 1 + 1);
         assert_eq!(
             summary.reports["file-read-data"]
                 [&("${RUN_DIR}/config.json".to_owned(), "allow".to_owned())],
@@ -634,37 +780,57 @@ Timestamp               Ty Process[PID:TID]
             1
         );
         assert_eq!(
-            summary.reports["process-exec*"]
-                [&("/usr/sbin/networksetup".to_owned(), "allow".to_owned())],
-            1
-        );
-        assert_eq!(
             summary.reports["file-write-create"]
                 [&("${USER_DIR}/cache.db".to_owned(), "allow".to_owned())],
             1
         );
         assert_eq!(
-            summary.reports["process-fork"][&(String::new(), "allow".to_owned())],
-            1
+            summary.others,
+            BTreeMap::from([
+                ("mds".to_owned(), 1),
+                ("sandbox-exec".to_owned(), 1),
+                ("sandbox-probe".to_owned(), 1)
+            ])
         );
-        assert_eq!(summary.others, BTreeMap::from([("mds".to_owned(), 1)]));
         assert_eq!(summary.unreadable, 1);
-        assert_eq!(summary.unreadable_sample.len(), 1);
         assert!(summary.unreadable_sample[0].ends_with("sing-box(300) gibberish"));
-        assert_eq!(summary.verdicts(), BTreeMap::from([("allow", 11)]));
+        assert_eq!(
+            summary.verdicts(),
+            BTreeMap::from([("allow", 7), ("deny", 4)])
+        );
         assert_eq!(summary.unreported(&[300, 100, 999, 999, 7]), [7, 999]);
+
+        let denials = summary.denials();
+        assert_eq!(denials.len(), 3, "{denials:?}");
+        let fork = denials
+            .iter()
+            .find(|denial| denial.operation == "process-fork")
+            .unwrap();
+        assert_eq!((fork.count, fork.target.as_str()), (2, ""));
+        assert!(fork.known.is_some());
+        let unexpected = summary.unexpected_denials();
+        assert_eq!(unexpected.len(), 1);
+        assert_eq!(
+            (
+                unexpected[0].operation.as_str(),
+                unexpected[0].target.as_str()
+            ),
+            ("file-write-create", "/Library/Preferences/x.plist")
+        );
 
         let shown = summary.to_string();
         for expected in [
-            "11 reports from sing-box and what it ran, 5 operations; 1 from other sandboxed \
+            "11 reports from sing-box and what it ran, 4 operations; 3 from other sandboxed \
              processes; 1 Sandbox lines not understood",
-            "processes: networksetup (pids 101, 102), sandbox-exec (pid 100), sing-box (pids \
-             100, 101, 300)",
-            "verdicts: allow 11",
+            "processes: sandbox-exec (pid 100), sing-box (pids 100, 300)",
+            "verdicts: allow 7, deny 4",
             "file-read-data (6 reports, 2 targets)",
             "         5  allow  ${RUN_DIR}/config.json",
             "         1  allow  ${SING_BOX}",
-            "         1  allow  (no target)",
+            "         2  deny   (no target)",
+            "---- sing-box's denials: 3 (1 unexpected)",
+            "         1  UNEXPECTED  file-write-create /Library/Preferences/x.plist",
+            "         2  known       process-fork (no target): sing-tun flushes DNS",
             "  mds 1",
             "sing-box(300) gibberish",
         ] {

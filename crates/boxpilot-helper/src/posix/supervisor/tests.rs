@@ -379,7 +379,7 @@ fn a_run_starts_with_its_plan_and_stops_cleanly_on_sigterm() {
             "-D".to_owned(),
             format!("SING_BOX={sing_box}"),
             "-D".to_owned(),
-            format!("STATE_DIR={state}"),
+            format!("HELPER_DIR={}", install.layout.helper_dir().display()),
             "-D".to_owned(),
             format!("RUN_DIR={run_text}"),
             "-D".to_owned(),
@@ -573,43 +573,36 @@ fn sing_box_never_runs_without_its_sandbox() {
     );
 }
 
-/// The real `/usr/bin/sandbox-exec` takes the shipped profile and its
-/// parameters, and runs sing-box under them, in the PID it was spawned as
-/// (unprivileged here: the measuring profile denies nothing).
+/// The real `/usr/bin/sandbox-exec` compiles the shipped profile with its
+/// parameters and executes sing-box under it. The enforced profile lets
+/// sing-box execute nothing, a shell least of all, and read no `/bin`, so
+/// the fake sing-box here is a copy of `/usr/bin/true`, a program that
+/// needs only the system's libraries: exit 0 means the profile compiled,
+/// took its parameters, let the verified binary run and load. (CI's
+/// `sandbox_probe` checks what the profile denies, as root.)
 #[cfg(target_os = "macos")]
 #[test]
 fn the_real_sandbox_exec_runs_sing_box_under_the_shipped_profile() {
     let Some(install) = Install::new("sup-real-sandbox", POLITE) else {
         return;
     };
+    let content = fs::read("/usr/bin/true").unwrap();
+    install.put_binary(&content);
     let mut setup = install.setup();
     setup.sandbox_exec = PathBuf::from(sandboxplan::SANDBOX_EXEC);
     let supervisor = PosixSupervisor::start(setup, 8 * 1024).unwrap();
-    let (run_dir, seen, process) = run(&supervisor, &me().to_string(), false);
+    let (_, seen, process) = run(&supervisor, &me().to_string(), false);
     let mut process = process.unwrap();
-    seen.wait_for_line("sing-box started");
-    let run_text = run_dir.to_str().unwrap().to_owned();
     assert_eq!(
-        seen.lines()[..6],
-        [
-            "arg=run".to_owned(),
-            "arg=-D".to_owned(),
-            format!("arg={run_text}"),
-            "arg=-c".to_owned(),
-            format!("arg={run_text}/config.json"),
-            "arg=--disable-color".to_owned(),
-        ]
-    );
-    process.stop();
-    assert_eq!(
-        seen.exit(),
-        Some(ExitInfo {
+        seen.wait_for_exit(),
+        ExitInfo {
             code: Some(0),
             signal: None
-        }),
+        },
         "{:?}",
         seen.lines()
     );
+    process.stop();
 }
 
 /// ADR 0006 rule 3: checked on every spawn, not just at start.
