@@ -21,9 +21,12 @@ use crate::conn::{self, Budget, ConnConfig, ReadOnlySlots};
 use crate::helper::{Caller, ConnId, Helper};
 use crate::helper_log;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -316,6 +319,22 @@ pub fn run<H: Helper + ?Sized + 'static>(
 /// socket holds, so a client connecting in a loop can't keep a helper that
 /// refuses to run from exiting.
 pub const MAX_TURNED_AWAY: usize = 128;
+
+/// The path `listener` is bound to, for the log, up to its first NUL.
+/// launchd's socket reports its whole `sun_path`, the NULs after the path
+/// included, and `std` keeps them (`Some("/var/run/….sock\0\0\0…")`); a
+/// path never holds a NUL, so nothing after one is part of it.
+pub fn listening_path(listener: &UnixListener) -> Option<PathBuf> {
+    let address = listener.local_addr().ok()?;
+    address.as_pathname().map(before_nul)
+}
+
+/// `path` up to its first NUL.
+fn before_nul(path: &Path) -> PathBuf {
+    let bytes = path.as_os_str().as_bytes();
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    PathBuf::from(OsStr::from_bytes(&bytes[..end]))
+}
 
 /// Accept and close the clients already waiting, unanswered: a helper that
 /// refuses to run does this before it exits, so they see the end of the

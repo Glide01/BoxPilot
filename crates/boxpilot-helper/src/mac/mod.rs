@@ -123,8 +123,8 @@ pub fn main() -> i32 {
         Err((code, message)) => return refuse_and_turn_away(code, &message),
     };
     lead_process_group();
-    if let Ok(address) = listener.local_addr() {
-        helper_log!("listening on {:?}", address.as_pathname());
+    if let Some(path) = server::listening_path(&listener) {
+        helper_log!("listening on {}", path.display());
     }
 
     let core = Arc::new(HelperCore::new(supervisor, limits));

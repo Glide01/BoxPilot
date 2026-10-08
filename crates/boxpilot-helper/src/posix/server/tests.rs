@@ -277,3 +277,22 @@ fn waiting_clients_are_turned_away() {
     }
     assert_eq!(turn_away_waiting(&listener), 0);
 }
+
+/// The log names the socket's path, without the NULs launchd's `sun_path`
+/// carries after it.
+#[test]
+fn the_listening_path_ends_at_its_first_nul() {
+    let launchd = OsStr::from_bytes(b"/var/run/io.github.glide01.boxpilot.helper.sock\0\0\0\0");
+    assert_eq!(
+        before_nul(Path::new(launchd)),
+        Path::new("/var/run/io.github.glide01.boxpilot.helper.sock")
+    );
+    assert_eq!(
+        before_nul(Path::new("/var/run/a.sock")),
+        Path::new("/var/run/a.sock")
+    );
+    let temp = TempDir::new("t");
+    let path = temp.0.join("s");
+    let listener = UnixListener::bind(&path).unwrap();
+    assert_eq!(listening_path(&listener), Some(path));
+}
