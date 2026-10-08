@@ -965,11 +965,16 @@ function Invoke-StandardUserStep {
 }
 
 # After a break is undone: the helper runs again (an administrator's hello
-# starts it), then stops, so the next break starts from a stopped service
-# whose last exit code is 0.
+# starts it), and `sc stop` stops it cleanly, with exit code 0, so the next
+# break starts from a stopped service whose last exit code is 0.
 function Assert-HelperRecovered {
     Invoke-Smoke 'hello', '--expect', 'start'
     Stop-HelperService
+    $status = Get-HelperService
+    if ($status.Win32ExitCode -ne 0 -or $status.ServiceExitCode -ne $ExitCodes['OK']) {
+        throw "sc.exe stop: the helper stopped with Win32 exit code $($status.Win32ExitCode), service-specific $($status.ServiceExitCode):`n$($status.Text)"
+    }
+    Write-Host 'ok: the helper runs again, and sc.exe stop stops it with exit code 0'
 }
 
 function Invoke-BrokenInstallStep {
