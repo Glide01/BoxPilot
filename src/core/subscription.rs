@@ -151,12 +151,18 @@ impl RuntimeOptions {
     }
 }
 
-/// The tests' baseline: mirrors `AppSettings::default()` (TUN mode, default
-/// proxy port, IPv6 off), with a fresh API secret on a fixed port.
+/// The tests' baseline: mirrors `AppSettings::default()` (default proxy
+/// port, IPv6 off), but in TUN mode on every platform, though a first run on
+/// macOS starts in Proxy mode (`DEFAULT_PROXY_MODE`); with a fresh API
+/// secret on a fixed port.
 #[cfg(test)]
 impl Default for RuntimeOptions {
     fn default() -> Self {
-        Self::new(&AppSettings::default(), SingBoxApi::new(tests::API_PORT))
+        let settings = AppSettings {
+            proxy_mode: false,
+            ..AppSettings::default()
+        };
+        Self::new(&settings, SingBoxApi::new(tests::API_PORT))
     }
 }
 
