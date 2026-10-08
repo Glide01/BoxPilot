@@ -87,6 +87,29 @@ pub const PANEL_INSET: f32 = 8.;
 /// right half.
 pub const FORM_MAX_WIDTH: f32 = 880.;
 
+/// A floating surface one step above the content panel (toasts): white
+/// over the white panel in light mode, lifted by its border and shadow; a
+/// lighter grey in dark mode, where a shadow barely shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Surface {
+    pub background: Hsla,
+    pub border: Hsla,
+}
+
+pub fn toast_surface(dark: bool) -> Surface {
+    if dark {
+        Surface {
+            background: rgb(0x242428).into(),
+            border: rgb(0x34343A).into(),
+        }
+    } else {
+        Surface {
+            background: rgb(0xFFFFFF).into(),
+            border: rgb(0xE4E4E7).into(), // zinc-200
+        }
+    }
+}
+
 /// The mode a preference resolves to, given the OS appearance.
 pub fn resolve(pref: ThemePreference, system: WindowAppearance) -> ThemeMode {
     match pref {

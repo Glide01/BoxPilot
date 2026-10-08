@@ -455,7 +455,10 @@ impl Render for RootView {
                     .px_6()
                     .pt_5()
                     .pb_6()
-                    .child(page.cached(StyleRefinement::default().size_full())),
+                    // Toasts float at the panel's bottom centre.
+                    .relative()
+                    .child(page.cached(StyleRefinement::default().size_full()))
+                    .child(self.toasts.clone()),
             );
 
         let root = div()
@@ -473,6 +476,5 @@ impl Render for RootView {
             .text_color(fg)
             .children(title_bar)
             .child(body)
-            .child(self.toasts.clone())
     }
 }
