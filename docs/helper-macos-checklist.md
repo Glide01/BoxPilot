@@ -3,11 +3,10 @@
 The macOS helper (ADR 0006, phase 2) is built: the launchd daemon, its
 install and uninstall scripts, its payload in the DMG, the GUI's side (its
 client, Settings › TUN's install, reinstall and remove, TUN's availability
-following the helper), and sing-box's sandbox profile, which **measures
-and doesn't enforce yet**: it reports every operation and denies none,
-until the enforced profile is written from what CI measured. It has not
-run on a Mac a person uses, on an Intel Mac, on macOS 12 or 13, or under the
-GUI. Run this on clean Macs (macOS 12, 13 and the current release; Apple
+following the helper), and sing-box's sandbox profile, enforced: deny by
+default, allowing what CI measured sing-box doing. It has not run on a
+Mac a person uses, on an Intel Mac, on macOS 12 or 13, or under the GUI,
+and sing-box's sandbox has met only CI's profiles. Run this on clean Macs (macOS 12, 13 and the current release; Apple
 silicon and Intel) with an administrator account and a standard account
 before the first release that ships it. Each item names what must hold.
 
@@ -127,8 +126,11 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   the GUI's own run of the policy predicts (**CI**).
 - A TUN start: `utun` comes up with 172.18.0.1 and 1.1.1.1 is routed
   through it (**CI**); this machine's own connections start from the TUN
-  address, DNS resolves through TUN with the profile's DNS hijacked, the
-  proxy reaches the internet by address and by name (**CI**); the loopback
+  address, DNS resolves through TUN with the profile's DNS hijacked, a
+  DNS query through TUN is answered over HTTPS (sing-box verifies the
+  resolver's certificate under its sandbox), the proxy reaches the
+  internet by address and by name, through the `local` DNS server
+  (**CI**); the loopback
   rule holds through the local proxy for `127.0.0.1`, `::1`, `localhost`
   and a name under it (**CI**).
 - sing-box is the helper's child, in the helper's process group, as root,
@@ -146,30 +148,44 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   within 20 s; launchd ends the job's process group), and the next helper
   start clears the run directory and the run marker, and says it cleaned
   up after the last helper (**CI**).
-- The system proxy (TUN's "System Proxy" option): sing-box sets it on the
-  primary network service to 127.0.0.1 and the proxy port, and unsets it
-  on a clean stop (**CI**); with sing-box and the helper killed together,
+- The system proxy (TUN's "System Proxy" option): the helper sets it once
+  sing-box is up, on the default route's network service, to 127.0.0.1
+  and the proxy port, and unsets it after the stop (**CI**; the helper's
+  log names the service); with sing-box and the helper killed together,
   the next helper start resets it (**CI**). A proxy the user set, or one
   another program set on 127.0.0.1 with another port, survives a helper
   start and a crash cleanup (unit-tested; by hand with a second service or
-  another proxy app). On a standard account too: the root sing-box can set
-  it where the user's own `networksetup` can't.
-- DNS caches are flushed after every run (the helper's log says so).
-- sing-box runs under its sandbox profile (`sandboxplan`), through
-  `/usr/bin/sandbox-exec`, in the PID the helper spawned (**CI**: the
-  kernel's sandbox reports name sing-box, the step fails if none does, and
-  it lists any sing-box PID the steps saw that no report names; the
-  profile and its parameters are unit-tested, and the Test step runs the
-  real sandbox-exec with them). The helper's log says "sing-box started
-  under its sandbox profile (measuring; not enforced yet)". Without
-  `/usr/bin/sandbox-exec` the TUN start fails with its path named, and
-  sing-box never starts (unit-tested with a stand-in).
-- What sing-box does under the measuring profile (**CI** prints it, summed
-  up by operation and target, under "==== sing-box's sandbox reports";
-  the raw lines are `logs/sandbox-reports.txt`). Measure the same by hand
-  on macOS 12, 13 and the current release, on Intel too, and with a
-  Tailscale endpoint and a profile's local rule set and CA certificate,
-  so the enforced profile covers what CI's runner doesn't do.
+  another proxy app). On a standard account too: the helper can set it
+  where the user's own `networksetup` can't. By hand: on Wi-Fi and on
+  Ethernet; with a renamed network service.
+- DNS caches are flushed once sing-box is up and after every run (the
+  helper's log says so).
+- sing-box runs under its enforced sandbox profile (`sandboxplan`),
+  through `/usr/bin/sandbox-exec`, in the PID the helper spawned (**CI**:
+  the kernel's sandbox reports name sing-box, the step fails if none does
+  or on any denial `KNOWN_DENIALS` doesn't explain, and it lists any
+  sing-box PID the steps saw that no report names; the profile and its
+  parameters are unit-tested, and the Test step runs the real sandbox-exec
+  with them). The helper's log says "sing-box started under its sandbox
+  profile (enforced)". Without `/usr/bin/sandbox-exec` the TUN start fails
+  with its path named, and sing-box never starts (unit-tested with a
+  stand-in).
+- Under the profile, as root, writing outside the run directory and the
+  account's state, reading a user's home, root's, another account's state
+  or `/private/etc/master.passwd`, running a shell, forking and connecting
+  to another local service's socket are denied; the run directory, the
+  account's state, routing and utun sockets, IP sockets and mDNSResponder
+  are allowed (**CI**: `examples/sandbox_probe.rs`).
+- What sing-box does under the profile (**CI** prints it, summed up by
+  operation and target with its denials, under "==== sing-box's sandbox
+  reports", and again at the very end of the job log; the raw lines are
+  `logs/sandbox-reports.raw`). By hand, on macOS 12, 13 and the current
+  release, on Intel too, look for denials (`log show --predicate
+  'eventMessage CONTAINS "sing-box(" AND eventMessage CONTAINS "deny("'`)
+  with what CI's profiles don't use: a Tailscale endpoint, TLS outbounds
+  (Trojan, VLESS with TLS, hysteria2), a remote rule set, a CA
+  certificate or client key sent as an attachment, `process_name` route
+  rules, a WireGuard endpoint.
 - Everything in the state directory is root's and private, cache files and
   Tailscale state included (**CI**).
 - A Tailscale endpoint keeps its login across connects, per account; a
@@ -233,12 +249,12 @@ administrator account and a standard account:
 - **System proxy:** in TUN mode with "System Proxy" on, the primary network
   service's web, secure web and SOCKS proxies point at 127.0.0.1 and the
   proxy port while TUN runs, on a standard account too, and are off after
-  a stop. BoxPilot itself doesn't touch them (sing-box does); in Proxy
+  a stop. The GUI itself doesn't touch them (the helper does); in Proxy
   mode it still runs as before.
 - **BoxPilot crashing while TUN runs:** kill BoxPilot (`kill -9`): its
   connection closes, the helper stops sing-box, `utun` and its routes go,
-  and the system proxy sing-box set is off (sing-box unsets it on its
-  stop; if sing-box itself was killed too, the helper's next start resets
+  and the system proxy the helper set is off (the helper unsets it after
+  the run; if the helper itself was killed too, its next start resets
   it). The next BoxPilot starts TUN again without a prompt.
 - **Quitting BoxPilot** while TUN runs stops sing-box, as above.
 - **As root** (`sudo` BoxPilot's binary): TUN runs the bundled sing-box
