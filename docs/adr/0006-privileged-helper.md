@@ -7,14 +7,15 @@ installs the MSI on a Windows Server runner, drives the real service
 there, and measures the tokens sing-box and the helper run with (see
 "Verification before shipping"). It has **not run on Windows 10 or 11, or
 under the GUI, yet**; `docs/helper-windows-checklist.md`
-lists what must be verified there first. macOS (phase 2) is built but for
-its last part, of three. The first: the helper as a launchd daemon on a
-launchd-created socket (callers by `LOCAL_PEERCRED` uid, the owner model),
-its trees verified by owner and mode, sing-box run as root through
-`posix_spawn` in the helper's process group, the crash cleanup; the
-install and uninstall scripts and the AppleScript prompt; the payload in
-the DMG; and a CI smoke test that installs it from the DMG on GitHub's
-Apple-silicon runner and drives the real daemon
+lists what must be verified there first. macOS (phase 2) is built in
+three parts, the last of them measuring and not enforcing yet. The first:
+the helper as a launchd daemon on a launchd-created socket (callers by
+`LOCAL_PEERCRED` uid, the owner model), its trees verified by owner and
+mode, sing-box run as root through `posix_spawn` in the helper's process
+group, the crash cleanup; the install and uninstall scripts and the
+AppleScript prompt; the payload in the DMG; and a CI smoke test that
+installs it from the DMG on GitHub's Apple-silicon runner and drives the
+real daemon
 (`docs/helper-macos-checklist.md`). The POSIX half of it is unit-tested on
 Linux too. The second: the GUI. Its client reaches the daemon over
 launchd's socket; Settings › TUN shows the helper's state (not installed,
@@ -25,11 +26,17 @@ ADR 0003's grant does; TUN can be chosen once it is installed; and the
 helper's sing-box sets the system proxy itself. The same CI job drives the
 installed daemon with the GUI's own client code
 (`examples/gui_helper_smoke.rs`): `hello`, a TUN start and stop, a
-connection the helper ends, and the states Settings › TUN shows. It has
-not run under the GUI on a real Mac yet; the checklist lists what a person
-must check there first. Still to come: sing-box's sandbox profile,
-measured before it is enforced. Its trade-offs are settled by separation
-of tasks (课题分离, below).
+connection the helper ends, and the states Settings › TUN shows, a broken
+install's exit code among them, which launchd shows an account without
+root. It has not run under the GUI on a real Mac yet; the checklist lists
+what a person must check there first. The third: sing-box's sandbox
+profile, measured before it is enforced. sing-box runs only through
+`/usr/bin/sandbox-exec` under a profile that is a compile-time constant
+(rule 2, "Defense in depth"), and the same CI job collects what it
+reports. That profile reports every operation and **denies none yet**:
+acceptable only because no release ships the macOS helper; the enforced
+profile, written from CI's measurement, replaces it before one does. Its
+trade-offs are settled by separation of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
 without changing it (see "Conflicts with earlier ADRs").
 
@@ -379,7 +386,8 @@ the user's own privilege never meets it.
   - The shape rule makes a missed field fail closed. The audit keeps the
     refusal message helpful.
   - CI's token probe measures sing-box's token again on the new version,
-    and fails the release if the shipped plan no longer runs TUN.
+    and fails the release if the shipped plan no longer runs TUN; on macOS
+    CI's sandbox reports show what the new version does.
 - **The `api` service's RPCs are pinned too.** Every authorized caller
   gets the secret of the SYSTEM sing-box's API, so its RPCs run as
   SYSTEM. All 42 of 1.14.2's were audited: none runs or controls a
@@ -473,6 +481,57 @@ policy.
   `/usr/sbin/networksetup`. The profile is measured before it is
   enforced: TUN needs `utun`, routing sockets and `networksetup` for the
   system proxy.
+  - **Measuring; not enforced yet.** The profile built now
+    (`sandboxplan::SING_BOX_PROFILE`) is `(allow (with report) default)`:
+    every operation of sing-box's, and of what it starts, is allowed and
+    reported to the system log, and nothing is denied. That is acceptable
+    only because no release ships the macOS helper yet. The enforced
+    profile denies by default, is written from what CI measured, and
+    replaces this one before a release does.
+  - **How it is applied:** the helper `posix_spawn`s `/usr/bin/sandbox-exec
+    -p <profile> -D NAME=value… -- <sing-box> <arguments>`, which applies
+    the profile to itself, then executes sing-box in its place. One
+    process: the PID the helper spawned and waits for, in the helper's
+    process group (launchd's cleanup, rule 6), with the environment built
+    from nothing, `POSIX_SPAWN_CLOEXEC_DEFAULT`, the signal defaults and
+    the working directory the helper's `posix_spawn` sets, as before.
+    sandbox-exec runs the command only once the profile is applied, and
+    the helper has no other way to start sing-box: a sandbox-exec that is
+    missing or fails the chain check fails the start, and one that can't
+    apply the profile ends the run before sing-box runs, saying why on
+    stderr, which reaches the starting connection. sandbox-exec is on the
+    SIP-protected system volume, and the helper checks its chain before
+    every spawn, as it checks its own binaries; what it executes is the
+    absolute path the helper has just verified and hashed (rule 3), never
+    searched for.
+  - **Not a trampoline,** the helper re-executing itself to call
+    `sandbox_init_with_parameters` and then `execve` sing-box: that would
+    give the root daemon's binary a second entry point (it takes no
+    arguments now) and `unsafe` declarations of a function no SDK header
+    declares, for the same deprecated mechanism underneath. sandbox-exec is
+    deprecated too, but still ships; if a macOS drops it, TUN fails to
+    start there with its path named, and the trampoline is the way left.
+  - **The profile is a compile-time constant** in `sandboxplan`, passed
+    with `-p`, never written to a file. Its only parameters are the
+    helper's own paths: sing-box's, the state directory, the run directory
+    and the starting account's state directory, from `endpoint::macos` and
+    the run plan. No config value, and nothing else a client sends,
+    reaches either. The profile reads them as `(param "RUN_DIR")`, never
+    spliced into its text; unit tests hold that each is the helper's own
+    path of its kind, made only of letters, digits, space, `.`, `-`, `_`
+    and `/`, so none could end a profile string.
+  - **Measured, not guessed,** on every CI run: the macOS job collects the
+    kernel's sandbox reports (`log show`, process 0, the sandbox kext as
+    sender) over every smoke step that runs sing-box (TUN with
+    `auto_route`, DNS through TUN, the loopback probes, the `api` service
+    and an attached rule set; the GUI client's start; the helper killed
+    under it; the system proxy on and off) and prints them summed up by
+    operation and target
+    (`crates/boxpilot-helper/examples/sandbox_report.rs`, never shipped;
+    the helper's own paths written as the profile's parameters). The step
+    fails only if no
+    report names sing-box though it ran: then the collection is broken, or
+    the sandbox wasn't applied.
 
 ### 3. The helper runs only its own sing-box
 
@@ -687,7 +746,7 @@ user's sudo password for TUN until 2025.)
 
 | | Windows (phase 1) | macOS (phase 2) | Linux |
 |---|---|---|---|
-| sing-box runs as | SYSTEM, via the helper, with a restricted token (rule 2, "Defense in depth") | root, via the helper | the user + `CAP_NET_ADMIN` (ADR 0003) |
+| sing-box runs as | SYSTEM, via the helper, with a restricted token (rule 2, "Defense in depth") | root, via the helper, under a sandbox profile (rule 2, "Defense in depth"; measuring, not enforced yet) | the user + `CAP_NET_ADMIN` (ADR 0003) |
 | The GUI runs as | the user (`ensure_elevated` goes) | the user | the user |
 | Transport | named pipe under ProtectedPrefix | launchd-created Unix socket | — |
 | Caller identity | the impersonated token | `LOCAL_PEERCRED` uid | — |
@@ -936,8 +995,11 @@ any of them.
     (`examples/gui_helper_smoke.rs`, never shipped) drives the same daemon
     as the owner: `hello`, a TUN start through the GUI's start path and its
     stop, a connection the helper ends, and the helper's states as
-    Settings › TUN reads them (ready, turned off, stale, broken).
-    `docs/helper-macos-checklist.md` marks what it covers.
+    Settings › TUN reads them (ready, turned off, stale, broken: the exit
+    code launchd recorded, which `launchctl print` gives an account
+    without root, and the step fails if it doesn't). Last, sing-box's
+    sandbox reports from all of it, summed up (rule 2, "Defense in
+    depth"). `docs/helper-macos-checklist.md` marks what it covers.
 - **The token probe, on every CI run.** Before the smoke test's first TUN
   start, `crates/boxpilot-helper/examples/token_probe.rs` (never shipped)
   runs as SYSTEM and starts the installed sing-box down the helper's own
@@ -951,6 +1013,13 @@ any of them.
   fails if the shipped plans stop working or TUN needs a privilege
   `NEVER_FOR_SING_BOX` lists; narrower tokens failing are data. It takes
   under a minute.
+- **sing-box's sandbox reports, on every CI run (macOS).** After the smoke
+  steps that run sing-box, the `macos` job collects what the measuring
+  profile reported and prints it summed up by operation and target
+  (rule 2, "Defense in depth"); the raw lines go with the smoke test's
+  logs. The enforced profile is written from it. Once it is enforced, the
+  same steps are its regression check: a sing-box that needs what the
+  profile denies fails them, and the reports name the denial.
 - **A release checklist on real machines.** Each of these must hold:
   - an account the administrator hasn't authorized gets no `Start`;
   - a remote client is refused, and so is an oversized frame;

@@ -1,9 +1,11 @@
 # Privileged helper: macOS verification checklist
 
-The macOS helper (ADR 0006, phase 2) is built but for sing-box's sandbox
-profile: the launchd daemon, its install and uninstall scripts, its payload
-in the DMG, and the GUI's side (its client, Settings › TUN's install,
-reinstall and remove, TUN's availability following the helper). It has not
+The macOS helper (ADR 0006, phase 2) is built: the launchd daemon, its
+install and uninstall scripts, its payload in the DMG, the GUI's side (its
+client, Settings › TUN's install, reinstall and remove, TUN's availability
+following the helper), and sing-box's sandbox profile, which **measures
+and doesn't enforce yet**: it reports every operation and denies none,
+until the enforced profile is written from what CI measured. It has not
 run on a Mac a person uses, on an Intel Mac, on macOS 12 or 13, or under the
 GUI. Run this on clean Macs (macOS 12, 13 and the current release; Apple
 silicon and Intel) with an administrator account and a standard account
@@ -153,6 +155,21 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   another proxy app). On a standard account too: the root sing-box can set
   it where the user's own `networksetup` can't.
 - DNS caches are flushed after every run (the helper's log says so).
+- sing-box runs under its sandbox profile (`sandboxplan`), through
+  `/usr/bin/sandbox-exec`, in the PID the helper spawned (**CI**: the
+  kernel's sandbox reports name sing-box, the step fails if none does, and
+  it lists any sing-box PID the steps saw that no report names; the
+  profile and its parameters are unit-tested, and the Test step runs the
+  real sandbox-exec with them). The helper's log says "sing-box started
+  under its sandbox profile (measuring; not enforced yet)". Without
+  `/usr/bin/sandbox-exec` the TUN start fails with its path named, and
+  sing-box never starts (unit-tested with a stand-in).
+- What sing-box does under the measuring profile (**CI** prints it, summed
+  up by operation and target, under "==== sing-box's sandbox reports";
+  the raw lines are `logs/sandbox-reports.txt`). Measure the same by hand
+  on macOS 12, 13 and the current release, on Intel too, and with a
+  Tailscale endpoint and a profile's local rule set and CA certificate,
+  so the enforced profile covers what CI's runner doesn't do.
 - Everything in the state directory is root's and private, cache files and
   Tailscale state included (**CI**).
 - A Tailscale endpoint keeps its login across connects, per account; a
