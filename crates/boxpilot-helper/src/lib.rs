@@ -78,5 +78,9 @@ pub mod win;
 #[allow(unsafe_code)]
 pub mod posix;
 
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod mac;
+
 #[cfg(test)]
 mod testing;
