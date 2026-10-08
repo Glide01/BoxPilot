@@ -495,6 +495,23 @@ pub static EN: Strings = Strings {
         clear_cache_action: "Clear",
         running_config: "Running config",
         running_config_hint: "The exact config sing-box runs with.",
+        helper: "Privileged helper",
+        helper_checking: "Checking…",
+        helper_not_installed: "Not installed. TUN mode needs it: it runs sing-box as root, on a \
+                               config it checks first.",
+        helper_turned_off: "Installed, but not running. If it's turned off in System Settings › \
+                            General › Login Items, turn it on there; otherwise reinstall it.",
+        helper_ready: "Installed and up to date.",
+        helper_other_owner: "Installed, but another account on this Mac owns it. Installing it \
+                             again makes this account its owner.",
+        helper_stale: "Installed, but from another BoxPilot version. Reinstall it to update it.",
+        helper_broken: |message| format!("Installed, but it refuses to run. {message}"),
+        helper_no_bundle: "BoxPilot can install it only when it runs from BoxPilot.app.",
+        helper_as_root: "BoxPilot runs as root, so TUN runs sing-box directly, without the \
+                         helper.",
+        install_helper: "Install",
+        reinstall_helper: "Reinstall",
+        remove_helper: "Remove",
     },
     updates: Updates {
         updates: "Updates",
@@ -585,6 +602,31 @@ pub static EN: Strings = Strings {
                          it once, through the system password prompt. You'll be asked \
                          again after a sing-box update.",
         grant: "Grant",
+        helper_install_title: "Install the privileged helper",
+        helper_install_body: "TUN mode on macOS goes through BoxPilot's privileged helper, \
+                              which runs sing-box as root on a config it checks first. \
+                              Installing it takes an administrator's name and password, once: \
+                              macOS asks for them, never BoxPilot. It then shows in System \
+                              Settings › General › Login Items.",
+        helper_reinstall_title: "Reinstall the privileged helper",
+        helper_reinstall_body: "The privileged helper on this Mac is from another BoxPilot \
+                                version, or needs repair. Reinstalling it takes an \
+                                administrator's name and password: macOS asks for them, never \
+                                BoxPilot.",
+        helper_take_over_body: "The privileged helper on this Mac belongs to another account. \
+                                Installing it again makes this account its owner; the other \
+                                account can't use TUN mode then until it installs it again. It \
+                                takes an administrator's name and password: macOS asks for \
+                                them, never BoxPilot.",
+        helper_turn_on_body: "The privileged helper is installed but not running. If you \
+                              turned it off in System Settings › General › Login Items, turn \
+                              it on there instead. Reinstalling it takes an administrator's \
+                              name and password: macOS asks for them, never BoxPilot.",
+        helper_remove_title: "Remove the privileged helper?",
+        helper_remove_body: "TUN mode won't be available until it's installed again. Removing \
+                             it takes an administrator's name and password: macOS asks for \
+                             them, never BoxPilot. Its data (each account's cache and \
+                             Tailscale state) stays.",
     },
     messages: Messages {
         ready: "Ready.",
@@ -787,5 +829,41 @@ pub static EN: Strings = Strings {
         malformed_attachment: "is not a valid attachment reference",
         missing_attachment: |id| format!("refers to attachment \"{id}\", which wasn't sent"),
         unknown_refusal: |code| format!("was refused ({code})"),
+        mac_not_installed: "TUN mode needs BoxPilot's privileged helper, which isn't installed. \
+                            Install it in Settings › TUN, or use Proxy mode.",
+        mac_turned_off: "The privileged helper is installed but not running. If it's turned off \
+                         in System Settings › General › Login Items, turn it on there; \
+                         otherwise reinstall it in Settings › TUN. Proxy mode works without it.",
+        mac_connect_denied: "macOS didn't let BoxPilot connect to the privileged helper. \
+                             Reinstall it in Settings › TUN, or use Proxy mode.",
+        mac_not_allowed: "Another account on this Mac owns the privileged helper, so this one \
+                          may not start TUN mode. Installing it again from this account \
+                          (Settings › TUN) makes this account its owner; Proxy mode works \
+                          without that.",
+        mac_version_mismatch: "The privileged helper belongs to another BoxPilot version. \
+                               Reinstall it in Settings › TUN to update it.",
+        mac_bad_reply: |e| {
+            format!("The privileged helper sent a reply BoxPilot doesn't understand ({e}). Reinstall it in Settings › TUN to update it.")
+        },
+        mac_exit_helper_dir: "its program files failed their safety check; reinstall it in \
+                              Settings › TUN",
+        mac_exit_state_dir: "its data folder failed its safety check; reinstall it in \
+                             Settings › TUN",
+        mac_exit_manifest: "its copy of sing-box doesn't match what was installed; reinstall \
+                            it in Settings › TUN",
+        exit_socket_failed: "launchd gave it no socket to listen on; reinstall it",
+        exit_not_root: "it wasn't started as root",
+        mac_no_bundle: "TUN mode needs BoxPilot's privileged helper, which BoxPilot can install \
+                        only when it runs from BoxPilot.app.",
+        install_prompt: "BoxPilot wants to install its privileged helper for TUN mode.",
+        remove_prompt: "BoxPilot wants to remove its privileged helper.",
+        installed: "The privileged helper is installed.",
+        removed: "The privileged helper is removed.",
+        prompt_dismissed: "The administrator prompt was cancelled; nothing changed.",
+        install_failed: |e| format!("Couldn't install the privileged helper: {e}"),
+        remove_failed: |e| format!("Couldn't remove the privileged helper: {e}"),
+        prompt_terminated: "osascript was terminated",
+        busy_installing: "The privileged helper is being installed or removed; try again \
+                          when that's done.",
     },
 };

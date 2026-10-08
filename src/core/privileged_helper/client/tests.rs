@@ -282,8 +282,12 @@ fn a_caller_that_may_not_start_is_told_so() {
     );
     fake.wait_closed();
     assert_eq!(
-        HelperFailure::NotAllowed.message(),
+        HelperFailure::NotAllowed.message_on(HelperOs::Windows),
         crate::i18n::EN.helper.not_allowed
+    );
+    assert_eq!(
+        HelperFailure::NotAllowed.message_on(HelperOs::MacOs),
+        crate::i18n::EN.helper.mac_not_allowed
     );
 }
 

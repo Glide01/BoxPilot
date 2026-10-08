@@ -1,4 +1,6 @@
-use crate::core::privileged_helper::{self, HelperConnection, HelperEvent, RunningStart};
+use crate::core::privileged_helper::{
+    self, HelperConnection, HelperEvent, RunningStart, GUI_SETS_SYSTEM_PROXY,
+};
 use crate::core::process::{
     cleanup_after_process_stop, describe_exit, disable_system_proxy, enable_system_proxy,
     exit_message, prepare_process_start, reap_child, signal_stop, start_sing_box, terminate_child,
@@ -41,9 +43,9 @@ pub enum Launch {
         /// The port of BoxPilot's `api` service in this run's config.
         api_port: u16,
     },
-    /// TUN through the privileged helper (Windows, ADR 0006). The start is
-    /// built in the prep, off the UI thread: it reads the profile's local
-    /// files and runs the policy.
+    /// TUN through the privileged helper (Windows and macOS, ADR 0006). The
+    /// start is built in the prep, off the UI thread: it reads the profile's
+    /// local files and runs the policy.
     Helper {
         /// The active profile's canonical config.
         config_path: PathBuf,
@@ -153,6 +155,29 @@ impl ProcessSession {
 
     pub fn is_stopped(&self) -> bool {
         matches!(self.state, ProcessState::Stopped { .. })
+    }
+
+    /// Whether the running sing-box is the privileged helper's.
+    pub fn runs_helper(&self) -> bool {
+        matches!(
+            self.state,
+            ProcessState::Running {
+                backend: RunBackend::Helper { .. },
+                ..
+            }
+        )
+    }
+
+    /// The last stop's cleanup, if it is still under way, for a caller that
+    /// must wait for it before changing what it used: reinstalling or
+    /// removing the privileged helper, which waits for its run's `stop` to
+    /// be answered. Taken, so the next `start` doesn't wait for it again;
+    /// the caller holds starts off until it is done.
+    pub fn take_cleanup(&mut self) -> Option<Task<()>> {
+        match &mut self.state {
+            ProcessState::Stopped { cleanup } => cleanup.take(),
+            _ => None,
+        }
     }
 
     /// Prep runs on the background executor before sing-box starts —
@@ -282,12 +307,15 @@ impl ProcessSession {
                 return;
             }
         };
-        // The user's system proxy is the user's to set, so BoxPilot sets
-        // it, as the user: the helper's sing-box never does. One WinINet
-        // call, here rather than in the start, so it is set exactly while
-        // this run is `Running`, and the stop's cleanup clears it.
+        // Windows: the user's system proxy is the user's to set, so BoxPilot
+        // sets it, as the user: the helper's SYSTEM sing-box never does. One
+        // WinINet call, here rather than in the start, so it is set exactly
+        // while this run is `Running`, and the stop's cleanup clears it.
+        // macOS: the helper's sing-box sets and unsets it itself, so the
+        // run is marked as not having set it, and no stop or exit path
+        // here touches it (`GUI_SETS_SYSTEM_PROXY`).
         let mut set_system_proxy = false;
-        if pending.set_system_proxy {
+        if pending.set_system_proxy && GUI_SETS_SYSTEM_PROXY {
             if let Launch::Helper { options, .. } = &pending.launch {
                 match enable_system_proxy(options.proxy_port) {
                     Ok(()) => set_system_proxy = true,
@@ -610,8 +638,9 @@ impl Drop for ProcessSession {
 /// Stop a helper run and undo what BoxPilot set for it: ask the helper to
 /// stop sing-box, wait for it up to `HELPER_STOP_TIMEOUT`, close the
 /// connection, then clear the user's system proxy if this run set it (only
-/// while it still points at BoxPilot's loopback proxy). The TUN adapter is
-/// the helper's to clean up. Blocking.
+/// while it still points at BoxPilot's loopback proxy; Windows only, see
+/// `GUI_SETS_SYSTEM_PROXY`). The TUN adapter, and on macOS the system
+/// proxy, are the helper's to clean up. Blocking.
 fn stop_helper_run(connection: HelperConnection, was_system_proxy: bool) {
     connection.stop(HELPER_STOP_TIMEOUT);
     if was_system_proxy {

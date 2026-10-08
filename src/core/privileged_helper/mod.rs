@@ -1,13 +1,16 @@
 //! TUN through the privileged helper (ADR 0006): the GUI's side, minus the
-//! Windows I/O.
+//! platform I/O.
 //!
-//! On Windows, TUN needs privileges the logged-in user doesn't have. Rather
-//! than elevating itself, BoxPilot asks `boxpilot-helper`, a demand-start
-//! service the MSI installs, to run *its own* sing-box on a config *it has
-//! checked*. The privilege at stake is BoxPilot's to lend, so the profile
-//! runs under the config policy there; privilege the user brings of their
-//! own accord (BoxPilot run as Administrator) runs the profile as written,
-//! with no helper ("Whose task is it").
+//! On Windows and macOS, TUN needs privileges the logged-in user doesn't
+//! have. Rather than elevating itself, BoxPilot asks `boxpilot-helper` to
+//! run *its own* sing-box on a config *it has checked*: on Windows a
+//! demand-start service the MSI installs, on macOS a launchd daemon that
+//! BoxPilot installs from its app bundle, behind one administrator prompt
+//! (Settings › TUN, [`macos_install`], [`macos_status`]). The privilege at
+//! stake is BoxPilot's to lend, so the profile runs under the config policy
+//! there; privilege the user brings of their own accord (BoxPilot run as
+//! Administrator or root) runs the profile as written, with no helper
+//! ("Whose task is it").
 //!
 //! Everything that decides something lives here and is tested on every
 //! platform:
@@ -18,16 +21,26 @@
 //!   first so a refused profile never reaches the helper and the user learns
 //!   which field and why → the `start` request;
 //! - [`ConnectPlan`]: what to do when the helper's pipe isn't there (start
-//!   its service, back off, read its exit code);
+//!   its service, back off, read its exit code); on macOS,
+//!   [`socket_connect_error`]: what a failed connect to its socket means;
 //! - the user's words for every refusal, error and exit code the helper or
-//!   the policy can give, with a fallback for codes this build doesn't know;
-//! - [`client`]: the connection itself, over any byte stream.
+//!   the policy can give, in each platform's terms ([`HelperOs`]), with a
+//!   fallback for codes this build doesn't know;
+//! - [`client`]: the connection itself, over any byte stream;
+//! - [`macos_status`]: the macOS helper's state, and [`macos_install`]: its
+//!   administrator prompt.
 //!
 //! The Windows module is only the pipe, the service calls and the token
-//! check.
+//! check; the macOS one only the socket's connect and `geteuid`, over
+//! `unix_socket`'s stream.
 
 pub mod client;
+#[cfg(target_os = "macos")]
+mod macos;
 pub mod macos_install;
+pub mod macos_status;
+#[cfg(any(target_os = "macos", all(unix, test)))]
+mod unix_socket;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -52,21 +65,40 @@ use std::time::{Duration, Instant};
 pub use client::{start_session, HelperConnection, HelperEvent, HelperFailure, HelperIo};
 
 /// Whether TUN on this platform goes through the privileged helper when
-/// BoxPilot runs without privilege of its own. Windows only, for now:
-/// Linux keeps its setcap copy (ADR 0003), and macOS is the helper's second
-/// phase.
-pub const HELPER_PLATFORM: bool = cfg!(target_os = "windows");
+/// BoxPilot runs without privilege of its own: Windows and macOS. Linux
+/// keeps its setcap copy (ADR 0003).
+pub const HELPER_PLATFORM: bool = cfg!(any(target_os = "windows", target_os = "macos"));
+
+/// Whether BoxPilot itself installs, checks and removes the helper, so its
+/// state is BoxPilot's to show and TUN's availability follows it (macOS,
+/// ADR 0006 rule 7: Settings › TUN, [`macos_status`]). Windows' helper comes
+/// and goes with the MSI, and TUN there is always available.
+pub const HELPER_INSTALLED_BY_APP: bool = cfg!(target_os = "macos");
+
+/// Whether the GUI sets the user's system proxy itself for a helper start
+/// (ADR 0006, "System proxy"):
+///
+/// - **Windows: yes.** A SYSTEM sing-box would write SYSTEM's proxy, not
+///   the user's, so the helper never lets it, and BoxPilot sets the user's
+///   as the user (`process::enable_system_proxy`), and clears it on stop.
+/// - **macOS: no.** The proxy is a setting of each network service there,
+///   which the helper's root sing-box writes itself with `networksetup`
+///   (on a standard account too, where the user's own `networksetup`
+///   can't), unsets on its stop, and the helper resets after a crash. The
+///   GUI touching it as well would only race it.
+pub const GUI_SETS_SYSTEM_PROXY: bool = cfg!(target_os = "windows");
 
 /// Which sing-box a start runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartRoute {
     /// BoxPilot's own child, at the privilege BoxPilot runs with, on the
     /// profile as written (ADR 0002): Proxy mode everywhere, TUN on Linux
-    /// (ADR 0003's gate decides the binary), and TUN on Windows when the
-    /// user runs BoxPilot as Administrator of their own accord.
+    /// (ADR 0003's gate decides the binary), and TUN on Windows or macOS
+    /// when the user runs BoxPilot as Administrator or root of their own
+    /// accord.
     Local,
     /// The privileged helper's sing-box, on the config its policy checked:
-    /// TUN on Windows from a BoxPilot that isn't elevated.
+    /// TUN on Windows and macOS from a BoxPilot that isn't elevated.
     Helper,
 }
 
@@ -81,37 +113,47 @@ pub fn start_route(helper_platform: bool, proxy_mode: bool, elevated: bool) -> S
     }
 }
 
-/// Whether BoxPilot runs elevated (Windows: an elevated token). Only the
-/// user can make it so; BoxPilot never asks. Always `false` elsewhere: Linux
-/// decides by its own probe (`core::privilege`), and macOS has no TUN yet.
+/// Whether BoxPilot runs elevated (Windows: an elevated token; macOS: as
+/// root). Only the user can make it so; BoxPilot never asks. Always
+/// `false` on Linux, which decides by its own probe (`core::privilege`).
 pub fn process_is_elevated() -> bool {
     #[cfg(target_os = "windows")]
     {
         windows::process_is_elevated()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::process_is_elevated()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         false
     }
 }
 
-/// Connect to the helper, starting its service if need be.
+/// Connect to the helper: on Windows starting its service if need be, on
+/// macOS through the socket launchd holds for it.
 pub fn open() -> Result<Arc<dyn HelperIo>, OpenError> {
     #[cfg(target_os = "windows")]
     {
         windows::open()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::open()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         Err(OpenError::Unsupported)
     }
 }
 
-/// The typed options of a helper start, from the settings. The helper
-/// never lets its sing-box write the system proxy (a SYSTEM sing-box would
-/// write SYSTEM's, not the user's), so `system_proxy` only says what the
-/// user asked for; the GUI sets the user's proxy itself
-/// (`process::enable_system_proxy`).
+/// The typed options of a helper start, from the settings. `system_proxy`
+/// is what the user asked for. Whether the helper's sing-box writes the
+/// proxy is the helper's rule per platform (`runcfg::SYSTEM_PROXY`): never
+/// on Windows, where the GUI sets the user's proxy itself instead, as the
+/// user (`process::enable_system_proxy`); as asked on macOS, where the GUI
+/// leaves it to sing-box ([`GUI_SETS_SYSTEM_PROXY`]).
 pub fn tun_options(settings: &AppSettings) -> TunOptions {
     TunOptions {
         ipv6: settings.tun_ipv6,
@@ -375,13 +417,16 @@ pub fn running_view(checked: &Value, options: &TunOptions) -> String {
 /// Why the helper couldn't be reached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
-    /// No `BoxPilotHelper` service: a portable copy without the MSI.
+    /// Windows: no `BoxPilotHelper` service, a portable copy without the
+    /// MSI. macOS: no launchd plist; Settings › TUN installs it.
     NotInstalled,
-    /// The service is disabled.
+    /// Windows: the service is disabled. macOS: the plist is installed, but
+    /// nobody serves the socket: launchd doesn't run the job (turned off in
+    /// Login Items, or unloaded).
     Disabled,
     /// Windows refused to start the service for this account.
     StartDenied,
-    /// Windows refused this account the helper's pipe.
+    /// The OS refused this account the helper's pipe or socket.
     ConnectDenied,
     /// The service stopped with one of the helper's exit codes
     /// (`endpoint::exit`).
@@ -398,18 +443,66 @@ pub enum OpenError {
 
 impl OpenError {
     pub fn message(&self) -> String {
+        self.message_on(HelperOs::CURRENT)
+    }
+
+    /// The message in `os`'s terms.
+    pub fn message_on(&self, os: HelperOs) -> String {
         let h = &s().helper;
+        let mac = os == HelperOs::MacOs;
         match self {
+            OpenError::NotInstalled if mac => h.mac_not_installed.to_string(),
             OpenError::NotInstalled => h.not_installed.to_string(),
+            OpenError::Disabled if mac => h.mac_turned_off.to_string(),
             OpenError::Disabled => h.disabled.to_string(),
             OpenError::StartDenied => h.start_denied.to_string(),
+            OpenError::ConnectDenied if mac => h.mac_connect_denied.to_string(),
             OpenError::ConnectDenied => h.connect_denied.to_string(),
-            OpenError::ServiceExited(code) => exit_code_message(*code),
+            OpenError::ServiceExited(code) => exit_code_message_on(*code, os),
             OpenError::ServiceFailed(code) => (h.service_failed)(&code.to_string()),
             OpenError::TimedOut => h.timed_out.to_string(),
             OpenError::Os(error) => (h.unreachable)(error),
             OpenError::Unsupported => h.unsupported.to_string(),
         }
+    }
+}
+
+/// Whose helper a message is about, where the platforms' words differ:
+/// Windows' service, which the MSI installs and repairs, or macOS's launchd
+/// daemon, which Settings › TUN installs and repairs. The messages take it,
+/// so both sets of words are tested on every OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperOs {
+    Windows,
+    MacOs,
+}
+
+impl HelperOs {
+    /// This build's. Windows' words elsewhere: no other platform has a
+    /// helper.
+    pub const CURRENT: HelperOs = if cfg!(target_os = "macos") {
+        HelperOs::MacOs
+    } else {
+        HelperOs::Windows
+    };
+}
+
+/// What a failed connect to the macOS helper's socket means. Nobody there
+/// (`ENOENT`), or a socket file nobody listens on (`ECONNREFUSED`, left by
+/// a job launchd no longer runs): not installed, unless its launchd plist
+/// is (`installed`, asked only then), when it is turned off. Refused by the
+/// file's permissions: denied. Anything else, the OS's words.
+pub fn socket_connect_error(error: &io::Error, installed: impl FnOnce() -> bool) -> OpenError {
+    match error.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+            if installed() {
+                OpenError::Disabled
+            } else {
+                OpenError::NotInstalled
+            }
+        }
+        io::ErrorKind::PermissionDenied => OpenError::ConnectDenied,
+        _ => OpenError::Os(error.to_string()),
     }
 }
 
@@ -680,9 +773,17 @@ pub fn refused_message(refusals: &[WireRefusal], omitted: u32) -> String {
 /// helper adds fails to decode, and reads as a reply BoxPilot doesn't
 /// understand (`HelperFailure::BadReply`), which is the fallback.
 pub fn error_message(code: ErrorCode, message: &str) -> String {
+    error_message_on(code, message, HelperOs::CURRENT)
+}
+
+/// [`error_message`] in `os`'s terms.
+pub fn error_message_on(code: ErrorCode, message: &str, os: HelperOs) -> String {
     let h = &s().helper;
+    let mac = os == HelperOs::MacOs;
     match code {
+        ErrorCode::Unauthorized if mac => h.mac_not_allowed.to_string(),
         ErrorCode::Unauthorized => h.not_allowed.to_string(),
+        ErrorCode::VersionMismatch if mac => h.mac_version_mismatch.to_string(),
         ErrorCode::VersionMismatch => h.version_mismatch.to_string(),
         ErrorCode::Busy => h.busy.to_string(),
         ErrorCode::BadRequest => (h.bad_request)(message),
@@ -690,20 +791,31 @@ pub fn error_message(code: ErrorCode, message: &str) -> String {
     }
 }
 
-/// The message for a helper that stopped with `code`, its service-specific
-/// exit code.
+/// The message for a helper that stopped with `code`, its exit code
+/// (Windows: service-specific; macOS: as launchd recorded it).
 pub fn exit_code_message(code: i32) -> String {
+    exit_code_message_on(code, HelperOs::CURRENT)
+}
+
+/// [`exit_code_message`] in `os`'s terms: what repairs the helper differs.
+pub fn exit_code_message_on(code: i32, os: HelperOs) -> String {
     let h = &s().helper;
+    let mac = os == HelperOs::MacOs;
     let reason = match code {
         exit::USAGE => h.exit_usage.to_string(),
         exit::UNSUPPORTED_OS => h.exit_unsupported_os.to_string(),
+        exit::HELPER_DIR_REFUSED if mac => h.mac_exit_helper_dir.to_string(),
         exit::HELPER_DIR_REFUSED => h.exit_helper_dir.to_string(),
+        exit::STATE_DIR_REFUSED if mac => h.mac_exit_state_dir.to_string(),
         exit::STATE_DIR_REFUSED => h.exit_state_dir.to_string(),
+        exit::MANIFEST_REFUSED if mac => h.mac_exit_manifest.to_string(),
         exit::MANIFEST_REFUSED => h.exit_manifest.to_string(),
         exit::PIPE_SQUATTED => h.exit_pipe_squatted.to_string(),
         exit::PIPE_FAILED => h.exit_pipe_failed.to_string(),
         exit::CONSOLE_ELEVATED => h.exit_console_elevated.to_string(),
         exit::PRIVILEGES_REFUSED => h.exit_privileges.to_string(),
+        exit::SOCKET_FAILED => h.exit_socket_failed.to_string(),
+        exit::NOT_ROOT => h.exit_not_root.to_string(),
         exit::INTERNAL => h.exit_internal.to_string(),
         other => (h.exit_unknown)(&other.to_string()),
     };

@@ -460,6 +460,19 @@ pub static ZH_CN: Strings = Strings {
         clear_cache_action: "清除",
         running_config: "运行配置",
         running_config_hint: "sing-box 实际运行所用的配置文件。",
+        helper: "特权助手",
+        helper_checking: "正在检查…",
+        helper_not_installed: "未安装。TUN 模式需要它：它以 root 身份运行 sing-box，并先检查配置文件。",
+        helper_turned_off: "已安装，但没有运行。如果它在 系统设置 › 通用 › 登录项 中被关闭，请在那里打开；否则请重新安装。",
+        helper_ready: "已安装，且是最新版本。",
+        helper_other_owner: "已安装，但属于这台 Mac 上的另一个账户。重新安装会让此账户成为它的所有者。",
+        helper_stale: "已安装，但来自另一个版本的 BoxPilot。请重新安装以更新它。",
+        helper_broken: |message| format!("已安装，但它拒绝运行。{message}"),
+        helper_no_bundle: "BoxPilot 只有从 BoxPilot.app 运行时才能安装它。",
+        helper_as_root: "BoxPilot 正以 root 身份运行，TUN 会直接运行 sing-box，不经过特权助手。",
+        install_helper: "安装",
+        reinstall_helper: "重新安装",
+        remove_helper: "移除",
     },
     updates: Updates {
         updates: "更新",
@@ -546,6 +559,23 @@ pub static ZH_CN: Strings = Strings {
         tun_grant_body: "TUN 模式需要为 sing-box 授予网络管理权限。BoxPilot 会把 sing-box 的副本安装到 \
                          /usr/local/lib/boxpilot/，并通过系统密码框授权一次。sing-box 更新后会再询问一次。",
         grant: "授权",
+        helper_install_title: "安装特权助手",
+        helper_install_body: "macOS 上的 TUN 模式通过 BoxPilot 的特权助手运行：它以 root 身份运行 sing-box，\
+                              并先检查配置文件。安装需要输入一次管理员的用户名和密码，由 macOS 询问，\
+                              BoxPilot 不会接触。安装后它会出现在 系统设置 › 通用 › 登录项 中。",
+        helper_reinstall_title: "重新安装特权助手",
+        helper_reinstall_body: "这台 Mac 上的特权助手来自另一个版本的 BoxPilot，或需要修复。重新安装需要\
+                                管理员的用户名和密码，由 macOS 询问，BoxPilot 不会接触。",
+        helper_take_over_body: "这台 Mac 上的特权助手属于另一个账户。重新安装会让此账户成为它的所有者，\
+                                另一个账户在重新安装之前将无法使用 TUN 模式。这需要管理员的用户名和密码，\
+                                由 macOS 询问，BoxPilot 不会接触。",
+        helper_turn_on_body: "特权助手已安装但没有运行。如果你在 系统设置 › 通用 › 登录项 中关闭了它，\
+                              请改为在那里打开。重新安装需要管理员的用户名和密码，由 macOS 询问，\
+                              BoxPilot 不会接触。",
+        helper_remove_title: "移除特权助手？",
+        helper_remove_body: "移除后，在重新安装之前无法使用 TUN 模式。移除需要管理员的用户名和密码，\
+                             由 macOS 询问，BoxPilot 不会接触。它的数据（各账户的缓存和 Tailscale \
+                             状态）会保留。",
     },
     messages: Messages {
         ready: "就绪。",
@@ -727,5 +757,30 @@ pub static ZH_CN: Strings = Strings {
         malformed_attachment: "不是有效的附件引用",
         missing_attachment: |id| format!("引用的附件「{id}」没有发送"),
         unknown_refusal: |code| format!("被拒绝（{code}）"),
+        mac_not_installed: "TUN 模式需要 BoxPilot 的特权助手，但它没有安装。请在 设置 › TUN 中安装，或改用代理模式。",
+        mac_turned_off: "特权助手已安装但没有运行。如果它在 系统设置 › 通用 › 登录项 中被关闭，请在那里打开；\
+                         否则请在 设置 › TUN 中重新安装。代理模式不需要它。",
+        mac_connect_denied: "macOS 不允许 BoxPilot 连接特权助手。请在 设置 › TUN 中重新安装，或改用代理模式。",
+        mac_not_allowed: "这台 Mac 上的特权助手属于另一个账户，此账户无权启动 TUN 模式。在此账户中重新安装\
+                          （设置 › TUN）会让此账户成为它的所有者；代理模式不需要这一权限。",
+        mac_version_mismatch: "特权助手属于另一个版本的 BoxPilot。请在 设置 › TUN 中重新安装以更新它。",
+        mac_bad_reply: |e| {
+            format!("特权助手的应答无法识别（{e}）。请在 设置 › TUN 中重新安装以更新它。")
+        },
+        mac_exit_helper_dir: "程序文件未通过安全检查，请在 设置 › TUN 中重新安装",
+        mac_exit_state_dir: "数据文件夹未通过安全检查，请在 设置 › TUN 中重新安装",
+        mac_exit_manifest: "它的 sing-box 副本与安装时不一致，请在 设置 › TUN 中重新安装",
+        exit_socket_failed: "launchd 没有给它可监听的套接字，请重新安装",
+        exit_not_root: "它不是以 root 身份启动的",
+        mac_no_bundle: "TUN 模式需要 BoxPilot 的特权助手，而 BoxPilot 只有从 BoxPilot.app 运行时才能安装它。",
+        install_prompt: "BoxPilot 要安装用于 TUN 模式的特权助手。",
+        remove_prompt: "BoxPilot 要移除它的特权助手。",
+        installed: "特权助手已安装。",
+        removed: "特权助手已移除。",
+        prompt_dismissed: "管理员授权已取消，没有做任何更改。",
+        install_failed: |e| format!("无法安装特权助手：{e}"),
+        remove_failed: |e| format!("无法移除特权助手：{e}"),
+        prompt_terminated: "osascript 被终止",
+        busy_installing: "正在安装或移除特权助手，请在完成后重试。",
     },
 };

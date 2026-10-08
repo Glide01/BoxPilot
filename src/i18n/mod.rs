@@ -655,6 +655,24 @@ pub struct Settings {
     pub clear_cache_action: &'static str,
     pub running_config: &'static str,
     pub running_config_hint: &'static str,
+    /// Settings › TUN on macOS: the privileged helper's row, its state
+    /// (`macos_status::HelperStatus`) and its buttons.
+    pub helper: &'static str,
+    pub helper_checking: &'static str,
+    pub helper_not_installed: &'static str,
+    pub helper_turned_off: &'static str,
+    pub helper_ready: &'static str,
+    pub helper_other_owner: &'static str,
+    pub helper_stale: &'static str,
+    /// "Installed, but it refuses to run. <the exit code's message>"
+    pub helper_broken: Fmt1,
+    /// Under the state when BoxPilot doesn't run from BoxPilot.app.
+    pub helper_no_bundle: &'static str,
+    /// Instead of the state when BoxPilot runs as root.
+    pub helper_as_root: &'static str,
+    pub install_helper: &'static str,
+    pub reinstall_helper: &'static str,
+    pub remove_helper: &'static str,
 }
 
 /// BoxPilot's own update check.
@@ -755,6 +773,19 @@ pub struct Dialogs {
     pub tun_grant_title: &'static str,
     pub tun_grant_body: &'static str,
     pub grant: &'static str,
+    /// Before the macOS privileged helper's administrator prompt: what
+    /// installing (or reinstalling) it does, by its state. The OK button
+    /// is `settings.install_helper` / `reinstall_helper`.
+    pub helper_install_title: &'static str,
+    pub helper_install_body: &'static str,
+    pub helper_reinstall_title: &'static str,
+    pub helper_reinstall_body: &'static str,
+    /// Installing it again takes it over from another account.
+    pub helper_take_over_body: &'static str,
+    /// It's installed but turned off, maybe in Login Items.
+    pub helper_turn_on_body: &'static str,
+    pub helper_remove_title: &'static str,
+    pub helper_remove_body: &'static str,
 }
 
 /// Toasts and status lines from app state.
@@ -849,10 +880,13 @@ pub struct Errors {
     pub api_invalid_response: Fmt1,
 }
 
-/// Why a TUN start through the privileged helper (Windows, ADR 0006) didn't
-/// happen: reaching the helper, its exit codes, its replies, and the config
+/// Why a TUN start through the privileged helper (ADR 0006) didn't happen:
+/// reaching the helper, its exit codes, its replies, and the config
 /// policy's refusals. Every reason the helper or the policy can give has its
-/// own string, plus a fallback for a code this build doesn't know.
+/// own string, plus a fallback for a code this build doesn't know. Where
+/// Windows' words don't fit macOS (the MSI repairs one, Settings › TUN the
+/// other), the `mac_` strings say it there (`privileged_helper::HelperOs`).
+/// Then installing and removing the macOS helper.
 pub struct Helper {
     // ---- Reaching it ----
     /// The service isn't installed: a portable copy without the MSI.
@@ -953,6 +987,41 @@ pub struct Helper {
     pub missing_attachment: Fmt1,
     /// A refusal code this build doesn't know (a newer helper's policy).
     pub unknown_refusal: Fmt1,
+
+    // ---- macOS: its words where Windows' don't fit ----
+    pub mac_not_installed: &'static str,
+    /// Installed, but nobody serves its socket (Login Items, unloaded).
+    pub mac_turned_off: &'static str,
+    pub mac_connect_denied: &'static str,
+    /// Another account owns it.
+    pub mac_not_allowed: &'static str,
+    pub mac_version_mismatch: &'static str,
+    pub mac_bad_reply: Fmt1,
+    pub mac_exit_helper_dir: &'static str,
+    pub mac_exit_state_dir: &'static str,
+    pub mac_exit_manifest: &'static str,
+    /// macOS: launchd gave it no socket (`exit::SOCKET_FAILED`).
+    pub exit_socket_failed: &'static str,
+    /// macOS: not started as root (`exit::NOT_ROOT`).
+    pub exit_not_root: &'static str,
+    /// A TUN start needs the helper, and BoxPilot doesn't run from
+    /// BoxPilot.app, which carries what installing it takes.
+    pub mac_no_bundle: &'static str,
+
+    // ---- Installing and removing it (macOS) ----
+    /// The text in macOS's administrator prompt.
+    pub install_prompt: &'static str,
+    pub remove_prompt: &'static str,
+    pub installed: &'static str,
+    pub removed: &'static str,
+    /// The administrator prompt was cancelled.
+    pub prompt_dismissed: &'static str,
+    pub install_failed: Fmt1,
+    pub remove_failed: Fmt1,
+    /// osascript ended without an exit code.
+    pub prompt_terminated: &'static str,
+    /// A start while the helper is being installed or removed.
+    pub busy_installing: &'static str,
 }
 
 #[cfg(test)]

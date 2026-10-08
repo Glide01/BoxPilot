@@ -1,5 +1,6 @@
 //! The pure half of the helper client. Messages are checked in English
-//! (`s()` without `set_language`, as every core test does).
+//! (`s()` without `set_language`, as every core test does), and in each
+//! platform's terms by name (`HelperOs`), so every OS checks both.
 
 use super::*;
 use crate::i18n::EN;
@@ -44,7 +45,16 @@ fn only_unelevated_tun_on_the_helper_platform_uses_the_helper() {
             "platform {platform}, proxy {proxy_mode}, elevated {elevated}"
         );
     }
-    assert_eq!(HELPER_PLATFORM, cfg!(target_os = "windows"));
+    assert_eq!(
+        HELPER_PLATFORM,
+        cfg!(any(target_os = "windows", target_os = "macos"))
+    );
+    assert_eq!(HELPER_INSTALLED_BY_APP, cfg!(target_os = "macos"));
+    assert_eq!(GUI_SETS_SYSTEM_PROXY, cfg!(target_os = "windows"));
+    assert_eq!(
+        HelperOs::CURRENT == HelperOs::MacOs,
+        cfg!(target_os = "macos")
+    );
 }
 
 #[test]
@@ -424,6 +434,33 @@ fn a_busy_or_denied_pipe_and_the_deadline() {
     assert_eq!(plan.backoff(past), Err(OpenError::TimedOut));
 }
 
+/// What a failed connect to the macOS helper's socket means: nobody there
+/// is "not installed" or "turned off", by its plist.
+#[test]
+fn socket_connect_errors_map_to_what_the_user_can_do() {
+    let error = |kind| io::Error::from(kind);
+    for kind in [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused] {
+        assert_eq!(
+            socket_connect_error(&error(kind), || false),
+            OpenError::NotInstalled
+        );
+        assert_eq!(
+            socket_connect_error(&error(kind), || true),
+            OpenError::Disabled
+        );
+    }
+    assert_eq!(
+        socket_connect_error(&error(io::ErrorKind::PermissionDenied), || {
+            panic!("the plist doesn't matter")
+        }),
+        OpenError::ConnectDenied
+    );
+    assert!(matches!(
+        socket_connect_error(&io::Error::other("boom"), || true),
+        OpenError::Os(message) if message == "boom"
+    ));
+}
+
 // ---- What the user reads ----
 
 /// Every refusal code has its own words, the pointer first (or "the
@@ -502,25 +539,35 @@ fn chinese_refusals_use_full_width_punctuation() {
 
 #[test]
 fn every_error_code_reads() {
+    let windows = |code, message| error_message_on(code, message, HelperOs::Windows);
+    assert_eq!(windows(ErrorCode::Unauthorized, "x"), EN.helper.not_allowed);
     assert_eq!(
-        error_message(ErrorCode::Unauthorized, "x"),
-        EN.helper.not_allowed
-    );
-    assert_eq!(
-        error_message(ErrorCode::VersionMismatch, "x"),
+        windows(ErrorCode::VersionMismatch, "x"),
         EN.helper.version_mismatch
     );
-    assert_eq!(error_message(ErrorCode::Busy, "x"), EN.helper.busy);
+    assert_eq!(windows(ErrorCode::Busy, "x"), EN.helper.busy);
     assert_eq!(
-        error_message(ErrorCode::BadRequest, "`config_len` is 0"),
+        windows(ErrorCode::BadRequest, "`config_len` is 0"),
         "The privileged helper didn't accept BoxPilot's request: `config_len` is 0"
     );
     assert_eq!(
-        error_message(
+        windows(
             ErrorCode::Internal,
             "the run directory could not be written"
         ),
         "The privileged helper couldn't start sing-box: the run directory could not be written"
+    );
+    // macOS: another account owns the helper, and Settings › TUN updates it.
+    let mac = |code, message| error_message_on(code, message, HelperOs::MacOs);
+    assert_eq!(mac(ErrorCode::Unauthorized, "x"), EN.helper.mac_not_allowed);
+    assert_eq!(
+        mac(ErrorCode::VersionMismatch, "x"),
+        EN.helper.mac_version_mismatch
+    );
+    assert_eq!(mac(ErrorCode::Busy, "x"), EN.helper.busy);
+    assert_eq!(
+        error_message(ErrorCode::Busy, "x"),
+        error_message_on(ErrorCode::Busy, "x", HelperOs::CURRENT)
     );
 }
 
@@ -536,58 +583,109 @@ fn every_exit_code_reads() {
         exit::PIPE_FAILED,
         exit::CONSOLE_ELEVATED,
         exit::PRIVILEGES_REFUSED,
+        exit::SOCKET_FAILED,
+        exit::NOT_ROOT,
         exit::INTERNAL,
     ];
-    let messages: Vec<String> = known.iter().map(|code| exit_code_message(*code)).collect();
-    for (code, message) in known.iter().zip(&messages) {
-        assert!(
-            message.starts_with("The privileged helper stopped: "),
-            "{message}"
-        );
-        assert!(
-            !message.contains("exit code"),
-            "{code} has its own words: {message}"
+    for os in [HelperOs::Windows, HelperOs::MacOs] {
+        let messages: Vec<String> = known
+            .iter()
+            .map(|code| exit_code_message_on(*code, os))
+            .collect();
+        for (code, message) in known.iter().zip(&messages) {
+            assert!(
+                message.starts_with("The privileged helper stopped: "),
+                "{message}"
+            );
+            assert!(
+                !message.contains("exit code"),
+                "{code} has its own words: {message}"
+            );
+        }
+        let distinct: std::collections::BTreeSet<_> = messages.iter().collect();
+        assert_eq!(distinct.len(), known.len());
+        assert_eq!(
+            exit_code_message_on(99, os),
+            "The privileged helper stopped: exit code 99."
         );
     }
-    let distinct: std::collections::BTreeSet<_> = messages.iter().collect();
-    assert_eq!(distinct.len(), known.len());
     assert_eq!(
-        exit_code_message(exit::MANIFEST_REFUSED),
+        exit_code_message_on(exit::MANIFEST_REFUSED, HelperOs::Windows),
         "The privileged helper stopped: its copy of sing-box doesn't match what was installed; reinstall BoxPilot."
     );
+    // On macOS, reinstalling BoxPilot doesn't repair the helper; Settings
+    // › TUN does.
     assert_eq!(
-        exit_code_message(99),
-        "The privileged helper stopped: exit code 99."
+        exit_code_message_on(exit::MANIFEST_REFUSED, HelperOs::MacOs),
+        "The privileged helper stopped: its copy of sing-box doesn't match what was installed; reinstall it in Settings › TUN."
+    );
+    for code in [
+        exit::HELPER_DIR_REFUSED,
+        exit::STATE_DIR_REFUSED,
+        exit::MANIFEST_REFUSED,
+    ] {
+        let mac = exit_code_message_on(code, HelperOs::MacOs);
+        assert!(mac.contains("Settings › TUN"), "{mac}");
+        assert!(!mac.contains("BoxPilot"), "{mac}");
+    }
+    assert_eq!(
+        exit_code_message(exit::INTERNAL),
+        exit_code_message_on(exit::INTERNAL, HelperOs::CURRENT)
     );
 }
 
 #[test]
 fn every_open_error_reads() {
-    assert_eq!(OpenError::NotInstalled.message(), EN.helper.not_installed);
-    assert_eq!(OpenError::Disabled.message(), EN.helper.disabled);
-    assert_eq!(OpenError::StartDenied.message(), EN.helper.start_denied);
-    assert_eq!(OpenError::ConnectDenied.message(), EN.helper.connect_denied);
-    assert_eq!(OpenError::TimedOut.message(), EN.helper.timed_out);
-    assert_eq!(OpenError::Unsupported.message(), EN.helper.unsupported);
+    let windows = |error: OpenError| error.message_on(HelperOs::Windows);
+    assert_eq!(windows(OpenError::NotInstalled), EN.helper.not_installed);
+    assert_eq!(windows(OpenError::Disabled), EN.helper.disabled);
+    assert_eq!(windows(OpenError::StartDenied), EN.helper.start_denied);
+    assert_eq!(windows(OpenError::ConnectDenied), EN.helper.connect_denied);
+    assert_eq!(windows(OpenError::TimedOut), EN.helper.timed_out);
+    assert_eq!(windows(OpenError::Unsupported), EN.helper.unsupported);
     assert_eq!(
-        OpenError::ServiceExited(exit::PIPE_SQUATTED).message(),
-        exit_code_message(exit::PIPE_SQUATTED)
+        windows(OpenError::ServiceExited(exit::PIPE_SQUATTED)),
+        exit_code_message_on(exit::PIPE_SQUATTED, HelperOs::Windows)
     );
     assert_eq!(
-        OpenError::ServiceFailed(1053).message(),
+        windows(OpenError::ServiceFailed(1053)),
         "The privileged helper failed to start (Windows error 1053). Reinstall BoxPilot to repair it."
     );
     assert_eq!(
-        OpenError::Os("boom".into()).message(),
+        windows(OpenError::Os("boom".into())),
         "Couldn't reach the privileged helper: boom"
     );
+    // macOS: Settings › TUN installs it, and Login Items may have turned it
+    // off; nothing about the MSI or Services.
+    let mac = |error: OpenError| error.message_on(HelperOs::MacOs);
+    assert_eq!(mac(OpenError::NotInstalled), EN.helper.mac_not_installed);
+    assert_eq!(mac(OpenError::Disabled), EN.helper.mac_turned_off);
+    assert_eq!(mac(OpenError::ConnectDenied), EN.helper.mac_connect_denied);
+    assert_eq!(
+        mac(OpenError::ServiceExited(exit::STATE_DIR_REFUSED)),
+        exit_code_message_on(exit::STATE_DIR_REFUSED, HelperOs::MacOs)
+    );
+    for error in [
+        OpenError::NotInstalled,
+        OpenError::Disabled,
+        OpenError::ConnectDenied,
+    ] {
+        let text = mac(error.clone());
+        assert!(text.contains("Settings › TUN"), "{text}");
+        assert!(
+            !text.contains("MSI") && !text.contains("Services"),
+            "{text}"
+        );
+        assert_eq!(error.message(), error.message_on(HelperOs::CURRENT));
+    }
+    assert!(mac(OpenError::Disabled).contains("Login Items"));
 }
 
-/// Off Windows there is no helper to reach, and BoxPilot is never
-/// "elevated" in the helper's sense.
-#[cfg(not(target_os = "windows"))]
+/// On Linux there is no helper to reach, and BoxPilot is never "elevated"
+/// in the helper's sense.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[test]
-fn no_helper_off_windows() {
+fn no_helper_on_linux() {
     assert!(matches!(open(), Err(OpenError::Unsupported)));
     assert!(!process_is_elevated());
 }

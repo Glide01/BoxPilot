@@ -1,6 +1,6 @@
 //! One connection to the privileged helper, over any byte stream
-//! ([`HelperIo`]): the Windows pipe in production, a socket pair in the
-//! tests. No platform code here.
+//! ([`HelperIo`]): the Windows pipe or the macOS socket in production, a
+//! socket pair in the tests. No platform code here.
 //!
 //! The connection is sing-box's lifetime: the helper stops the sing-box a
 //! connection started when that connection ends (ADR 0006 rule 6), so it
@@ -14,7 +14,7 @@
 //! Deadlines mirror the helper's: `hello` within 10 s, a whole `start`
 //! within 60 s.
 
-use super::{error_message, refused_message, OpenError};
+use super::{error_message_on, refused_message, HelperOs, OpenError};
 use crate::core::singbox_api::{supports_api_service, SingBoxApi};
 use crate::i18n::s;
 use boxpilot_protocol::{
@@ -93,18 +93,27 @@ pub enum HelperFailure {
 
 impl HelperFailure {
     pub fn message(&self) -> String {
+        self.message_on(HelperOs::CURRENT)
+    }
+
+    /// The message in `os`'s terms: what repairs or authorizes the helper
+    /// differs.
+    pub fn message_on(&self, os: HelperOs) -> String {
         let h = &s().helper;
+        let mac = os == HelperOs::MacOs;
         match self {
-            HelperFailure::Open(error) => error.message(),
+            HelperFailure::Open(error) => error.message_on(os),
+            HelperFailure::NotAllowed if mac => h.mac_not_allowed.to_string(),
             HelperFailure::NotAllowed => h.not_allowed.to_string(),
             HelperFailure::SingBoxTooOld(version) => (s().messages.sing_box_too_old)(
                 version,
                 crate::core::singbox_api::MIN_SING_BOX_VERSION,
             ),
             HelperFailure::Refused { refusals, omitted } => refused_message(refusals, *omitted),
-            HelperFailure::Error { code, message } => error_message(*code, message),
+            HelperFailure::Error { code, message } => error_message_on(*code, message, os),
             HelperFailure::TimedOut => h.no_answer.to_string(),
             HelperFailure::Lost => h.lost.to_string(),
+            HelperFailure::BadReply(detail) if mac => (h.mac_bad_reply)(detail),
             HelperFailure::BadReply(detail) => (h.bad_reply)(detail),
             HelperFailure::Io(error) => (h.talk_failed)(error),
         }
