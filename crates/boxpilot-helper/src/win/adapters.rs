@@ -2,18 +2,21 @@
 //! cleanup belongs to the helper"): after every run, and when the helper
 //! starts, in case the last run ended in a crash. Native SetupAPI, no child
 //! process: the GUI's `process::remove_tun_adapter`, which stays there until
-//! the GUI stops elevating. Which adapters is `tun::is_sing_tun_friendly_name`.
+//! the GUI stops elevating. Which adapters is `tun::is_stale_sing_tun`: by
+//! name, and only once no longer present, so another program's running
+//! tunnel is never removed.
 //!
 //! Best effort: a failure is logged and the run goes on, since sing-box
 //! creates its own adapter at start regardless.
 
 use crate::helper_log;
-use crate::tun::is_sing_tun_friendly_name;
+use crate::tun::is_stale_sing_tun;
 use std::mem::size_of;
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    DiUninstallDevice, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceRegistryPropertyW, GUID_DEVCLASS_NET, HDEVINFO, SETUP_DI_GET_CLASS_DEVS_FLAGS,
+    CM_Get_DevNode_Status, DiUninstallDevice, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
+    SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, CM_DEVNODE_STATUS_FLAGS, CM_PROB,
+    CR_NO_SUCH_DEVINST, GUID_DEVCLASS_NET, HDEVINFO, SETUP_DI_GET_CLASS_DEVS_FLAGS,
     SPDRP_FRIENDLYNAME, SP_DEVINFO_DATA,
 };
 use windows::Win32::Foundation::{BOOL, HWND};
@@ -96,6 +99,19 @@ impl DeviceSet {
         )
     }
 
+    /// Whether the device is present. Only `CR_NO_SUCH_DEVINST`, the
+    /// answer for a device that is installed but not present (a "ghost"),
+    /// says it isn't; any other answer counts as present, so a failure never
+    /// removes a running program's adapter.
+    fn present(device: &SP_DEVINFO_DATA) -> bool {
+        let mut status = CM_DEVNODE_STATUS_FLAGS(0);
+        let mut problem = CM_PROB(0);
+        // SAFETY: both out-pointers are valid for the call; `DevInst` is the
+        // device instance handle SetupDiEnumDeviceInfo filled in.
+        let result = unsafe { CM_Get_DevNode_Status(&mut status, &mut problem, device.DevInst, 0) };
+        result != CR_NO_SUCH_DEVINST
+    }
+
     /// Uninstall the device (and its children). A non-null `NeedReboot`
     /// keeps it from ever showing a restart prompt; a virtual adapter never
     /// needs one.
@@ -114,7 +130,8 @@ impl Drop for DeviceSet {
     }
 }
 
-/// Uninstall every network adapter whose FriendlyName is sing-box's.
+/// Uninstall every network adapter whose FriendlyName is sing-box's and
+/// that is no longer present.
 pub(crate) fn remove_sing_tun_adapters() {
     let Some(set) = DeviceSet::network() else {
         return;
@@ -128,7 +145,7 @@ pub(crate) fn remove_sing_tun_adapters() {
         let Some(name) = set.friendly_name(&device) else {
             continue;
         };
-        if !is_sing_tun_friendly_name(&name) {
+        if !is_stale_sing_tun(&name, DeviceSet::present(&device)) {
             continue;
         }
         match set.uninstall(&device) {
