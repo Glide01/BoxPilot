@@ -1148,8 +1148,8 @@ function Invoke-HelperTokenTrial([int] $Index, [string] $Name, [string] $Scm, [s
 #   1. the SCM's default, as the MSI installs it (no list): the helper holds
 #      exactly HELPER_PRIVILEGES;
 #   2. the SCM gives only SeChangeNotifyPrivilege: data, whether the helper
-#      also works without SeLoadDriverPrivilege (cleanup included), to
-#      tighten HELPER_PRIVILEGES from;
+#      works with nothing else (cleanup included); HELPER_PRIVILEGES is
+#      that alone since run 2 of the probe measured it;
 #   3. the SCM gives every privilege SYSTEM holds: the helper still holds
 #      exactly HELPER_PRIVILEGES. That list stays (it gives what no list
 #      gives), and the steps after this one run with it.
@@ -1171,8 +1171,14 @@ function Invoke-HelperTokenTrials([string[]] $SystemPrivileges) {
     $shrinks = $narrow.'starts' -eq 'yes' -and $narrow.'TUN run' -eq 'works' -and
         $narrow.'its token' -eq 'as expected' -and $narrow.'sing-box' -eq 'as planned' -and
         $narrow.'cleanup' -eq 'none stale'
-    $finding = if ($shrinks) {
+    $minimal = @($helperPrivileges).Count -eq 1 -and $helperPrivileges[0] -eq 'SeChangeNotifyPrivilege'
+    $finding = if ($shrinks -and $minimal) {
+        "finding: the helper works with SeChangeNotifyPrivilege alone (TUN, sing-box's token, the adapter cleanup), which is all HELPER_PRIVILEGES keeps"
+    } elseif ($shrinks) {
         "finding: the helper works with SeChangeNotifyPrivilege alone (TUN, sing-box's token, the adapter cleanup): HELPER_PRIVILEGES ($($helperPrivileges -join ', ')) can shrink to it"
+    } elseif ($minimal) {
+        Write-Note "the helper no longer fully works with SeChangeNotifyPrivilege alone (trial 2 above), which is all HELPER_PRIVILEGES keeps"
+        "finding: the helper does not fully work with SeChangeNotifyPrivilege alone (trial 2 above), which is all HELPER_PRIVILEGES keeps"
     } else {
         "finding: the helper does not fully work with SeChangeNotifyPrivilege alone (trial 2 above): HELPER_PRIVILEGES ($($helperPrivileges -join ', ')) stays"
     }

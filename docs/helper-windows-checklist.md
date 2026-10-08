@@ -98,7 +98,7 @@ a release still needs the manual run; what is unmarked is manual only.
   privilege, integrity High, Administrators enabled
   (`tokenplan::SING_BOX_TOKEN`). **CI**
 - The helper's own token (`--expect helper`): SYSTEM, only
-  `SeChangeNotifyPrivilege` and `SeLoadDriverPrivilege`, integrity System
+  `SeChangeNotifyPrivilege`, integrity System
   (`tokenplan::HELPER_TOKEN`), also after an administrator ran
   `sc.exe privs BoxPilotHelper` with every privilege. **CI**
 - With only those tokens, the machine's first TUN start installs wintun's

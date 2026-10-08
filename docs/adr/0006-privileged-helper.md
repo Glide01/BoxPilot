@@ -414,8 +414,7 @@ policy.
       execution is still not contained. The policy stays the boundary.
   - **The helper's own token** (`tokenplan::HELPER_TOKEN`): when the
     service starts, before it serves anyone, it removes every privilege
-    but `SeChangeNotifyPrivilege` and `SeLoadDriverPrivilege` from its own
-    token (`AdjustTokenPrivileges` with `SE_PRIVILEGE_REMOVED`, as
+    but `SeChangeNotifyPrivilege` from its own token (`AdjustTokenPrivileges` with `SE_PRIVILEGE_REMOVED`, as
     WireGuard's `DropAllPrivileges` does), reads the token back, and
     refuses to run if anything more is left (exit code
     `PRIVILEGES_REFUSED`). That holds whatever the service's configuration
@@ -424,8 +423,10 @@ policy.
     `MsiServiceConfig` table, whose functionality, WiX's own schema notes,
     the Windows Installer SDK documents as not working as expected, and a
     failed install would cost more than a list the code enforces anyway.
-    `SeLoadDriverPrivilege` may be needed to remove a crashed sing-box's
-    stale adapter; CI measures whether it is.
+    Measured in CI: with that alone, the helper reads callers' tokens,
+    makes sing-box's token, starts it and removes its adapter afterwards
+    (no `SeImpersonatePrivilege`, `SeAssignPrimaryTokenPrivilege` or
+    `SeLoadDriverPrivilege`).
   - **The allowlists are compile-time constants** in `tokenplan`. Nothing
     at run time (a setting, an environment variable, a file, the service's
     configuration, a protocol field) can widen them. Neither may name a
@@ -720,7 +721,8 @@ Only published advisories, fixes and audits are cited here.
   GUI switch for a refused feature; if one is ever needed, it is an
   admin-only setting, as with WireGuard. Measuring what wintun needs and
   dropping the rest: done, and narrower than WireGuard's (rule 2,
-  "Defense in depth": sing-box keeps `SeChangeNotifyPrivilege` only).
+  "Defense in depth": sing-box and the helper keep
+  `SeChangeNotifyPrivilege` only).
 - **Tailscale, CVE-2022-41924 and CVE-2022-41925.** Websites could reach
   its loopback HTTP API through DNS rebinding, and on Windows reconfigure
   the daemon. Its LocalAPI is now a ProtectedPrefix named pipe on
@@ -875,8 +877,8 @@ any of them.
   another: the machine's first adapter (wintun's driver install) with the
   smallest token, the smallest set for steady state, the narrowings, and
   the shipped plan on a first install and after. Then the helper's own
-  token is checked under what the SCM gives it, including
-  `SeChangeNotifyPrivilege` alone (data for shrinking `HELPER_PRIVILEGES`).
+  token is checked under what the SCM gives it, from
+  `SeChangeNotifyPrivilege` alone to every privilege SYSTEM holds.
   It is the regression check every `SINGBOX_VERSION` bump passes: the step
   fails if the shipped plans stop working or TUN needs a privilege
   `NEVER_FOR_SING_BOX` lists; narrower tokens failing are data. It takes

@@ -81,16 +81,14 @@ pub const SING_BOX_TOKEN: TokenPlan<'static> = TokenPlan {
 };
 
 /// The privileges the helper keeps of its own token when it starts:
-/// `SeChangeNotifyPrivilege`, and `SeLoadDriverPrivilege`, which it may
-/// need to uninstall a crashed sing-box's stale adapter. Measured: with
-/// the SCM giving it only these two (`sc.exe privs`), the helper serves the
-/// pipe, reads callers' tokens (identification-level, so no
-/// `SeImpersonatePrivilege`), makes sing-box's restricted token, starts it
-/// with `CreateProcessAsUserW` (no `SeAssignPrimaryTokenPrivilege` or
-/// `SeIncreaseQuotaPrivilege`) and removes its adapter afterwards. Whether
-/// it needs `SeLoadDriverPrivilege` at all is being measured (CI's helper
-/// token trial with `SeChangeNotifyPrivilege` alone).
-pub const HELPER_PRIVILEGES: &[&str] = &["SeChangeNotifyPrivilege", "SeLoadDriverPrivilege"];
+/// `SeChangeNotifyPrivilege` alone. Measured (CI's helper token trials,
+/// Windows Server 2025): with the SCM giving it only that (`sc.exe privs`),
+/// the helper serves the pipe, reads callers' tokens (identification-level,
+/// so no `SeImpersonatePrivilege`), makes sing-box's restricted token,
+/// starts it with `CreateProcessAsUserW` (no `SeAssignPrimaryTokenPrivilege`
+/// or `SeIncreaseQuotaPrivilege`) and removes its no-longer-present adapter
+/// afterwards (no `SeLoadDriverPrivilege`).
+pub const HELPER_PRIVILEGES: &[&str] = &["SeChangeNotifyPrivilege"];
 
 /// The helper's own token after it has dropped what it doesn't need. Only
 /// privileges: it keeps its integrity level and groups, which are what make
@@ -320,8 +318,9 @@ mod tests {
             );
         }
         let removed = privileges_to_delete(&held, HELPER_PRIVILEGES);
-        assert_eq!(removed.len(), held.len() - 2);
-        assert!(!removed.contains(&"SeLoadDriverPrivilege"));
+        assert_eq!(removed.len(), held.len() - 1);
+        assert!(!removed.contains(&"SeChangeNotifyPrivilege"));
+        assert!(removed.contains(&"SeLoadDriverPrivilege"));
         // Compared as Windows compares them; anything unknown goes.
         let odd: Vec<String> = ["sechangenotifyprivilege", "SeNextYearPrivilege", "#0:99"]
             .map(String::from)
@@ -447,14 +446,20 @@ mod tests {
         // The helper's own token: SYSTEM's integrity and groups stay; only
         // privileges count.
         let helper = ObservedToken {
-            privileges: vec![
-                ("SeLoadDriverPrivilege".into(), 0),
-                ("SeChangeNotifyPrivilege".into(), 3),
-            ],
+            privileges: vec![("SeChangeNotifyPrivilege".into(), 3)],
             integrity: Some(integrity::SYSTEM),
             groups: vec![(BA.into(), 0xe)],
         };
         assert!(excess(&helper, &HELPER_TOKEN).is_empty());
+        // The two it kept before its measurement: one too many now.
+        let before = ObservedToken {
+            privileges: vec![
+                ("SeLoadDriverPrivilege".into(), 0),
+                ("SeChangeNotifyPrivilege".into(), 3),
+            ],
+            ..helper.clone()
+        };
+        assert_eq!(excess(&before, &HELPER_TOKEN).len(), 1);
         let undropped = ObservedToken {
             privileges: system_privileges()
                 .into_iter()
@@ -464,7 +469,7 @@ mod tests {
         };
         assert_eq!(
             excess(&undropped, &HELPER_TOKEN).len(),
-            system_privileges().len() - 2
+            system_privileges().len() - 1
         );
     }
 }
