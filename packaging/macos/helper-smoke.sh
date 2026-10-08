@@ -6,6 +6,7 @@
 # as another account, break the install on purpose, kill it, and uninstall.
 #
 #   packaging/macos/helper-smoke.sh <step> [<BoxPilot.dmg> <mac_smoke>]
+#   packaging/macos/helper-smoke.sh gui-client <gui_helper_smoke>
 #
 # e.g. packaging/macos/helper-smoke.sh install \
 #        release/BoxPilot-1.13.5-macos-arm64.dmg \
@@ -29,6 +30,13 @@
 #                    three TUN runs (one with probes, and checks from outside
 #                    while it runs: utun, the routes, sing-box as the helper's
 #                    child in its process group, its listeners)
+#   gui-client       the GUI's own client (examples/gui_helper_smoke.rs, built
+#                    from BoxPilot's crate, never bundled) as the owner: open()
+#                    and hello, a TUN start through start_profile and its
+#                    stop, a connection the helper ends, and the state
+#                    Settings › TUN shows: ready, turned off (launchctl
+#                    bootout), stale (another sing-box in the app's
+#                    manifest), broken (a tampered sing-box); each restored
 #   idle-exit        the daemon exits a minute after the last connection, with
 #                    code 0, and the next connection starts it again
 #   other-user       a fresh standard account: read-only, refused as
@@ -79,12 +87,15 @@ LOGS=$WORK/logs
 APP=$WORK/BoxPilot.app
 CONTENTS=$APP/Contents
 SMOKE=$WORK/mac_smoke
+GUI=$WORK/gui_helper_smoke
 OTHER_USER=bpsmoke
 OTHER_DIR=$WORK/other
 
 step=${1:-}
 dmg=${2:-}
 smoke_source=${3:-}
+# gui-client's one argument.
+gui_source=${2:-}
 
 # ---- Saying what happened ----
 
@@ -112,6 +123,12 @@ ok() {
 smoke() {
     printf -- '---- mac_smoke %s (as %s)\n' "$*" "$(id -un)"
     "$SMOKE" "$@" || fail "mac_smoke $1 failed (above)"
+}
+
+# The GUI's client ($GUI), as the runner's account.
+gui() {
+    printf -- '---- gui_helper_smoke %s (as %s)\n' "$*" "$(id -un)"
+    "$GUI" "$@" || fail "gui_helper_smoke $1 failed (above)"
 }
 
 smoke_as_root() {
@@ -513,6 +530,67 @@ step_protocol() {
     assert_state_private
 }
 
+# launchd starts a job at most every 10 s: after the helper was started a
+# moment ago, wait that out, so a client's first reply isn't held back past
+# the GUI's hello deadline.
+launchd_throttle() {
+    sleep 11
+}
+
+step_gui_client() {
+    [ -f "$gui_source" ] || fail "no GUI client at '$gui_source'"
+    cp "$gui_source" "$GUI"
+    chmod 0755 "$GUI"
+
+    gui hello
+    gui status --contents "$CONTENTS" --expect ready
+    gui tun --app-dir "$WORK/gui-app"
+    assert_tun_down
+    gui gone-peer
+
+    # Turned off: launchd no longer runs the job, as after the switch in
+    # System Settings › General › Login Items. Installing again restores it.
+    stop_helper
+    sudo launchctl bootout "system/$LABEL" || :
+    waited=0
+    while launchd_print >/dev/null; do
+        waited=$((waited + 1))
+        [ "$waited" -le 40 ] || fail "the helper is still loaded after launchctl bootout"
+        sleep 1
+    done
+    gui status --contents "$CONTENTS" --expect turned-off
+    sudo /bin/sh "$CONTENTS/$BUNDLE_PAYLOAD_DIR/$INSTALL_SCRIPT" "$CONTENTS" "$(id -u)" ||
+        fail "reinstalling after launchctl bootout failed (above)"
+    gui status --contents "$CONTENTS" --expect ready
+
+    # Stale: an app whose manifest names another sing-box than the installed
+    # helper's (the files the GUI compares, the rest left out).
+    stale=$WORK/stale/Contents
+    rm -rf "$WORK/stale"
+    mkdir -p "$stale/MacOS" "$stale/$BUNDLE_PAYLOAD_DIR"
+    cp "$CONTENTS/MacOS/boxpilot-helper" "$stale/MacOS/"
+    cp "$CONTENTS/$BUNDLE_PAYLOAD_DIR/$LABEL.plist" "$stale/$BUNDLE_PAYLOAD_DIR/"
+    sed 's/"sha256": *"[0-9a-f]*"/"sha256": "0000000000000000000000000000000000000000000000000000000000000000"/' \
+        "$CONTENTS/$BUNDLE_PAYLOAD_DIR/manifest.json" >"$stale/$BUNDLE_PAYLOAD_DIR/manifest.json"
+    gui status --contents "$stale" --expect stale
+
+    # Broken: a tampered sing-box. The GUI reads the exit code launchd
+    # recorded, as an unprivileged account.
+    stop_helper
+    launchd_throttle
+    printf 'x' | sudo tee -a "$SING_BOX_PATH" >/dev/null
+    seen=$("$GUI" status --contents "$CONTENTS" 2>&1) || :
+    printf '%s\n' "$seen"
+    sudo install -o root -g wheel -m 0755 "$CONTENTS/MacOS/sing-box" "$SING_BOX_PATH"
+    case $seen in
+        *"status: broken $EXIT_MANIFEST_REFUSED "*) ok "a broken install shows its exit code, $EXIT_MANIFEST_REFUSED" ;;
+        *"status: turned-off "*) note "a broken install shows as turned off: launchctl print gave no exit code to $(id -un)" ;;
+        *) fail "a tampered sing-box showed as something else (above)" ;;
+    esac
+    launchd_throttle
+    gui status --contents "$CONTENTS" --expect ready
+}
+
 step_idle_exit() {
     if [ -z "$(helper_pid)" ]; then
         smoke hello --expect start
@@ -835,6 +913,7 @@ case $step in
     install) step_install ;;
     inspect) step_inspect ;;
     protocol) step_protocol ;;
+    gui-client) step_gui_client ;;
     idle-exit) step_idle_exit ;;
     other-user) step_other_user ;;
     broken-install) step_broken_install ;;
@@ -845,6 +924,6 @@ case $step in
         step_logs
         exit 0
         ;;
-    *) fail "unknown step '$step' (install, inspect, protocol, idle-exit, other-user, broken-install, kill-helper, system-proxy, uninstall, logs)" ;;
+    *) fail "unknown step '$step' (install, inspect, protocol, gui-client, idle-exit, other-user, broken-install, kill-helper, system-proxy, uninstall, logs)" ;;
 esac
 printf 'helper smoke %s: every check held\n' "$step"

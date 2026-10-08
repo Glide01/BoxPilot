@@ -664,7 +664,9 @@ jobs:
       # the daemon from outside with a smoke client
       # (crates/boxpilot-helper/examples/mac_smoke.rs, never shipped), as the
       # runner's account (the owner), as root and as a fresh standard
-      # account. Each step is one stage of packaging/macos/helper-smoke.sh.
+      # account, then with the GUI's own client code
+      # (examples/gui_helper_smoke.rs). Each step is one stage of
+      # packaging/macos/helper-smoke.sh.
       # Apple silicon only (`test: true`): the x86_64 leg is cross-built.
       # They come after "Upload DMG", so the DMG is uploaded whatever they
       # find, and each runs while the install held, so one round shows every
@@ -672,6 +674,13 @@ jobs:
       - name: Build the helper smoke client
         if: matrix.test
         run: cargo build --release --target ${{ matrix.target }} -p boxpilot-helper --example mac_smoke
+
+      # The GUI's own helper client against the same daemon
+      # (examples/gui_helper_smoke.rs, never shipped): a debug build of
+      # BoxPilot's crate, whose dependencies the Test step built already.
+      - name: Build the GUI's helper client check
+        if: matrix.test
+        run: cargo build --target ${{ matrix.target }} -p box_pilot_gui --example gui_helper_smoke
 
       - name: "Helper smoke: install the helper from the DMG"
         id: helper-install
@@ -691,6 +700,13 @@ jobs:
         if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
         timeout-minutes: 15
         run: packaging/macos/helper-smoke.sh protocol
+
+      - name: "Helper smoke: the GUI's client, and the helper states it shows"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        env:
+          TARGET: ${{ matrix.target }}
+        run: packaging/macos/helper-smoke.sh gui-client "target/$TARGET/debug/examples/gui_helper_smoke"
 
       - name: "Helper smoke: the idle exit"
         if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
