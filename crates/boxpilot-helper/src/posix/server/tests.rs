@@ -92,8 +92,10 @@ struct Served {
 
 impl Served {
     fn new(config: ServerConfig, authority: Authority) -> Self {
-        let temp = TempDir::new("server");
-        let path = temp.0.join("helper.sock");
+        // Short names: a socket's path holds 103 bytes on macOS, whose
+        // $TMPDIR (under /var/folders) is long already.
+        let temp = TempDir::new("s");
+        let path = temp.0.join("s");
         let listener = UnixListener::bind(&path).unwrap();
         let core = Arc::new(HelperCore::new(FakeSupervisor::new(), Limits::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -265,8 +267,8 @@ fn read_only_clients_are_capped() {
 /// exits.
 #[test]
 fn waiting_clients_are_turned_away() {
-    let temp = TempDir::new("turn-away");
-    let path = temp.0.join("helper.sock");
+    let temp = TempDir::new("t");
+    let path = temp.0.join("s");
     let listener = UnixListener::bind(&path).unwrap();
     let mut clients: Vec<Client> = (0..3).map(|_| Client::connect(&path)).collect();
     assert_eq!(turn_away_waiting(&listener), 3);

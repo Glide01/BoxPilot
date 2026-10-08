@@ -86,12 +86,10 @@ pub fn main() -> i32 {
     }
     let listener = match launchd::listener(SOCKET_NAME) {
         Ok(listener) => listener,
-        Err(error) => return refuse(
-            exit::SOCKET_FAILED,
-            &format!(
-                "launchd gave no {SOCKET_NAME} socket (is it running from {PLIST_PATH}?): {error}"
-            ),
-        ),
+        Err(error) => {
+            let why = format!("launchd gave no {SOCKET_NAME} socket ({PLIST_PATH}): {error}");
+            return refuse(exit::SOCKET_FAILED, &why);
+        }
     };
     let refuse_and_turn_away = |code: i32, message: &str| {
         let code = refuse(code, message);

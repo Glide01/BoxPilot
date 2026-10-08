@@ -106,14 +106,18 @@ fn path_text(path: &Path) -> Result<&str, HelperError> {
 }
 
 impl PosixSupervisor {
-    /// Verify everything before serving anyone: the helper directory, the
-    /// helper itself, the manifest and the binaries it names, and the state
-    /// directory (created, private, if missing). Then open the log, clean
-    /// up after a helper that died with a run, and clear the run
-    /// directories it left.
+    /// Verify everything before serving anyone: the state directory
+    /// (created, private, if missing) first, so the log there can say why
+    /// anything else is refused; then the helper directory, the helper
+    /// itself, the manifest and the binaries it names. Then clean up after
+    /// a helper that died with a run, and clear the run directories it left.
     pub fn start(setup: Setup, max_log_line: usize) -> Result<Self, StartError> {
-        let helper_refused = |refused: Refused| (exit::HELPER_DIR_REFUSED, refused.to_string());
         let layout = &setup.layout;
+        prepare_state(layout, &setup.trust).map_err(|error| (exit::STATE_DIR_REFUSED, error.0))?;
+        if let Err(error) = log::open_file(&layout.log_file(), MAX_LOG_BYTES) {
+            return Err((exit::STATE_DIR_REFUSED, format!("no log file: {error}")));
+        }
+        let helper_refused = |refused: Refused| (exit::HELPER_DIR_REFUSED, refused.to_string());
         verify::dir_chain(layout.helper_dir(), Role::Dir, &setup.trust).map_err(helper_refused)?;
         if let Some(exe) = &setup.own_exe {
             verify::file_chain(exe, &setup.trust).map_err(helper_refused)?;
@@ -130,13 +134,7 @@ impl PosixSupervisor {
             max_log_line,
         };
         supervisor.open_binaries()?;
-        supervisor
-            .prepare_state()
-            .map_err(|error| (exit::STATE_DIR_REFUSED, error.0))?;
         let layout = &supervisor.setup.layout;
-        if let Err(error) = log::open_file(&layout.log_file(), MAX_LOG_BYTES) {
-            return Err((exit::STATE_DIR_REFUSED, format!("no log file: {error}")));
-        }
         supervisor.clean_up_after_a_crash();
         let runs = layout.runs_dir();
         if let Err(error) = fs::remove_dir_all(&runs) {
@@ -198,41 +196,12 @@ impl PosixSupervisor {
         Ok(held)
     }
 
-    /// The state directory: created, 0700, if missing (the install creates
-    /// it), then its whole chain verified, itself as private.
-    fn prepare_state(&self) -> Result<(), HelperError> {
-        let state = self.setup.layout.state_dir();
-        match fs::symlink_metadata(state) {
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if let Some(parent) = state.parent() {
-                    verify::dir_chain(parent, Role::Dir, &self.setup.trust)
-                        .map_err(|refused| HelperError::new(refused.to_string()))?;
-                }
-                self.create(state)?;
-            }
-            Err(error) => return Err(HelperError::new(format!("{}: {error}", state.display()))),
-        }
-        self.verify_state()
-    }
-
     fn verify_state(&self) -> Result<(), HelperError> {
-        verify::dir_chain(
-            self.setup.layout.state_dir(),
-            Role::Private,
-            &self.setup.trust,
-        )
-        .map(|_| ())
-        .map_err(|refused| HelperError::new(refused.to_string()))
+        verify_state(&self.setup.layout, &self.setup.trust)
     }
 
-    /// Create `path`, 0700; `Ok(false)` if it existed.
     fn create(&self, path: &Path) -> Result<bool, HelperError> {
-        match DirBuilder::new().mode(0o700).create(path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-            Err(error) => Err(HelperError::new(format!("{}: {error}", path.display()))),
-        }
+        create_private(path)
     }
 
     /// `path`, inside the verified state directory: created private, or
@@ -287,6 +256,39 @@ impl PosixSupervisor {
         written.map_err(|error| {
             HelperError::new(format!("the run marker could not be written: {error}"))
         })
+    }
+}
+
+/// The state directory: created, 0700, if missing (the install creates
+/// it), then its whole chain verified, itself as private.
+fn prepare_state(layout: &Layout, trust: &Trust) -> Result<(), HelperError> {
+    let state = layout.state_dir();
+    match fs::symlink_metadata(state) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = state.parent() {
+                verify::dir_chain(parent, Role::Dir, trust)
+                    .map_err(|refused| HelperError::new(refused.to_string()))?;
+            }
+            create_private(state)?;
+        }
+        Err(error) => return Err(HelperError::new(format!("{}: {error}", state.display()))),
+    }
+    verify_state(layout, trust)
+}
+
+fn verify_state(layout: &Layout, trust: &Trust) -> Result<(), HelperError> {
+    verify::dir_chain(layout.state_dir(), Role::Private, trust)
+        .map(|_| ())
+        .map_err(|refused| HelperError::new(refused.to_string()))
+}
+
+/// Create `path`, 0700; `Ok(false)` if it existed.
+fn create_private(path: &Path) -> Result<bool, HelperError> {
+    match DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(HelperError::new(format!("{}: {error}", path.display()))),
     }
 }
 
