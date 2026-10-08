@@ -35,9 +35,11 @@ use windows::Win32::Security::{
 /// The helper's own token, restricted by `plan`, as a primary token for
 /// `CreateProcessAsUserW`.
 pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
-    let own_token = Token::of_process_to_restrict()?;
+    let own_token = Token::of_process_to_restrict().map_err(context("the helper's own token"))?;
 
-    let held = own_token.privileges()?;
+    let held = own_token
+        .privileges()
+        .map_err(context("the helper's own privileges"))?;
     let names: Vec<String> = held
         .iter()
         .map(|privilege| privilege.name.clone())
@@ -56,7 +58,9 @@ pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
     let groups = if plan.deny_only.is_empty() {
         Vec::new()
     } else {
-        own_token.groups()?
+        own_token
+            .groups()
+            .map_err(context("the helper's own groups"))?
     };
     let disable_sids = spawnplan::sids_to_disable(&groups, plan.deny_only)
         .into_iter()
@@ -86,18 +90,24 @@ pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
             &mut handle,
         )
     }
-    .map_err(io_error)?;
+    .map_err(io_error)
+    .map_err(context("CreateRestrictedToken"))?;
     // SAFETY: CreateRestrictedToken returned a new handle nothing else owns.
     let token = Token::from_owned(unsafe { own(handle) });
 
     if plan.max_integrity.is_some() {
-        if let Some(level) = spawnplan::integrity_to_set(own_token.integrity()?, plan.max_integrity)
-        {
-            set_integrity(&token, level)?;
+        let own_level = own_token
+            .integrity()
+            .map_err(context("the helper's own integrity level"))?;
+        if let Some(level) = spawnplan::integrity_to_set(own_level, plan.max_integrity) {
+            set_integrity(&token, level).map_err(context("lowering the integrity level"))?;
         }
     }
 
-    let excess = spawnplan::excess(&token.observed()?, plan);
+    let observed = token
+        .observed()
+        .map_err(context("reading the restricted token back"))?;
+    let excess = spawnplan::excess(&observed, plan);
     if !excess.is_empty() {
         return Err(io::Error::other(format!(
             "sing-box's restricted token still holds {}",
@@ -105,6 +115,12 @@ pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
         )));
     }
     Ok(token)
+}
+
+/// An error with what failed in front, its kind kept: the probe's table
+/// tells a token that couldn't be made from a TUN that didn't come up.
+fn context(what: &'static str) -> impl FnOnce(io::Error) -> io::Error {
+    move |error| io::Error::new(error.kind(), format!("{what}: {error}"))
 }
 
 /// `None` for an empty list, which CreateRestrictedToken takes as "none".

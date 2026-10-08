@@ -279,7 +279,10 @@ pub(crate) fn spawn(launch: &Launch<'_>) -> io::Result<Child> {
             &mut info,
         )
     }
-    .map_err(io_error)?;
+    .map_err(|error| {
+        let error = io_error(error);
+        io::Error::new(error.kind(), format!("CreateProcessAsUserW: {error}"))
+    })?;
     // SAFETY: CreateProcessAsUserW returned these two new handles, owned by
     // nobody else.
     let (process, thread) = unsafe { (own(info.hProcess), own(info.hThread)) };
