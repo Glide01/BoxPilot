@@ -801,6 +801,16 @@ any of them.
   CI covers the pipe, protocol and policy path through the pure crates
   and the Linux transport tests; the seam is for a developer's machine.
   It can't bring TUN up either way.
+- **A smoke test of the installed service in CI.** The release
+  workflow's `windows` job installs the MSI it built on its (elevated,
+  throwaway) Windows Server runner and drives the real service with
+  `crates/boxpilot-helper/examples/service_smoke.rs` through
+  `packaging/windows/helper-smoke.ps1`, as an administrator and as a
+  fresh standard account: descriptors, authority, connection limits and
+  deadlines, real TUN starts and the loopback rule, broken installs'
+  exit codes, the uninstall. `docs/helper-windows-checklist.md` marks
+  what it covers; it doesn't replace that checklist's run on Windows 10
+  and 11 below.
 - **A release checklist on real machines.** Each of these must hold:
   - an account the administrator hasn't authorized gets no `Start`;
   - a remote client is refused, and so is an oversized frame;
