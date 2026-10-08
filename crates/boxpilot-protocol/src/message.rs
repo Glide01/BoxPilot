@@ -51,8 +51,13 @@ pub enum Request {
     /// Run sing-box on this profile config. Answered [`Reply::Started`] or
     /// [`Reply::Refused`]. Only a caller that may start sends it.
     Start(StartRequest),
-    /// Stop the sing-box this connection started. Answered
-    /// [`Reply::Stopped`]. Only a caller that may start sends it.
+    /// Stop the helper's sing-box, whichever connection started it: there
+    /// is one machine-wide, and any caller that may start may stop it (who
+    /// controls machine-wide networking is the administrator's call, and
+    /// every such caller is one the administrator allowed). Answered
+    /// [`Reply::Stopped`], also when nothing was running, once sing-box has
+    /// exited; its `exited` event goes to the connection that started it.
+    /// Only a caller that may start sends it.
     Stop,
     /// Answered [`Reply::Status`]. Open to every caller.
     Status,
