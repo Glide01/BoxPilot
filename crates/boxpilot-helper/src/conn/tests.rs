@@ -735,3 +735,40 @@ fn the_budget_moves_by_exactly_what_is_held() {
     assert!(budget.adjust(&mut other, 0));
     assert_eq!(budget.used(), 0);
 }
+
+// ---- connection slots ----
+
+/// Read-only callers get at most their share of the connections; callers
+/// that may start are always admitted, and a slot comes back when its
+/// connection ends.
+#[test]
+fn read_only_callers_cant_take_every_connection() {
+    let slots = ReadOnlySlots::new(2);
+    let first = slots.admit(Authority::ReadOnly).expect("under the cap");
+    let second = slots.admit(Authority::ReadOnly).expect("at the cap");
+    assert_eq!(slots.used(), 2);
+    assert!(slots.admit(Authority::ReadOnly).is_none());
+    assert_eq!(slots.used(), 2, "a refusal holds nothing");
+    let starters: Vec<_> = (0..5)
+        .map(|_| slots.admit(Authority::MayStart).expect("always"))
+        .collect();
+    assert_eq!(
+        slots.used(),
+        2,
+        "callers that may start hold no read-only slot"
+    );
+    drop(starters);
+    drop(first);
+    assert_eq!(slots.used(), 1);
+    let third = slots.admit(Authority::ReadOnly).expect("a slot came back");
+    drop((second, third));
+    assert_eq!(slots.used(), 0);
+}
+
+#[test]
+fn no_read_only_slots_admits_only_callers_that_may_start() {
+    let slots = ReadOnlySlots::new(0);
+    assert!(slots.admit(Authority::ReadOnly).is_none());
+    assert!(slots.admit(Authority::MayStart).is_some());
+    assert_eq!(slots.used(), 0);
+}

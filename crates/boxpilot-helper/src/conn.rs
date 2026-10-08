@@ -30,8 +30,8 @@ use crate::helper_log;
 use crate::outbox::{Outbox, OutboxLimits};
 use crate::transport::Transport;
 use boxpilot_protocol::{
-    encode_to_client, ErrorCode, Frame, FrameDecoder, Limits, ProtocolError, Reply, Request,
-    ServerSession, ToClient,
+    encode_to_client, Authority, ErrorCode, Frame, FrameDecoder, Limits, ProtocolError, Reply,
+    Request, ServerSession, ToClient,
 };
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -138,6 +138,63 @@ impl Budget {
                 }
                 Err(now) => used = now,
             }
+        }
+    }
+}
+
+/// How many connections from callers that may not start are served at
+/// once. Any interactive user may connect, and between requests a
+/// connection has no deadline, so without this cap another account could
+/// hold every connection slot and keep administrators from starting TUN.
+/// Read-only callers ask `hello` and `status`, which need no lasting
+/// connection; past the cap, a new one is closed as soon as its token says
+/// what it is, and the slots left stay free for callers that may start.
+#[derive(Debug)]
+pub struct ReadOnlySlots {
+    limit: usize,
+    used: AtomicUsize,
+}
+
+/// A connection admitted by [`ReadOnlySlots::admit`]: a read-only one
+/// holds its slot until this is dropped.
+#[must_use = "the slot is freed when this is dropped"]
+#[derive(Debug)]
+pub struct Admitted<'a> {
+    slots: Option<&'a ReadOnlySlots>,
+}
+
+impl ReadOnlySlots {
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            used: AtomicUsize::new(0),
+        }
+    }
+
+    /// Read-only connections being served.
+    pub fn used(&self) -> usize {
+        self.used.load(Ordering::SeqCst)
+    }
+
+    /// Admit a connection whose caller has `authority`: always, if it may
+    /// start; if it is read-only, only while fewer than the limit are.
+    pub fn admit(&self, authority: Authority) -> Option<Admitted<'_>> {
+        if authority.may_start() {
+            return Some(Admitted { slots: None });
+        }
+        self.used
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                (used < self.limit).then_some(used + 1)
+            })
+            .ok()
+            .map(|_| Admitted { slots: Some(self) })
+    }
+}
+
+impl Drop for Admitted<'_> {
+    fn drop(&mut self) {
+        if let Some(slots) = self.slots {
+            slots.used.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }

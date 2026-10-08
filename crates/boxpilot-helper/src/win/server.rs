@@ -6,6 +6,9 @@
 //!   always listening, so the pipe name is never free for someone else to
 //!   take; a client that connects to it while the helper is full waits
 //!   there until a connection ends.
+//! - At most [`MAX_READ_ONLY_CONNECTIONS`] of them are callers that may not
+//!   start (`conn::ReadOnlySlots`): any interactive user can connect, so
+//!   the rest stay free for callers that may.
 //! - Every connection's requests share one memory [`Budget`].
 //! - Each connection's caller is read from its token on its own thread,
 //!   before its first byte is read.
@@ -15,7 +18,7 @@ use super::security::SecurityDescriptor;
 use super::supervisor::{Setup, WinSupervisor};
 use super::sys::{wait_events, wide, Event};
 use super::token;
-use crate::conn::{self, Budget, ConnConfig};
+use crate::conn::{self, Budget, ConnConfig, ReadOnlySlots};
 use crate::exit;
 use crate::helper::{ConnId, Helper, HelperCore};
 use crate::helper_log;
@@ -29,6 +32,9 @@ use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
 
 /// Connections served at once.
 pub(crate) const MAX_CONNECTIONS: usize = 8;
+
+/// Of those, connections from callers that may not start.
+pub(crate) const MAX_READ_ONLY_CONNECTIONS: usize = MAX_CONNECTIONS / 2;
 
 /// With no connection and no sing-box for this long, the helper exits; the
 /// GUI starts it again on demand (ADR 0006 rule 6).
@@ -46,6 +52,7 @@ type Core = HelperCore<WinSupervisor>;
 struct Connections {
     core: Arc<Core>,
     budget: Arc<Budget>,
+    read_only: Arc<ReadOnlySlots>,
     config: ConnConfig,
     /// Each connection's transport, to close them all at shutdown.
     open: Arc<Mutex<HashMap<ConnId, Arc<PipeTransport>>>>,
@@ -79,12 +86,21 @@ impl Connections {
             .insert(id, transport.clone());
         self.live.fetch_add(1, Ordering::SeqCst);
         let (core, budget, config) = (self.core.clone(), self.budget.clone(), self.config);
+        let read_only = self.read_only.clone();
         let (open, live, ended) = (self.open.clone(), self.live.clone(), self.ended.clone());
         let thread = thread::Builder::new()
             .name(format!("connection {id}"))
             .spawn(move || {
                 let caller = token::caller(transport.handle());
-                conn::serve(&*transport, id, &caller, &*core, &config, &budget);
+                match read_only.admit(caller.authority) {
+                    Some(_admitted) => {
+                        conn::serve(&*transport, id, &caller, &*core, &config, &budget);
+                    }
+                    None => helper_log!(
+                        "connection {id}: closed, {MAX_READ_ONLY_CONNECTIONS} read-only \
+                         connections are served already"
+                    ),
+                }
                 open.lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .remove(&id);
@@ -176,6 +192,7 @@ pub(crate) fn run(
     let mut connections = Connections {
         core: core.clone(),
         budget: Arc::new(Budget::new(Budget::DEFAULT_LIMIT)),
+        read_only: Arc::new(ReadOnlySlots::new(MAX_READ_ONLY_CONNECTIONS)),
         config: ConnConfig::default(),
         open: Arc::new(Mutex::new(HashMap::new())),
         live: Arc::new(AtomicUsize::new(0)),
