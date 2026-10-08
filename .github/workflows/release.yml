@@ -8,7 +8,9 @@
 #           the older glibc that ships there.
 # macos   — one DMG per architecture (arm64, x86_64), signed ad hoc. GPUI's
 #           Metal shaders are compiled with Xcode's `xcrun metal`, so this
-#           runs natively on a macOS runner, never cross from Linux.
+#           runs natively on a macOS runner, never cross from Linux. The
+#           DMG carries the privileged helper (ADR 0006), which the arm64
+#           leg installs from it and drives on the runner.
 # publish — attaches all of them to the GitHub release once every build
 #           succeeds; only for the release branches and version tags.
 
@@ -188,7 +190,7 @@ jobs:
         run: |
           $env:BOXPILOT_HELPER_STAGE = (Resolve-Path "target/x86_64-pc-windows-msvc/release/helper").Path
           $env:BOXPILOT_HELPER_SINGBOX_VERSION = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
-          cargo test --target x86_64-pc-windows-msvc --test install_manifest -- --ignored
+          cargo test --target x86_64-pc-windows-msvc --test install_manifest -- --ignored --exact the_staged_helper_directory_is_what_the_helper_accepts
 
       # The helper's sing-box runs as SYSTEM, and the GUI that starts it gets
       # its `api` service's secret, so every RPC of that service runs as
@@ -589,20 +591,41 @@ jobs:
             echo "::error::sing-box not found inside the downloaded archive."
             exit 1
           fi
+          # The privileged helper installs this same sing-box, and its
+          # manifest names no file beside it (ADR 0006 rules 3 and 7). If the
+          # archive ever ships one sing-box may load (a libcronet, as on
+          # Windows), it must be staged and hashed too before it ships.
+          for entry in "$(dirname "$bin")"/* "$(dirname "$bin")"/.[!.]*; do
+            [ -e "$entry" ] || continue
+            case "$(basename "$entry")" in
+              sing-box | LICENSE) ;;
+              *)
+                echo "::error::sing-box's archive has $(basename "$entry") beside sing-box. If sing-box loads it, the helper's manifest must hash it (packaging/macos/build-dmg.sh); either way, add it to this list."
+                exit 1
+                ;;
+            esac
+          done
           install -m 0755 "$bin" release/sing-box
           echo "Bundled sing-box from $bin"
 
+      # The DMG also carries the privileged helper (ADR 0006): the Build step
+      # built it (every default member, the helper crate included), and
+      # build-dmg.sh puts it, its manifest, its launchd plist and its install
+      # scripts into BoxPilot.app. $SINGBOX_VERSION was validated by the
+      # download step; it goes into the helper's manifest.
       - name: Build DMG
         env:
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
         run: |
+          singbox_version=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
           packaging/macos/build-dmg.sh \
             "target/$TARGET/release/box_pilot_gui" \
             release/sing-box \
             "$CARGO_VERSION" \
             "$ARCH" \
-            release
+            release \
+            "${singbox_version#v}"
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -611,6 +634,101 @@ jobs:
           path: release/*.dmg
           if-no-files-found: error
           retention-days: 3
+
+      # The helper refuses to run on a manifest it can't parse or a sing-box
+      # that doesn't match it, so check the payload in the DMG just built
+      # with its own parser: the manifest hashes the app's sing-box as
+      # signed, and the scripts and the plist are the repository's. A host
+      # build (Apple silicon) checks either DMG: the test only reads files.
+      - name: Check the helper's payload in the DMG
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mount="$RUNNER_TEMP/dmg-check"
+          mkdir -p "$mount"
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "release/BoxPilot-$CARGO_VERSION-macos-$ARCH.dmg"
+          status=0
+          singbox_version=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
+          BOXPILOT_HELPER_MACOS_CONTENTS="$mount/BoxPilot.app/Contents" \
+          BOXPILOT_HELPER_SINGBOX_VERSION="${singbox_version#v}" \
+            cargo test -p boxpilot-helper --test install_manifest -- --ignored --exact the_macos_payload_is_what_the_helper_accepts || status=$?
+          hdiutil detach "$mount" || hdiutil detach -force "$mount"
+          exit "$status"
+
+      # ---- The privileged helper, installed and driven on this runner ----
+      #
+      # The helper was built and unit-tested on Linux (and its POSIX layer
+      # here, by the Test step); these steps install it from the DMG just
+      # built, with sudo standing in for the administrator prompt (GitHub's
+      # macOS runners have passwordless sudo and are thrown away), and drive
+      # the daemon from outside with a smoke client
+      # (crates/boxpilot-helper/examples/mac_smoke.rs, never shipped), as the
+      # runner's account (the owner), as root and as a fresh standard
+      # account. Each step is one stage of packaging/macos/helper-smoke.sh.
+      # Apple silicon only (`test: true`): the x86_64 leg is cross-built.
+      # They come after "Upload DMG", so the DMG is uploaded whatever they
+      # find, and each runs while the install held, so one round shows every
+      # finding.
+      - name: Build the helper smoke client
+        if: matrix.test
+        run: cargo build --release --target ${{ matrix.target }} -p boxpilot-helper --example mac_smoke
+
+      - name: "Helper smoke: install the helper from the DMG"
+        id: helper-install
+        if: matrix.test
+        timeout-minutes: 10
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: packaging/macos/helper-smoke.sh install "release/BoxPilot-$CARGO_VERSION-macos-$ARCH.dmg" "target/$TARGET/release/examples/mac_smoke"
+
+      - name: "Helper smoke: the installed files, socket and daemon"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 5
+        run: packaging/macos/helper-smoke.sh inspect
+
+      - name: "Helper smoke: the protocol and TUN as the owner"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 15
+        run: packaging/macos/helper-smoke.sh protocol
+
+      - name: "Helper smoke: the idle exit"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 5
+        run: packaging/macos/helper-smoke.sh idle-exit
+
+      - name: "Helper smoke: another account"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh other-user
+
+      - name: "Helper smoke: a broken install's exit codes"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh broken-install
+
+      - name: "Helper smoke: killing the helper kills sing-box"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh kill-helper
+
+      - name: "Helper smoke: the system proxy, and its reset after a crash"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh system-proxy
+
+      - name: "Helper smoke: uninstall"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh uninstall
+
+      # The helper's own log (readable by root only, which the runner may
+      # become), launchd's state, the system log for the label, and the
+      # smoke client's output, whatever the steps above found.
+      - name: "Helper smoke: logs"
+        if: always() && matrix.test && steps.helper-install.outcome != 'skipped'
+        timeout-minutes: 5
+        run: packaging/macos/helper-smoke.sh logs
 
   publish:
     needs: [windows, linux, macos]
