@@ -19,10 +19,13 @@
 //! fails closed. Field names were checked against sing-box 1.14.2 (`option/`
 //! and the docs); audit them at every `SINGBOX_VERSION` bump.
 //!
-//! Rules name keys exactly, in lower case. sing-box's Go decoder matches
-//! field names case-insensitively (`Executable_Path` is `executable_path` to
-//! it), so a key spelled any other way is refused rather than guessed at
-//! ([`RefusalKind::NonCanonicalKey`]).
+//! Rules name keys exactly, in lower-case ASCII. sing-box's Go decoder
+//! matches field names case-insensitively (`Executable_Path` is
+//! `executable_path` to it), so a key spelled any other way is refused rather
+//! than guessed at ([`RefusalKind::NonCanonicalKey`]). Outbound, endpoint,
+//! DNS server and rule-set types come from allowlists in the same spirit:
+//! a type upstream adds next is refused until it is judged
+//! ([`RefusalKind::TypeNotAllowed`]).
 //!
 //! The helper must run sing-box on the serialization of [`materialize`]'s
 //! output, never on the bytes it received: those can say things (duplicate
@@ -101,13 +104,18 @@ pub enum RefusalKind {
     /// A value of a type sing-box doesn't take there, where the policy has to
     /// look inside it (say `outbounds` that isn't an array).
     Malformed { expected: Expected },
-    /// A key spelled with upper-case letters (or `ſ`, or the Kelvin sign).
+    /// A key spelled with upper-case letters or any non-ASCII character.
     /// sing-box matches field names case-insensitively, so it would read
     /// `Executable_Path` as `executable_path`; the policy refuses rather than
     /// guess which field it is.
     NonCanonicalKey,
     /// A top-level key outside the sections the helper runs.
     UnknownSection,
+    /// An outbound, endpoint, DNS server or rule-set `type` not on the
+    /// policy's list: one sing-box doesn't have, one it removed, or one that
+    /// reaches beyond networking (`bridge`). `None` when the element has no
+    /// `type`, or one that isn't a string.
+    TypeNotAllowed { type_name: Option<String> },
     /// `inbounds`: BoxPilot owns the inbounds, and the helper adds its own.
     Inbounds,
     /// A `services` entry other than `api` (USB/IP, DERP, ssm-api, ccm/ocm,
@@ -120,7 +128,8 @@ pub enum RefusalKind {
     /// `*wrapper_path`.
     RunsProgram,
     /// Changes the system beyond networking: NTP `write_to_system`, the
-    /// Tailscale SSH server.
+    /// Tailscale SSH server, TLS spoofing (which installs a kernel driver on
+    /// Windows).
     SystemChange,
     /// Lets the remote server inspect local files: an OpenConnect endpoint
     /// in the AnyConnect flavor runs a built-in host scan that stats the
@@ -462,6 +471,15 @@ impl fmt::Display for RefusalKind {
             ),
             RefusalKind::UnknownSection => {
                 f.write_str("is not a section sing-box may run with on the privileged path")
+            }
+            RefusalKind::TypeNotAllowed {
+                type_name: Some(type_name),
+            } => write!(
+                f,
+                "is `{type_name}`, a type the privileged path doesn't run"
+            ),
+            RefusalKind::TypeNotAllowed { type_name: None } => {
+                f.write_str("has no `type` the privileged path runs")
             }
             RefusalKind::Inbounds => {
                 f.write_str("defines inbounds; BoxPilot adds its own on the privileged path")

@@ -197,11 +197,77 @@ enum Scope {
     Route,
     /// `route.rule_set[]`.
     RuleSet(RuleSetKind),
-    /// A remote rule set's inline `http_client`.
+    /// An HTTP client: top-level `http_clients[]`, or a remote rule set's
+    /// inline `http_client`.
     HttpClient,
     /// `experimental.cache_file`.
     CacheFile,
 }
+
+/// `outbounds[].type` values the privileged path runs: the network-only
+/// types of sing-box 1.14.2's outbound registry (`include/registry.go`,
+/// `include/quic.go`, `include/naive_outbound.go`). Not on it:
+/// - `tor`, refused on its own as running a program;
+/// - `bridge` (since 1.14.0), which makes the machine a router: it turns on
+///   IP forwarding and loads pf anchors (macOS) or NAT (Windows), beyond
+///   bringing TUN up or down;
+/// - `dns`, `shadowsocksr` and `wireguard`, which 1.14.2 keeps only to say
+///   they were removed.
+const OUTBOUND_TYPES: [&str; 18] = [
+    "direct",      // plain connections, with dial fields
+    "block",       // drops every connection
+    "selector",    // a group the user picks a member of
+    "urltest",     // a group that picks its fastest member
+    "socks",       // SOCKS4 / SOCKS5 client
+    "http",        // HTTP CONNECT client; its `path` is a URL path
+    "shadowsocks", // Shadowsocks; plugins are built in (obfs-local, v2ray-plugin)
+    "snell",       // Snell client
+    "vmess",       // VMess, with V2Ray transports
+    "trojan",      // Trojan, with V2Ray transports
+    "naive", // NaïveProxy over cronet; on Windows sing-box loads libcronet.dll beside itself, then from PATH
+    "ssh",   // SSH tunnel; its private key file travels as an attachment
+    "shadowtls", // ShadowTLS client
+    "vless", // VLESS, with V2Ray transports
+    "anytls", // AnyTLS client
+    "hysteria", // Hysteria (v1) client
+    "tuic",  // TUIC client
+    "hysteria2", // Hysteria2 client
+];
+
+/// `endpoints[].type` values the privileged path runs: all of sing-box
+/// 1.14.2's endpoint registry (`EndpointRegistry`), each a VPN client or
+/// server. Their files travel as attachments, Tailscale's directories are
+/// the helper's, and Tailscale SSH and the AnyConnect host scan are refused
+/// on their own.
+const ENDPOINT_TYPES: [&str; 5] = [
+    "wireguard",      // WireGuard
+    "openconnect",    // AnyConnect, GlobalProtect, Fortinet, F5, Pulse / NC VPNs
+    "openvpn-client", // OpenVPN client
+    "openvpn-server", // OpenVPN server, listening on a port
+    "tailscale",      // a Tailscale node
+];
+
+/// `dns.servers[].type` values the privileged path runs: sing-box 1.14.2's
+/// DNS transport registry (`DNSTransportRegistry`). Not on it: `resolved`,
+/// which serves what the `resolved` service collects, and that service is
+/// refused; `legacy` and a missing `type` (the address-only legacy format),
+/// which 1.14.0 removed and 1.14.2 rejects.
+const DNS_SERVER_TYPES: [&str; 14] = [
+    "udp",         // plain DNS over UDP
+    "tcp",         // plain DNS over TCP
+    "tls",         // DNS over TLS
+    "https",       // DNS over HTTPS; its `path` is a URL path
+    "quic",        // DNS over QUIC
+    "h3",          // DNS over HTTP/3; its `path` is a URL path
+    "local",       // the system resolver
+    "hosts",       // hosts files (attachments) and predefined answers
+    "fakeip",      // synthetic addresses from a range
+    "dhcp",        // servers learned by DHCP on an interface
+    "mdns",        // multicast DNS on the local link
+    "tailscale",   // MagicDNS of a Tailscale endpoint
+    "openconnect", // DNS pushed to an OpenConnect endpoint
+    "openvpn",     // DNS pushed to an OpenVPN endpoint
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DnsServerKind {
@@ -209,7 +275,10 @@ enum DnsServerKind {
     Http,
     /// `hosts`: its `path` lists hosts files to read.
     Hosts,
+    /// Listed, with no rules of its own.
     Other,
+    /// Not on `DNS_SERVER_TYPES`: refused.
+    Unlisted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,7 +289,10 @@ enum OutboundKind {
     Http,
     /// `ssh`: may read a private key file.
     Ssh,
+    /// Listed, with no rules of its own.
     Other,
+    /// Not on `OUTBOUND_TYPES`: refused.
+    Unlisted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,14 +303,19 @@ enum EndpointKind {
     OpenConnect,
     OpenVpnClient,
     OpenVpnServer,
+    /// Listed, with no rules of its own.
     Other,
+    /// Not on `ENDPOINT_TYPES`: refused.
+    Unlisted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransportKind {
     /// `http`, `ws`, `httpupgrade`: their `path` is the request's URL path.
     Http,
-    /// `grpc`, `quic`: no path at all.
+    /// `grpc`, `quic`: no path at all. An unknown transport is left to the
+    /// shape rule: sing-box rejects one, and none of the five reaches beyond
+    /// the connection it carries.
     Other,
 }
 
@@ -263,7 +340,8 @@ enum RuleSetKind {
     Local,
     /// `remote`: downloaded into the cache file; may start from a local file.
     Remote,
-    Other,
+    /// Any other `type`: refused (sing-box knows only these three).
+    Unlisted,
 }
 
 impl OutboundKind {
@@ -272,7 +350,8 @@ impl OutboundKind {
             Some("tor") => Self::Tor,
             Some("http") => Self::Http,
             Some("ssh") => Self::Ssh,
-            _ => Self::Other,
+            Some(kind) if OUTBOUND_TYPES.contains(&kind) => Self::Other,
+            _ => Self::Unlisted,
         }
     }
 }
@@ -285,7 +364,8 @@ impl EndpointKind {
             Some("openconnect") => Self::OpenConnect,
             Some("openvpn-client") => Self::OpenVpnClient,
             Some("openvpn-server") => Self::OpenVpnServer,
-            _ => Self::Other,
+            Some(kind) if ENDPOINT_TYPES.contains(&kind) => Self::Other,
+            _ => Self::Unlisted,
         }
     }
 }
@@ -295,7 +375,8 @@ impl DnsServerKind {
         match type_of(object) {
             Some("https" | "h3") => Self::Http,
             Some("hosts") => Self::Hosts,
-            _ => Self::Other,
+            Some(kind) if DNS_SERVER_TYPES.contains(&kind) => Self::Other,
+            _ => Self::Unlisted,
         }
     }
 }
@@ -317,9 +398,9 @@ impl RuleSetKind {
                 "" | "inline" => Self::Inline,
                 "local" => Self::Local,
                 "remote" => Self::Remote,
-                _ => Self::Other,
+                _ => Self::Unlisted,
             },
-            Some(_) => Self::Other,
+            Some(_) => Self::Unlisted,
         }
     }
 }
@@ -353,6 +434,7 @@ enum Element {
     Rule,
     RuleSet,
     TnccCertificate,
+    HttpClient,
 }
 
 /// Whether a file-read field takes one path or, as sing-box's `Listable`, a
@@ -450,6 +532,15 @@ fn ssh_server_off(value: &Value) -> bool {
     }
 }
 
+/// TLS spoofing, `spoof` or `tls_spoof`: off when empty.
+fn spoof(value: &Value) -> Action {
+    match value {
+        Value::Null => Action::Visit(Node::Plain),
+        Value::String(sni) if sni.is_empty() => Action::Visit(Node::Plain),
+        _ => Action::Refuse(RefusalKind::SystemChange),
+    }
+}
+
 /// The context-scoped rules: what a key is where it stands. `None` leaves
 /// the key to the shape rule.
 fn scoped(scope: Scope, key: &str, value: &Value) -> Option<Action> {
@@ -482,6 +573,9 @@ fn scoped(scope: Scope, key: &str, value: &Value) -> Option<Action> {
         (Rule, "rules") => Action::Visit(Node::ArrayOf(Element::Rule)),
         // Rule matchers keyed by interface name / interface type.
         (Rule, "interface_address" | "network_interface_address") => Action::Visit(Node::Map),
+        // `route-options` `tls_spoof` (since 1.14.0): see outbound TLS
+        // `spoof`.
+        (Rule, "tls_spoof") => spoof(value),
 
         // NTP `write_to_system`: sets the system clock.
         (Ntp, "write_to_system") => {
@@ -551,6 +645,11 @@ fn scoped(scope: Scope, key: &str, value: &Value) -> Option<Action> {
             "certificate_path" | "client_certificate_path" | "client_key_path",
         ) => Action::Read(Arity::One),
         (Tls(TlsKind::Outbound), "ech") => Action::Visit(Node::Object(Ech)),
+        // Outbound TLS `spoof` (since 1.14.0): forges a ClientHello with
+        // raw packets. On Windows it installs the embedded WinDivert kernel
+        // driver through the service manager on first use
+        // (`common/windivert`), a system change beyond TUN.
+        (Tls(TlsKind::Outbound), "spoof") => spoof(value),
         // `OpenConnectTLSOptions`: CA, client certificate and key, and the
         // machine (MCA) certificate and key files.
         (
@@ -684,8 +783,13 @@ impl<'a> Walk<'a> {
                 "route" => self.visit(&at, value, Node::Object(Scope::Route), 2),
                 "outbounds" => self.visit(&at, value, Node::ArrayOf(Element::Outbound), 2),
                 "endpoints" => self.visit(&at, value, Node::ArrayOf(Element::Endpoint), 2),
-                // `certificate_providers`, `http_clients`,
-                // `network_namespaces`, and whatever comes next.
+                // Shared HTTP clients (since 1.14.0), for rule-set downloads
+                // and `route.default_http_client`: TLS, headers, HTTP/2 and
+                // HTTP/3 tuning, dial fields; nothing but the connection.
+                "http_clients" => self.visit(&at, value, Node::ArrayOf(Element::HttpClient), 2),
+                // `certificate_providers` (ACME and the like, which keep
+                // state on disk), `network_namespaces` (which create or
+                // join namespaces), and whatever comes next.
                 _ => self.refuse(at, RefusalKind::UnknownSection),
             }
         }
@@ -855,7 +959,17 @@ impl<'a> Walk<'a> {
             Element::Rule => Scope::Rule,
             Element::RuleSet => Scope::RuleSet(RuleSetKind::of(object)),
             Element::TnccCertificate => Scope::TnccCertificate,
+            Element::HttpClient => Scope::HttpClient,
         };
+        if matches!(
+            scope,
+            Scope::Outbound(OutboundKind::Unlisted)
+                | Scope::Endpoint(EndpointKind::Unlisted)
+                | Scope::DnsServer(DnsServerKind::Unlisted)
+                | Scope::RuleSet(RuleSetKind::Unlisted)
+        ) {
+            self.unlisted_type(at, object);
+        }
         self.object(at, object, scope, depth);
     }
 
@@ -896,6 +1010,27 @@ impl<'a> Walk<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// An element whose type is not on its list. The refusal names the
+    /// `type` when it is a string, and the element otherwise. sing-box
+    /// 1.14.2 rejects an outbound or endpoint without a type ("unknown
+    /// outbound type: ") and a DNS server without one ("legacy DNS server
+    /// formats … removed"); a rule set without one is inline, and never
+    /// gets here.
+    fn unlisted_type(&mut self, at: &str, object: &Map<String, Value>) {
+        match object.get("type") {
+            Some(Value::String(type_name)) => self.refuse(
+                child(at, "type"),
+                RefusalKind::TypeNotAllowed {
+                    type_name: Some(type_name.clone()),
+                },
+            ),
+            _ => self.refuse(
+                at.to_owned(),
+                RefusalKind::TypeNotAllowed { type_name: None },
+            ),
         }
     }
 

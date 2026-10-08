@@ -123,7 +123,21 @@
       }
     }
   ],
+  "http_clients": [
+    {
+      "tag": "corp-proxy",
+      "detour": "corp-trojan",
+      "headers": {
+        "User-Agent": "BoxPilot"
+      },
+      "tls": {
+        "enabled": true,
+        "certificate_path": "C:\\certs\\proxy-ca.pem"
+      }
+    }
+  ],
   "route": {
+    "default_http_client": "corp-proxy",
     "rule_set": [
       {
         "type": "local",

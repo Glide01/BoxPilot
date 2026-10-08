@@ -448,7 +448,6 @@ fn services_other_than_api_are_refused() {
 fn unknown_sections_are_refused() {
     let config = r#"{
         "certificate_providers": [{"type": "acme", "tag": "le", "domain": ["a.example"], "data_directory": "acme"}],
-        "http_clients": [{"tag": "c", "detour": "direct"}],
         "network_namespaces": [{"type": "unshare", "tag": "ns", "pid_file": "/run/ns.pid"}],
         "outbounds": [{"type": "direct", "tag": "direct"}],
         "workspace": {}
@@ -457,10 +456,190 @@ fn unknown_sections_are_refused() {
         refusals(config),
         [
             at("/certificate_providers", RefusalKind::UnknownSection),
-            at("/http_clients", RefusalKind::UnknownSection),
             at("/network_namespaces", RefusalKind::UnknownSection),
             at("/workspace", RefusalKind::UnknownSection),
         ]
+    );
+}
+
+/// Shared HTTP clients (1.14) run under the same rules as a rule set's own:
+/// their CA file is an attachment, and their headers and dial fields are
+/// network settings.
+#[test]
+fn http_clients_run_like_a_rule_sets_own_client() {
+    let config = json!({
+        "http_clients": [{
+            "tag": "rules", "version": 3, "idle_timeout": "30s", "initial_packet_size": 1300,
+            "headers": {"User-Agent": "sing-box 1.14.2"}, "detour": "proxy", "tcp_multi_path": true,
+            "tls": {"enabled": true, "server_name": "rules.example.com", "certificate_path": reference("rules-ca")}
+        }],
+        "outbounds": [{"type": "direct", "tag": "proxy"}],
+        "route": {
+            "default_http_client": "rules",
+            "rule_set": [{"type": "remote", "tag": "ads", "format": "binary",
+                          "url": "https://rules.example.com/ads.srs", "http_client": "rules"}]
+        }
+    })
+    .to_string();
+    let checked = passes_with(&config, &["rules-ca"]);
+    assert_eq!(*checked.config(), parse(&config));
+    let placement = placement();
+    assert_eq!(
+        materialize(checked, &placement)["http_clients"][0]["tls"]["certificate_path"],
+        json!(placement.attachment_path("rules-ca"))
+    );
+
+    let config = r#"{"http_clients": [{"tag": "c", "Detour": "proxy", "netns": "/proc/1/ns/net",
+        "tls": {"certificate_path": "C:\\certs\\ca.pem", "spoof": "allowed.example"}}]}"#;
+    assert_eq!(
+        refusals(config),
+        [
+            at("/http_clients/0/Detour", RefusalKind::NonCanonicalKey),
+            at("/http_clients/0/netns", RefusalKind::FilesystemPath),
+            at(
+                "/http_clients/0/tls/certificate_path",
+                RefusalKind::LocalFile
+            ),
+            at("/http_clients/0/tls/spoof", RefusalKind::SystemChange),
+        ]
+    );
+}
+
+/// Outbound, endpoint, DNS server and rule-set types come from allowlists:
+/// a type off the list is refused at its `type`, an element without one
+/// (or with a non-string one) at the element. Removed types (`wireguard`
+/// and `dns` outbounds, the legacy DNS server format) and `bridge` are off
+/// the list; tor stays "runs a program".
+#[test]
+fn types_off_the_lists_are_refused() {
+    let config = r#"{
+        "outbounds": [
+            {"type": "direct", "tag": "direct"},
+            {"type": "bridge", "tag": "lan", "interface": "en0"},
+            {"type": "wireguard", "tag": "wg-old"},
+            {"type": "dns", "tag": "dns-out"},
+            {"tag": "untyped"},
+            {"type": 7, "tag": "numbered"}
+        ],
+        "endpoints": [
+            {"type": "warp", "tag": "w"},
+            {"tag": "untyped-endpoint"},
+            {"type": "tor", "tag": "tor-endpoint"}
+        ],
+        "dns": {"servers": [
+            {"type": "resolved", "tag": "r", "service": "resolved"},
+            {"tag": "legacy", "address": "tls://1.1.1.1"},
+            {"type": "legacy", "tag": "legacy-typed", "address": "8.8.8.8"}
+        ]},
+        "route": {"rule_set": [
+            {"type": "git", "tag": "g", "url": "https://rules.example.com/g"},
+            {"tag": "untyped-is-inline", "rules": [{"domain": ["a.example"]}]}
+        ]}
+    }"#;
+    let not_allowed = |type_name: Option<&str>| RefusalKind::TypeNotAllowed {
+        type_name: type_name.map(str::to_string),
+    };
+    assert_eq!(
+        refusals(config),
+        [
+            at("/dns/servers/0/type", not_allowed(Some("resolved"))),
+            at("/dns/servers/1", not_allowed(None)),
+            at("/dns/servers/2/type", not_allowed(Some("legacy"))),
+            at("/endpoints/0/type", not_allowed(Some("warp"))),
+            at("/endpoints/1", not_allowed(None)),
+            at("/endpoints/2/type", RefusalKind::RunsProgram),
+            at("/outbounds/1/type", not_allowed(Some("bridge"))),
+            at("/outbounds/2/type", not_allowed(Some("wireguard"))),
+            at("/outbounds/3/type", not_allowed(Some("dns"))),
+            at("/outbounds/4", not_allowed(None)),
+            at("/outbounds/5", not_allowed(None)),
+            at("/route/rule_set/0/type", not_allowed(Some("git"))),
+        ]
+    );
+}
+
+/// Every type on the lists passes as a type. Kept in step with
+/// `OUTBOUND_TYPES`, `ENDPOINT_TYPES` and `DNS_SERVER_TYPES`, so a type
+/// dropped by mistake shows here.
+#[test]
+fn listed_types_pass() {
+    for kind in [
+        "direct",
+        "block",
+        "selector",
+        "urltest",
+        "socks",
+        "http",
+        "shadowsocks",
+        "snell",
+        "vmess",
+        "trojan",
+        "naive",
+        "ssh",
+        "shadowtls",
+        "vless",
+        "anytls",
+        "hysteria",
+        "tuic",
+        "hysteria2",
+    ] {
+        passes(&json!({"outbounds": [{"type": kind, "tag": "x"}]}).to_string());
+    }
+    for kind in [
+        "wireguard",
+        "openconnect",
+        "openvpn-client",
+        "openvpn-server",
+        "tailscale",
+    ] {
+        // `gp`: the AnyConnect flavor is refused on its own.
+        passes(&json!({"endpoints": [{"type": kind, "tag": "x", "flavor": "gp"}]}).to_string());
+    }
+    for kind in [
+        "udp",
+        "tcp",
+        "tls",
+        "https",
+        "quic",
+        "h3",
+        "local",
+        "hosts",
+        "fakeip",
+        "dhcp",
+        "mdns",
+        "tailscale",
+        "openconnect",
+        "openvpn",
+    ] {
+        passes(&json!({"dns": {"servers": [{"type": kind, "tag": "x"}]}}).to_string());
+    }
+    for kind in ["inline", "", "local", "remote"] {
+        passes(&json!({"route": {"rule_set": [{"type": kind, "tag": "x"}]}}).to_string());
+    }
+}
+
+/// TLS spoofing forges packets, and on Windows installs the WinDivert
+/// kernel driver through the service manager on first use; off when empty.
+#[test]
+fn tls_spoofing_changes_the_system() {
+    let config = r#"{
+        "outbounds": [{"type": "trojan", "tag": "t", "server": "a.example", "server_port": 443, "password": "p",
+                       "tls": {"enabled": true, "spoof": "allowed.example", "spoof_method": "wrong-sequence"}}],
+        "route": {"rules": [{"domain_suffix": ["blocked.example"], "action": "route-options", "tls_spoof": "allowed.example"}]}
+    }"#;
+    assert_eq!(
+        refusals(config),
+        [
+            at("/outbounds/0/tls/spoof", RefusalKind::SystemChange),
+            at("/route/rules/0/tls_spoof", RefusalKind::SystemChange),
+        ]
+    );
+    passes(
+        r#"{
+        "outbounds": [{"type": "trojan", "tag": "t", "server": "a.example", "server_port": 443, "password": "p",
+                       "tls": {"enabled": true, "spoof": ""}}],
+        "route": {"rules": [{"domain_suffix": ["blocked.example"], "action": "route-options", "tls_spoof": null}]}
+    }"#,
     );
 }
 
@@ -654,6 +833,11 @@ fn keys_sing_box_would_read_under_another_spelling_are_refused() {
             at(
                 "/outbounds/1/tls/cErtificate_path",
                 RefusalKind::NonCanonicalKey
+            ),
+            // With its only type spelled `Type`, it has none at all.
+            at(
+                "/outbounds/2",
+                RefusalKind::TypeNotAllowed { type_name: None }
             ),
             at("/outbounds/2/Type", RefusalKind::NonCanonicalKey),
             at("/services/0/TYPE", RefusalKind::NonCanonicalKey),
@@ -926,6 +1110,10 @@ fn local_file_fields_lists_every_file_the_config_reads() {
             field(
                 "/endpoints/4/tncc/certificates/0/certificate_path",
                 r"C:\certs\pulse-device.pem"
+            ),
+            field(
+                "/http_clients/0/tls/certificate_path",
+                r"C:\certs\proxy-ca.pem"
             ),
             field(
                 "/outbounds/0/tls/certificate_path",
@@ -1290,6 +1478,24 @@ fn refusals_read_as_plain_english() {
         )
         .to_string(),
         "/route/rule_set/0/path refers to attachment `rules`, which the request doesn't carry"
+    );
+    assert_eq!(
+        refusal(
+            "/outbounds/1/type",
+            RefusalKind::TypeNotAllowed {
+                type_name: Some("bridge".into())
+            }
+        )
+        .to_string(),
+        "/outbounds/1/type is `bridge`, a type the privileged path doesn't run"
+    );
+    assert_eq!(
+        refusal(
+            "/outbounds/4",
+            RefusalKind::TypeNotAllowed { type_name: None }
+        )
+        .to_string(),
+        "/outbounds/4 has no `type` the privileged path runs"
     );
     assert_eq!(
         dropped("/experimental/clash_api", DropReason::ControlPlane).to_string(),
