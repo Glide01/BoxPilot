@@ -120,7 +120,8 @@ mod tests {
 
     #[test]
     fn the_app_is_the_one_info_plist_names() {
-        let info = include_str!("../../../packaging/macos/Info.plist");
+        // LF whatever the checkout made of it (Windows' may be CRLF).
+        let info = include_str!("../../../packaging/macos/Info.plist").replace("\r\n", "\n");
         assert!(info.contains(&format!(
             "<key>CFBundleIdentifier</key>\n\t<string>{APP_BUNDLE_ID}</string>"
         )));

@@ -20,9 +20,13 @@ fn packaging(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// A packaging file, with LF line endings whatever the checkout made of
+/// them (Windows' may be CRLF; the DMG is built from a macOS checkout).
 fn read(name: &str) -> String {
     let path = packaging(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .replace("\r\n", "\n")
 }
 
 /// The script's `NAME='value'` assignments, one per line, as the scripts

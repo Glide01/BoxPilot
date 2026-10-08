@@ -80,14 +80,22 @@ pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::TempDir;
+    use std::os::unix::net::UnixListener;
 
-    /// Both ends of a pair are this process: its own uid.
+    /// A connection to a listening socket, as the helper's are (macOS
+    /// records no credentials for a `socketpair`): both ends are this
+    /// process, so its own uid.
     #[test]
     fn the_peer_is_this_process() {
-        let (a, b) = UnixStream::pair().unwrap();
+        let temp = TempDir::new("p");
+        let path = temp.0.join("s");
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = UnixStream::connect(&path).unwrap();
+        let (server, _) = listener.accept().unwrap();
         // SAFETY: geteuid has no preconditions and cannot fail.
         let me = unsafe { libc::geteuid() };
-        assert_eq!(peer_uid(&a).unwrap(), me);
-        assert_eq!(peer_uid(&b).unwrap(), me);
+        assert_eq!(peer_uid(&server).unwrap(), me);
+        assert_eq!(peer_uid(&client).unwrap(), me);
     }
 }
