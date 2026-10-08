@@ -243,6 +243,61 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      # ---- The privileged helper, installed and driven on this runner ----
+      #
+      # The helper was built and unit-tested on Linux; these steps install the
+      # MSI just built on this runner (elevated, and thrown away afterwards)
+      # and drive the BoxPilotHelper service from outside with a smoke client
+      # (crates/boxpilot-helper/examples/service_smoke.rs, never shipped), as
+      # the runner's administrator and as a fresh standard account. Each step
+      # is one stage of packaging/windows/helper-smoke.ps1, which has a
+      # function per check. They come after "Upload MSI", so the MSI is
+      # uploaded whatever they find. This is Windows Server: the client SKUs
+      # and the rest of docs/helper-windows-checklist.md stay manual.
+      - name: Build the helper smoke client
+        run: cargo build --release --target x86_64-pc-windows-msvc -p boxpilot-helper --example service_smoke
+
+      - name: "Helper smoke: install the MSI"
+        id: helper-install
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step install -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: the installed service, files and folders"
+        timeout-minutes: 5
+        run: ./packaging/windows/helper-smoke.ps1 -Step inspect -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: the protocol and TUN as an administrator"
+        timeout-minutes: 15
+        run: ./packaging/windows/helper-smoke.ps1 -Step protocol -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: the idle exit"
+        timeout-minutes: 5
+        run: ./packaging/windows/helper-smoke.ps1 -Step idle-exit -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: a standard account"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step standard-user -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: a broken install's exit codes"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step broken-install -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: killing the helper kills sing-box"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step kill-helper -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: uninstall the MSI"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step uninstall -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      # The helper's own log (HelperState\helper.log, readable by
+      # administrators only, which the runner is), the MSI logs and the smoke
+      # client's background output, whatever the steps above found.
+      - name: "Helper smoke: logs"
+        if: always() && steps.helper-install.outcome != 'skipped'
+        timeout-minutes: 5
+        run: ./packaging/windows/helper-smoke.ps1 -Step logs
+
   linux:
     # 22.04 rather than ubuntu-latest: the AppImage links the host glibc, so
     # building against an older one lets it run on more distributions.
