@@ -693,4 +693,98 @@ pub static EN: Strings = Strings {
         api_error: |message| format!("sing-box API: {message}"),
         api_invalid_response: |reason| format!("Invalid sing-box API response: {reason}"),
     },
+    helper: Helper {
+        not_installed: "TUN mode needs BoxPilot's privileged helper, which isn't installed. \
+                        Install BoxPilot with its installer (MSI), run BoxPilot as \
+                        administrator, or use Proxy mode.",
+        disabled: "The privileged helper service (BoxPilotHelper) is disabled. Enable it in \
+                   Services, or use Proxy mode.",
+        start_denied: "Windows didn't let BoxPilot start the privileged helper. Reinstall \
+                       BoxPilot to repair it, or use Proxy mode.",
+        connect_denied: "Windows didn't let BoxPilot connect to the privileged helper. Use \
+                         Proxy mode, or run BoxPilot as administrator.",
+        service_failed: |code| {
+            format!("The privileged helper failed to start (Windows error {code}). Reinstall BoxPilot to repair it.")
+        },
+        timed_out: "The privileged helper didn't respond. Try again; if it keeps happening, \
+                    reinstall BoxPilot.",
+        unreachable: |e| format!("Couldn't reach the privileged helper: {e}"),
+        unsupported: "The privileged helper isn't available on this system.",
+        exited: |reason| format!("The privileged helper stopped: {reason}."),
+        exit_usage: "it was started with a command line it doesn't take",
+        exit_unsupported_os: "it isn't built for this operating system",
+        exit_helper_dir: "its program folder failed its safety check; reinstall BoxPilot",
+        exit_state_dir: "its data folder failed its safety check; reinstall BoxPilot",
+        exit_manifest: "its copy of sing-box doesn't match what was installed; reinstall BoxPilot",
+        exit_pipe_squatted: "another program holds the name it listens on",
+        exit_pipe_failed: "it couldn't open its connection",
+        exit_console_elevated: "its test mode was run as administrator",
+        exit_internal: "it hit an internal error",
+        exit_unknown: |code| format!("exit code {code}"),
+        not_allowed: "This Windows account may not start TUN mode. An administrator can add \
+                      it to Administrators or Network Configuration Operators; Proxy mode \
+                      works without that.",
+        version_mismatch: "The privileged helper belongs to another BoxPilot version. \
+                           Reinstall BoxPilot to update it.",
+        busy: "The privileged helper is already running sing-box for another BoxPilot (another \
+               account on this computer?). Disconnect it there first.",
+        bad_request: |e| format!("The privileged helper didn't accept BoxPilot's request: {e}"),
+        internal: |e| format!("The privileged helper couldn't start sing-box: {e}"),
+        lost: "The connection to the privileged helper was lost.",
+        lost_running: "The connection to the privileged helper was lost; sing-box stopped.",
+        no_answer: "The privileged helper didn't answer in time.",
+        bad_reply: |e| {
+            format!("The privileged helper sent a reply BoxPilot doesn't understand ({e}). Reinstall BoxPilot to update it.")
+        },
+        talk_failed: |e| format!("Couldn't talk to the privileged helper: {e}"),
+        proxy_failed: |e| format!("Failed to set the system proxy: {e}"),
+        read_file: |path, pointer, e| {
+            format!("TUN mode can't read {path} (used by {pointer}): {e}")
+        },
+        too_many_files: |count, limit| {
+            format!("This profile reads {count} local files; TUN mode can send at most {limit}. Use Proxy mode for it.")
+        },
+        start_too_large: |bytes, limit| {
+            format!("This profile and its local files come to {bytes} bytes; TUN mode can send at most {limit}. Use Proxy mode for it.")
+        },
+        refused: |list| {
+            format!("The privileged helper won't run this profile in TUN mode: {list}. Proxy mode runs it as written.")
+        },
+        refused_more: |n| format!("and {n} more"),
+        refusal_at: |pointer, reason| format!("{pointer} {reason}"),
+        refusal_sep: "; ",
+        whole_config: "the config",
+        too_big: |detail| format!("is too large ({detail} bytes)"),
+        too_deep: |limit| format!("nests deeper than {limit} levels"),
+        invalid_json: |e| format!("is not valid JSON ({e})"),
+        not_an_object: "is not a JSON object",
+        malformed: |expected| format!("is not {expected}"),
+        expected_object: "an object",
+        expected_array: "an array",
+        expected_string: "a string",
+        expected_string_or_array: "a string or an array of strings",
+        expected_plugin_options: "valid SIP003 plugin options",
+        non_canonical_key: "is not spelled in lower case; sing-box reads field names \
+                            case-insensitively, so it can't be checked",
+        unknown_section: "is not a section the privileged helper runs",
+        type_not_allowed: |type_name| {
+            format!("is type \"{type_name}\", which the privileged helper doesn't run")
+        },
+        type_missing: "has no type the privileged helper runs",
+        inbounds: "defines inbounds; BoxPilot adds its own",
+        service: |service_type| {
+            format!("runs a \"{service_type}\" service, which the privileged helper doesn't allow")
+        },
+        service_untyped: "runs a service, which the privileged helper doesn't allow",
+        unknown_experimental: "is an experimental option the privileged helper doesn't allow",
+        runs_program: "runs a program",
+        system_change: "changes the system beyond networking",
+        server_file_scan: "lets the VPN server inspect local files (the AnyConnect host scan)",
+        filesystem_path: "names a file or folder on this computer",
+        directory: "names a folder to read, which can't be sent to the privileged helper",
+        local_file: "reads a local file that wasn't sent along",
+        malformed_attachment: "is not a valid attachment reference",
+        missing_attachment: |id| format!("refers to attachment \"{id}\", which wasn't sent"),
+        unknown_refusal: |code| format!("was refused ({code})"),
+    },
 };

@@ -124,6 +124,28 @@ impl SingBoxApi {
         Self { port, secret }
     }
 
+    /// The endpoint of a sing-box BoxPilot didn't configure itself: the
+    /// privileged helper's (ADR 0006), from its `started` reply. `None`
+    /// unless `secret_hex` is the lowercase hex of exactly as many bytes as
+    /// BoxPilot's own secrets. The secret only ever lives in memory: it is
+    /// never written to disk, and `Debug` redacts it.
+    pub fn from_secret_hex(port: u16, secret_hex: &str) -> Option<Self> {
+        let digits = secret_hex.as_bytes();
+        if digits.len() != 2 * SECRET_LEN {
+            return None;
+        }
+        let nibble = |digit: u8| match digit {
+            b'0'..=b'9' => Some(digit - b'0'),
+            b'a'..=b'f' => Some(digit - b'a' + 10),
+            _ => None,
+        };
+        let mut secret = [0u8; SECRET_LEN];
+        for (byte, pair) in secret.iter_mut().zip(digits.chunks_exact(2)) {
+            *byte = nibble(pair[0])? << 4 | nibble(pair[1])?;
+        }
+        Some(Self { port, secret })
+    }
+
     /// The secret as sing-box's `secret` option and the bearer token carry
     /// it: lowercase hex.
     fn secret_hex(&self) -> String {
@@ -265,6 +287,26 @@ mod tests {
             first.service_config()["secret"],
             second.service_config()["secret"]
         );
+    }
+
+    /// The helper hands its run's secret over as lowercase hex; the client
+    /// sends back exactly that as its bearer token.
+    #[test]
+    fn an_endpoint_from_the_helpers_secret_round_trips() {
+        let ours = SingBoxApi::new(40123);
+        let theirs = SingBoxApi::from_secret_hex(40123, &ours.secret_hex()).unwrap();
+        assert_eq!(theirs, ours);
+        assert_eq!(theirs.authorization(), ours.authorization());
+        let hex = ours.secret_hex();
+        assert!(SingBoxApi::from_secret_hex(1, &hex[..hex.len() - 2]).is_none());
+        assert!(SingBoxApi::from_secret_hex(1, &format!("{hex}00")).is_none());
+        assert!(SingBoxApi::from_secret_hex(1, &"AB".repeat(SECRET_LEN)).is_none());
+        assert_eq!(
+            SingBoxApi::from_secret_hex(1, &"ab".repeat(SECRET_LEN)).map(|api| api.secret),
+            Some([0xab; SECRET_LEN])
+        );
+        assert!(SingBoxApi::from_secret_hex(1, &"zz".repeat(SECRET_LEN)).is_none());
+        assert!(SingBoxApi::from_secret_hex(1, "").is_none());
     }
 
     #[test]

@@ -141,6 +141,7 @@ pub struct Strings {
     pub dialogs: Dialogs,
     pub messages: Messages,
     pub errors: Errors,
+    pub helper: Helper,
 }
 
 /// Words many places share.
@@ -846,6 +847,111 @@ pub struct Errors {
     pub api_stream: Fmt1,
     pub api_error: Fmt1,
     pub api_invalid_response: Fmt1,
+}
+
+/// Why a TUN start through the privileged helper (Windows, ADR 0006) didn't
+/// happen: reaching the helper, its exit codes, its replies, and the config
+/// policy's refusals. Every reason the helper or the policy can give has its
+/// own string, plus a fallback for a code this build doesn't know.
+pub struct Helper {
+    // ---- Reaching it ----
+    /// The service isn't installed: a portable copy without the MSI.
+    pub not_installed: &'static str,
+    pub disabled: &'static str,
+    /// Windows refused to start the service for this account.
+    pub start_denied: &'static str,
+    /// Windows refused this account the helper's pipe.
+    pub connect_denied: &'static str,
+    /// The service failed to start with a Windows error code.
+    pub service_failed: Fmt1,
+    pub timed_out: &'static str,
+    /// Anything else the OS said while connecting.
+    pub unreachable: Fmt1,
+    /// Not on Windows: there is no helper to reach.
+    pub unsupported: &'static str,
+
+    // ---- Its exit codes (`boxpilot_protocol::endpoint::exit`) ----
+    /// "The privileged helper stopped: <reason>."
+    pub exited: Fmt1,
+    pub exit_usage: &'static str,
+    pub exit_unsupported_os: &'static str,
+    pub exit_helper_dir: &'static str,
+    pub exit_state_dir: &'static str,
+    pub exit_manifest: &'static str,
+    pub exit_pipe_squatted: &'static str,
+    pub exit_pipe_failed: &'static str,
+    pub exit_console_elevated: &'static str,
+    pub exit_internal: &'static str,
+    /// An exit code this build doesn't know.
+    pub exit_unknown: Fmt1,
+
+    // ---- Its replies ----
+    /// `unauthorized`, or a `hello` that says this caller may not start.
+    pub not_allowed: &'static str,
+    pub version_mismatch: &'static str,
+    pub busy: &'static str,
+    pub bad_request: Fmt1,
+    pub internal: Fmt1,
+    /// The connection ended while BoxPilot waited for an answer.
+    pub lost: &'static str,
+    /// The connection ended while sing-box ran, without its exit.
+    pub lost_running: &'static str,
+    pub no_answer: &'static str,
+    /// A reply this build can't decode, or one out of place.
+    pub bad_reply: Fmt1,
+    /// Reading or writing the pipe failed.
+    pub talk_failed: Fmt1,
+    /// Setting the user's system proxy after a helper start failed.
+    pub proxy_failed: Fmt1,
+
+    // ---- Preparing the start ----
+    /// (path, JSON pointer, error).
+    pub read_file: Fmt3,
+    /// (count, limit).
+    pub too_many_files: fn(u64, u64) -> String,
+    /// (bytes, limit), the config and its files together.
+    pub start_too_large: fn(u64, u64) -> String,
+
+    // ---- The config policy's refusals ----
+    /// The whole message: "<refusal list>".
+    pub refused: Fmt1,
+    /// After the listed refusals: "and <n> more".
+    pub refused_more: FmtN,
+    /// One refusal: (JSON pointer or `whole_config`, reason).
+    pub refusal_at: Fmt2,
+    /// Between listed refusals.
+    pub refusal_sep: &'static str,
+    /// Stands in for the empty JSON pointer.
+    pub whole_config: &'static str,
+    pub too_big: Fmt1,
+    pub too_deep: Fmt1,
+    pub invalid_json: Fmt1,
+    pub not_an_object: &'static str,
+    /// "is not <expected>", one of the `expected_*` below.
+    pub malformed: Fmt1,
+    pub expected_object: &'static str,
+    pub expected_array: &'static str,
+    pub expected_string: &'static str,
+    pub expected_string_or_array: &'static str,
+    pub expected_plugin_options: &'static str,
+    pub non_canonical_key: &'static str,
+    pub unknown_section: &'static str,
+    pub type_not_allowed: Fmt1,
+    pub type_missing: &'static str,
+    pub inbounds: &'static str,
+    pub service: Fmt1,
+    pub service_untyped: &'static str,
+    pub unknown_experimental: &'static str,
+    pub runs_program: &'static str,
+    pub system_change: &'static str,
+    pub server_file_scan: &'static str,
+    pub filesystem_path: &'static str,
+    pub directory: &'static str,
+    pub local_file: &'static str,
+    pub malformed_attachment: &'static str,
+    pub missing_attachment: Fmt1,
+    /// A refusal code this build doesn't know (a newer helper's policy).
+    pub unknown_refusal: Fmt1,
 }
 
 #[cfg(test)]

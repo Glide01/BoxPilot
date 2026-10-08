@@ -646,4 +646,85 @@ pub static ZH_CN: Strings = Strings {
         api_error: |message| format!("sing-box API:{message}"),
         api_invalid_response: |reason| format!("sing-box API 响应无效：{reason}"),
     },
+    helper: Helper {
+        not_installed: "TUN 模式需要 BoxPilot 的特权助手，但它没有安装。请用安装包（MSI）安装 \
+                        BoxPilot、以管理员身份运行 BoxPilot，或改用代理模式。",
+        disabled: "特权助手服务（BoxPilotHelper）已被禁用。请在「服务」中启用它，或改用代理模式。",
+        start_denied: "Windows 不允许 BoxPilot 启动特权助手。请重新安装 BoxPilot 修复，或改用代理模式。",
+        connect_denied: "Windows 不允许 BoxPilot 连接特权助手。请改用代理模式，或以管理员身份运行 BoxPilot。",
+        service_failed: |code| {
+            format!("特权助手启动失败（Windows 错误 {code}）。请重新安装 BoxPilot 修复。")
+        },
+        timed_out: "特权助手没有响应。请重试；如果一直如此，请重新安装 BoxPilot。",
+        unreachable: |e| format!("无法连接特权助手：{e}"),
+        unsupported: "此系统上没有特权助手。",
+        exited: |reason| format!("特权助手已停止：{reason}。"),
+        exit_usage: "启动参数不正确",
+        exit_unsupported_os: "它不支持此操作系统",
+        exit_helper_dir: "程序文件夹未通过安全检查，请重新安装 BoxPilot",
+        exit_state_dir: "数据文件夹未通过安全检查，请重新安装 BoxPilot",
+        exit_manifest: "它的 sing-box 副本与安装时不一致，请重新安装 BoxPilot",
+        exit_pipe_squatted: "另一个程序占用了它监听的名称",
+        exit_pipe_failed: "无法建立连接",
+        exit_console_elevated: "测试模式以管理员身份运行",
+        exit_internal: "发生内部错误",
+        exit_unknown: |code| format!("退出码 {code}"),
+        not_allowed: "此 Windows 账户无权启动 TUN 模式。管理员可以把它加入 Administrators 或 \
+                      Network Configuration Operators 组；代理模式不需要这一权限。",
+        version_mismatch: "特权助手属于另一个版本的 BoxPilot。请重新安装 BoxPilot 以更新它。",
+        busy: "特权助手正在为另一个 BoxPilot（可能是这台电脑上的其他账户）运行 sing-box。请先在那里断开。",
+        bad_request: |e| format!("特权助手不接受 BoxPilot 的请求：{e}"),
+        internal: |e| format!("特权助手无法启动 sing-box：{e}"),
+        lost: "与特权助手的连接已断开。",
+        lost_running: "与特权助手的连接已断开，sing-box 已停止。",
+        no_answer: "特权助手没有及时应答。",
+        bad_reply: |e| {
+            format!("特权助手的应答无法识别（{e}）。请重新安装 BoxPilot 以更新它。")
+        },
+        talk_failed: |e| format!("与特权助手通信失败：{e}"),
+        proxy_failed: |e| format!("设置系统代理失败：{e}"),
+        read_file: |path, pointer, e| {
+            format!("TUN 模式无法读取 {path}（{pointer} 用到）：{e}")
+        },
+        too_many_files: |count, limit| {
+            format!("此配置读取 {count} 个本地文件，TUN 模式最多只能发送 {limit} 个。请对它使用代理模式。")
+        },
+        start_too_large: |bytes, limit| {
+            format!("此配置及其本地文件共 {bytes} 字节，TUN 模式最多只能发送 {limit} 字节。请对它使用代理模式。")
+        },
+        refused: |list| {
+            format!("特权助手不会以 TUN 模式运行此配置：{list}。代理模式可以照原样运行它。")
+        },
+        refused_more: |n| format!("另有 {n} 项"),
+        refusal_at: |pointer, reason| format!("{pointer}：{reason}"),
+        refusal_sep: "；",
+        whole_config: "配置文件",
+        too_big: |detail| format!("过大（{detail} 字节）"),
+        too_deep: |limit| format!("嵌套超过 {limit} 层"),
+        invalid_json: |e| format!("不是有效的 JSON（{e}）"),
+        not_an_object: "不是 JSON 对象",
+        malformed: |expected| format!("应为{expected}"),
+        expected_object: "对象",
+        expected_array: "数组",
+        expected_string: "字符串",
+        expected_string_or_array: "字符串或字符串数组",
+        expected_plugin_options: "有效的 SIP003 插件参数",
+        non_canonical_key: "字段名含大写或非 ASCII 字符；sing-box 不区分字段名大小写，因此无法检查",
+        unknown_section: "不是特权助手可以运行的配置段",
+        type_not_allowed: |type_name| format!("类型「{type_name}」不能由特权助手运行"),
+        type_missing: "缺少特权助手可以运行的类型",
+        inbounds: "定义了入站；BoxPilot 会添加自己的入站",
+        service: |service_type| format!("运行「{service_type}」服务，特权助手不允许"),
+        service_untyped: "运行了服务，特权助手不允许",
+        unknown_experimental: "是特权助手不允许的实验性选项",
+        runs_program: "会运行程序",
+        system_change: "会更改网络以外的系统设置",
+        server_file_scan: "会让 VPN 服务器检查本地文件（AnyConnect 主机扫描）",
+        filesystem_path: "指向本机上的文件或文件夹",
+        directory: "指向要读取的文件夹，无法发送给特权助手",
+        local_file: "读取的本地文件没有随请求发送",
+        malformed_attachment: "不是有效的附件引用",
+        missing_attachment: |id| format!("引用的附件「{id}」没有发送"),
+        unknown_refusal: |code| format!("被拒绝（{code}）"),
+    },
 };

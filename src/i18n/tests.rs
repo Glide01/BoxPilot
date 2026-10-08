@@ -141,6 +141,16 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.messages.api_port_retry,
         t.errors.invalid_sub_url,
         t.errors.tun_dismissed,
+        t.helper.not_installed,
+        t.helper.disabled,
+        t.helper.connect_denied,
+        t.helper.not_allowed,
+        t.helper.busy,
+        t.helper.lost_running,
+        t.helper.exit_manifest,
+        t.helper.whole_config,
+        t.helper.runs_program,
+        t.helper.filesystem_path,
     ]
 }
 
@@ -181,6 +191,15 @@ fn chinese_never_calls_sing_box_the_core() {
         (ZH_CN.vpn.unknown_step)("x"),
     );
     assert!(!text.contains("内核"));
+    // The UI term for the helper is 特权助手 (CONTEXT.md, ADR 0006).
+    for text in [
+        ZH_CN.helper.not_installed,
+        ZH_CN.helper.disabled,
+        ZH_CN.helper.lost_running,
+    ] {
+        assert!(text.contains("特权助手"), "{text}");
+    }
+    assert!(EN.helper.not_installed.contains("privileged helper"));
 }
 
 #[test]
@@ -255,6 +274,26 @@ fn chinese_uses_full_width_punctuation() {
         (ZH_CN.errors.read_failed)("a", "b"),
         (ZH_CN.settings.lan_on_at)("192.168.1.2:7788"),
         ZH_CN.connection_details.close_panel.to_string(),
+        (ZH_CN.helper.refused)(&(ZH_CN.helper.refusal_at)(
+            ZH_CN.helper.whole_config,
+            ZH_CN.helper.not_an_object,
+        )),
+        (ZH_CN.helper.read_file)("a.pem", "/certificate/certificate_path/0", "x"),
+        (ZH_CN.helper.exited)(ZH_CN.helper.exit_state_dir),
+        (ZH_CN.helper.too_many_files)(65, 64),
+        (ZH_CN.helper.start_too_large)(1, 2),
+        (ZH_CN.helper.service_failed)("1053"),
+        (ZH_CN.helper.type_not_allowed)("bridge"),
+        (ZH_CN.helper.too_big)("2 > 1"),
+        (ZH_CN.helper.invalid_json)("EOF"),
+        ZH_CN.helper.not_installed.to_string(),
+        ZH_CN.helper.disabled.to_string(),
+        ZH_CN.helper.not_allowed.to_string(),
+        ZH_CN.helper.busy.to_string(),
+        ZH_CN.helper.non_canonical_key.to_string(),
+        ZH_CN.helper.inbounds.to_string(),
+        ZH_CN.helper.directory.to_string(),
+        ZH_CN.helper.server_file_scan.to_string(),
     ];
     for sample in samples {
         let chars: Vec<char> = sample.chars().collect();

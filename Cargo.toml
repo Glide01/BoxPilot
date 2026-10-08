@@ -87,6 +87,11 @@ getrandom = "0.3"
 # The inbounds, cache file and `api` service BoxPilot injects into every run
 # config, shared with the privileged helper (ADR 0006). Pure, no gpui.
 boxpilot-runconfig = { path = "crates/boxpilot-runconfig" }
+# Talking to the privileged helper (ADR 0006): the wire protocol, and the
+# config policy the GUI runs first, so a refused profile never reaches the
+# helper and the user learns which field and why. Both pure, no gpui.
+boxpilot-protocol = { path = "crates/boxpilot-protocol" }
+boxpilot-policy = { path = "crates/boxpilot-policy" }
 # OS UI language for the "System" language preference.
 sys-locale = "0.3"
 # LAN IPv4 addresses shown in the "Allow LAN connections" hint.
@@ -98,7 +103,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Used by `ensure_elevated()` in `src/main.rs` (token elevation check +
 # `ShellExecuteW("runas", ...)` self-relaunch), by the deep-link
 # single-instance pipe in `core/single_instance.rs` (Pipes + FileSystem for
-# CreateNamedPipeW/ReadFile), and by `remove_tun_adapter()` in
+# CreateNamedPipeW/ReadFile), by the privileged-helper client in
+# `core/privileged_helper/windows.rs` (the helper's pipe with overlapped
+# I/O, starting its demand-start service and reading its exit code —
+# System_Services), and by `remove_tun_adapter()` in
 # `core/process.rs` (SetupAPI device enumeration + DiUninstallDevice to drop
 # stale sing-tun adapters natively, replacing a slow powershell+pnputil shell-
 # out — Win32_Devices_DeviceAndDriverInstallation). Version matches
@@ -113,6 +121,7 @@ windows = { version = "0.58", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Pipes",
+    "Win32_System_Services",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
