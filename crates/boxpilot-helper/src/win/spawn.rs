@@ -1,9 +1,11 @@
 //! Starting sing-box (ADR 0006 rules 2 and 3), as SYSTEM, with nothing it
 //! didn't need:
 //!
-//! - `CreateProcessW` with the full application path, so nothing is
-//!   searched for, and sing-box's command line and environment from
-//!   `spawnplan`, built from nothing rather than inherited;
+//! - `CreateProcessAsUserW` with a restricted copy of the helper's own
+//!   token (`restrict`, as `Launch::token` plans it: the helper always
+//!   passes `spawnplan::SING_BOX_TOKEN`), the full application path, so
+//!   nothing is searched for, and sing-box's command line and environment
+//!   from `spawnplan`, built from nothing rather than inherited;
 //! - `CREATE_SUSPENDED`, so it runs no instruction before it is in its job;
 //!   `CREATE_NO_WINDOW`; `CREATE_UNICODE_ENVIRONMENT`;
 //! - `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming only the write ends of its
@@ -18,8 +20,9 @@
 //!   limit of 1, so sing-box can't start a program. It is assigned before
 //!   the thread is resumed.
 
+use super::restrict::restricted_token;
 use super::sys::{io_error, own, pcwstr, raw, wide};
-use crate::spawnplan;
+use crate::spawnplan::{self, TokenPlan};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
@@ -38,7 +41,7 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+    CreateProcessAsUserW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
     LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
@@ -57,11 +60,15 @@ pub(crate) struct Launch<'a> {
     pub(crate) cwd: &'a Path,
     /// Its whole environment (`spawnplan::environment`).
     pub(crate) environment: Vec<(String, String)>,
+    /// What its token keeps of the helper's: `spawnplan::SING_BOX_TOKEN`,
+    /// and only the token probe (`win::probe`) ever passes another.
+    pub(crate) token: &'a TokenPlan<'a>,
 }
 
 /// A started sing-box.
 pub(crate) struct Child {
     pub(crate) process: OwnedHandle,
+    pub(crate) pid: u32,
     pub(crate) job: Job,
     pub(crate) stdout: File,
     pub(crate) stderr: File,
@@ -214,9 +221,11 @@ impl Drop for AttributeList<'_> {
     }
 }
 
-/// Start sing-box suspended, put it in its job, then let it run. Every
-/// verified file must stay open (by the caller) until this returns.
+/// Start sing-box suspended, under its restricted token, put it in its
+/// job, then let it run. Every verified file must stay open (by the
+/// caller) until this returns.
 pub(crate) fn spawn(launch: &Launch<'_>) -> io::Result<Child> {
+    let token = restricted_token(launch.token)?;
     let program = launch
         .program
         .to_str()
@@ -243,14 +252,17 @@ pub(crate) fn spawn(launch: &Launch<'_>) -> io::Result<Child> {
     startup.StartupInfo.hStdError = inherited[1];
     startup.lpAttributeList = attributes.list();
     let mut info = PROCESS_INFORMATION::default();
-    // SAFETY: every string is NUL-terminated and outlives the call;
-    // `command_line` is writable, as CreateProcessW requires; the
-    // environment block is double-NUL-terminated UTF-16, as
-    // CREATE_UNICODE_ENVIRONMENT says; `startup` is a STARTUPINFOEXW whose
-    // `cb` says so (EXTENDED_STARTUPINFO_PRESENT), and its attribute list
-    // and the handles it names are alive; `info` receives two new handles.
+    // SAFETY: `token` is a primary token open with TOKEN_QUERY,
+    // TOKEN_DUPLICATE and TOKEN_ASSIGN_PRIMARY, alive for the call; every
+    // string is NUL-terminated and outlives the call; `command_line` is
+    // writable, as CreateProcessAsUserW requires; the environment block is
+    // double-NUL-terminated UTF-16, as CREATE_UNICODE_ENVIRONMENT says;
+    // `startup` is a STARTUPINFOEXW whose `cb` says so
+    // (EXTENDED_STARTUPINFO_PRESENT), and its attribute list and the
+    // handles it names are alive; `info` receives two new handles.
     unsafe {
-        CreateProcessW(
+        CreateProcessAsUserW(
+            token.handle(),
             pcwstr(&application),
             PWSTR(command_line.as_mut_ptr()),
             None,
@@ -268,9 +280,11 @@ pub(crate) fn spawn(launch: &Launch<'_>) -> io::Result<Child> {
         )
     }
     .map_err(io_error)?;
-    // SAFETY: CreateProcessW returned these two new handles, owned by
+    // SAFETY: CreateProcessAsUserW returned these two new handles, owned by
     // nobody else.
     let (process, thread) = unsafe { (own(info.hProcess), own(info.hThread)) };
+    // Only the process holds the token now.
+    drop(token);
     drop(attributes);
     // Only sing-box holds the write ends now: its exit ends the readers.
     drop(stdout_write);
@@ -288,6 +302,7 @@ pub(crate) fn spawn(launch: &Launch<'_>) -> io::Result<Child> {
     }
     Ok(Child {
         process,
+        pid: info.dwProcessId,
         job,
         stdout: File::from(stdout),
         stderr: File::from(stderr),

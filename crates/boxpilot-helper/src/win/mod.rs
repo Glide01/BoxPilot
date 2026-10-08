@@ -1,5 +1,6 @@
 //! The Windows platform layer (ADR 0006, phase 1): the service, the pipe,
-//! the caller's token, the trees' ACLs, and sing-box's spawn.
+//! the caller's token, the trees' ACLs, and sing-box's spawn under its
+//! restricted token (`probe` exposes that spawn to the CI token probe).
 //!
 //! This is the only part of the helper with `unsafe` code: Win32 calls,
 //! each in a small wrapper with a `SAFETY` comment saying what holds. The
@@ -11,6 +12,8 @@
 mod adapters;
 mod folders;
 mod pipe;
+pub mod probe;
+mod restrict;
 mod security;
 mod server;
 mod service;

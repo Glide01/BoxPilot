@@ -273,6 +273,8 @@ impl Supervisor for WinSupervisor {
                 Self::path_text(&temp)?,
                 Self::path_text(&profile)?,
             ),
+            // The compile-time plan, always: nothing at run time widens it.
+            token: &spawnplan::SING_BOX_TOKEN,
         };
         let child =
             spawn::spawn(&launch).map_err(|error| io_error("sing-box did not start", error))?;

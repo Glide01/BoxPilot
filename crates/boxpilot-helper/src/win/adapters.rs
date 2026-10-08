@@ -10,7 +10,7 @@
 //! creates its own adapter at start regardless.
 
 use crate::helper_log;
-use crate::tun::is_stale_sing_tun;
+use crate::tun::{is_sing_tun_friendly_name, is_stale_sing_tun};
 use std::mem::size_of;
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
@@ -130,11 +130,30 @@ impl Drop for DeviceSet {
     }
 }
 
-/// Uninstall every network adapter whose FriendlyName is sing-box's and
-/// that is no longer present.
-pub(crate) fn remove_sing_tun_adapters() {
+/// Every installed adapter whose FriendlyName is sing-box's, and whether
+/// it is present.
+pub(crate) fn sing_tun_adapters() -> Vec<(String, bool)> {
     let Some(set) = DeviceSet::network() else {
-        return;
+        return Vec::new();
+    };
+    let mut adapters = Vec::new();
+    let mut index = 0u32;
+    while let Some(device) = set.device(index) {
+        index += 1;
+        if let Some(name) = set.friendly_name(&device) {
+            if is_sing_tun_friendly_name(&name) {
+                adapters.push((name, DeviceSet::present(&device)));
+            }
+        }
+    }
+    adapters
+}
+
+/// Uninstall every network adapter whose FriendlyName is sing-box's and
+/// that is no longer present; how many were.
+pub(crate) fn remove_sing_tun_adapters() -> u32 {
+    let Some(set) = DeviceSet::network() else {
+        return 0;
     };
     // Uninstalling a device leaves its element in the in-memory set, so
     // walking by index stays valid across removals.
@@ -156,4 +175,5 @@ pub(crate) fn remove_sing_tun_adapters() {
     if removed > 0 {
         helper_log!("TUN cleanup: removed {removed} sing-tun adapter(s)");
     }
+    removed
 }

@@ -4,18 +4,22 @@
 //! client's PID is never used: PIDs are reused, so a check on one races.
 
 use super::security::sid_within;
-use super::sys::{io_error, own, raw};
+use super::sys::{io_error, is_win32, own, raw};
 use crate::authority::{self, TokenFacts};
 use crate::helper::Caller;
+use crate::spawnplan::ObservedToken;
 use std::ffi::c_void;
 use std::io;
 use std::mem::{offset_of, size_of};
 use std::os::windows::io::OwnedHandle;
-use windows::Win32::Foundation::HANDLE;
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, HANDLE, LUID};
 use windows::Win32::Security::{
-    GetTokenInformation, RevertToSelf, TokenElevation, TokenGroups, TokenIntegrityLevel,
-    TokenIsAppContainer, TokenRestrictedSids, TokenUser, SID_AND_ATTRIBUTES, TOKEN_ELEVATION,
-    TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
+    GetTokenInformation, LookupPrivilegeNameW, RevertToSelf, TokenElevation, TokenGroups,
+    TokenIntegrityLevel, TokenIsAppContainer, TokenPrivileges, TokenRestrictedSids, TokenUser,
+    LUID_AND_ATTRIBUTES, SID_AND_ATTRIBUTES, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT,
+    TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
+    TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::System::Pipes::ImpersonateNamedPipeClient;
 use windows::Win32::System::Threading::{
@@ -84,13 +88,106 @@ impl Token {
 
     /// The helper's own token.
     pub(crate) fn of_process() -> io::Result<Self> {
+        Self::open_process(current_process(), TOKEN_QUERY)
+    }
+
+    /// The helper's own primary token, opened to make a restricted copy of
+    /// it for sing-box (`restrict`): `CreateRestrictedToken` needs
+    /// `TOKEN_DUPLICATE`; the copy gets this handle's access, and
+    /// `CreateProcessAsUserW` needs `TOKEN_QUERY`, `TOKEN_DUPLICATE` and
+    /// `TOKEN_ASSIGN_PRIMARY` on it, and lowering its integrity level
+    /// `TOKEN_ADJUST_DEFAULT`. Never a thread's (impersonation) token.
+    pub(crate) fn of_process_to_restrict() -> io::Result<Self> {
+        Self::open_process(
+            current_process(),
+            TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT,
+        )
+    }
+
+    /// The primary token of `process`, a process handle with at least
+    /// `PROCESS_QUERY_LIMITED_INFORMATION`, for reading.
+    pub(crate) fn of_process_handle(process: HANDLE) -> io::Result<Self> {
+        Self::open_process(process, TOKEN_QUERY)
+    }
+
+    fn open_process(process: HANDLE, access: TOKEN_ACCESS_MASK) -> io::Result<Self> {
         let mut token = HANDLE::default();
-        // SAFETY: the pseudo-handle of the current process needs no
-        // closing; `token` receives a new handle, owned below.
-        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }
-            .map_err(io_error)?;
+        // SAFETY: `process` is open for the call, or the current process's
+        // pseudo-handle; `token` receives a new handle, owned below.
+        unsafe { OpenProcessToken(process, access, &mut token) }.map_err(io_error)?;
         // SAFETY: `token` was just opened and nothing else owns it.
         Ok(Self(unsafe { own(token) }))
+    }
+
+    /// A token a Win32 call has just created, such as a restricted copy.
+    pub(crate) fn from_owned(handle: OwnedHandle) -> Self {
+        Self(handle)
+    }
+
+    /// The handle, for a call that borrows it while `self` lives.
+    pub(crate) fn handle(&self) -> HANDLE {
+        raw(&self.0)
+    }
+
+    /// Every privilege the token holds (`TokenPrivileges`), with its LUID
+    /// and attributes. A LUID with no name gets `#<high>:<low>`, which no
+    /// allowlist names.
+    pub(crate) fn privileges(&self) -> io::Result<Vec<Privilege>> {
+        let (buf, len) = self.query(TokenPrivileges)?;
+        if len < size_of::<u32>() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "short TOKEN_PRIVILEGES",
+            ));
+        }
+        // SAFETY: GetTokenInformation wrote a TOKEN_PRIVILEGES at the start
+        // of `buf`, 8-aligned, and its leading count lies within the
+        // `len` ≥ 4 bytes written.
+        let count = unsafe { (*(buf.as_ptr() as *const TOKEN_PRIVILEGES)).PrivilegeCount } as usize;
+        let entries_at = offset_of!(TOKEN_PRIVILEGES, Privileges);
+        let end = count
+            .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+            .and_then(|bytes| bytes.checked_add(entries_at));
+        if end.is_none_or(|end| end > len) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TOKEN_PRIVILEGES overruns",
+            ));
+        }
+        // SAFETY: the `count` entries start at `entries_at` and end within
+        // the `len` bytes written, as just checked; `buf` is 8-aligned, more
+        // than LUID_AND_ATTRIBUTES needs.
+        let entries = unsafe {
+            std::slice::from_raw_parts(
+                (buf.as_ptr() as *const u8).add(entries_at) as *const LUID_AND_ATTRIBUTES,
+                count,
+            )
+        };
+        Ok(entries
+            .iter()
+            .map(|entry| Privilege {
+                name: privilege_name(&entry.Luid).unwrap_or_else(|| {
+                    format!("#{:x}:{:x}", entry.Luid.HighPart, entry.Luid.LowPart)
+                }),
+                luid: entry.Luid,
+                attributes: entry.Attributes.0,
+            })
+            .collect())
+    }
+
+    /// Privileges, integrity level and groups, as `spawnplan` judges them.
+    /// Any of them unreadable is an error: a token that can't be read back
+    /// is never one sing-box starts under.
+    pub(crate) fn observed(&self) -> io::Result<ObservedToken> {
+        Ok(ObservedToken {
+            privileges: self
+                .privileges()?
+                .into_iter()
+                .map(|privilege| (privilege.name, privilege.attributes))
+                .collect(),
+            integrity: Some(self.integrity()?),
+            groups: self.groups()?,
+        })
     }
 
     /// One `TOKEN_INFORMATION_CLASS`, in an 8-aligned buffer (enough for
@@ -252,6 +349,47 @@ impl Token {
             integrity: self.integrity().ok(),
             restricted: self.restricted().unwrap_or(true),
             app_container: self.app_container().unwrap_or(true),
+        }
+    }
+}
+
+/// The current process's pseudo-handle, which needs no closing.
+fn current_process() -> HANDLE {
+    // SAFETY: GetCurrentProcess takes nothing and returns a constant.
+    unsafe { GetCurrentProcess() }
+}
+
+/// One privilege of a token.
+pub(crate) struct Privilege {
+    /// Its name (`SeChangeNotifyPrivilege`), or `#<high>:<low>` if the LUID
+    /// has none.
+    pub(crate) name: String,
+    pub(crate) luid: LUID,
+    /// `SE_PRIVILEGE_ENABLED` and the like.
+    pub(crate) attributes: u32,
+}
+
+/// The name of the privilege `luid`, if it has one.
+fn privilege_name(luid: &LUID) -> Option<String> {
+    let mut buf = vec![0u16; 64];
+    loop {
+        let mut len = buf.len() as u32;
+        // SAFETY: `luid` is valid for the call; `buf` holds `len` writable
+        // UTF-16 units, and `len` says so.
+        match unsafe {
+            LookupPrivilegeNameW(PCWSTR::null(), luid, PWSTR(buf.as_mut_ptr()), &mut len)
+        } {
+            // `len` is now the name's length, without the NUL.
+            Ok(()) => return String::from_utf16(buf.get(..len as usize)?).ok(),
+            // `len` is now the size needed, with the NUL.
+            Err(error)
+                if is_win32(&error, ERROR_INSUFFICIENT_BUFFER)
+                    && len as usize > buf.len()
+                    && len <= 1024 =>
+            {
+                buf.resize(len as usize, 0)
+            }
+            Err(_) => return None,
         }
     }
 }

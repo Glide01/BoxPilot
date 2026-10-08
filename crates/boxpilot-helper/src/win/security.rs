@@ -11,8 +11,8 @@ use std::path::Path;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{LocalFree, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, HLOCAL};
 use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
     GetAce, IsValidSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
@@ -63,6 +63,25 @@ impl SecurityDescriptor {
             lpSecurityDescriptor: self.0 .0,
             bInheritHandle: false.into(),
         }
+    }
+}
+
+/// A SID parsed from its string form (`S-1-5-32-544`), freed when dropped.
+pub(crate) struct OwnedSid(Local);
+
+impl OwnedSid {
+    pub(crate) fn from_string(text: &str) -> io::Result<Self> {
+        let text = wide(text)?;
+        let mut sid = PSID::default();
+        // SAFETY: `text` is NUL-terminated and outlives the call; on success
+        // `sid` receives `LocalAlloc`'d memory, which `Local` frees.
+        unsafe { ConvertStringSidToSidW(pcwstr(&text), &mut sid) }.map_err(io_error)?;
+        Ok(Self(Local(sid.0)))
+    }
+
+    /// The SID, valid while `self` lives.
+    pub(crate) fn psid(&self) -> PSID {
+        PSID(self.0 .0)
     }
 }
 
