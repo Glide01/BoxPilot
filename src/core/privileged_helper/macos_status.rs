@@ -204,9 +204,9 @@ pub fn judge(hello: &HelloReply, shipped: Option<&Shipped>) -> HelperStatus {
 /// The state of a helper that didn't answer `hello`. `last_exit`: its last
 /// exit code as launchd recorded it, for a helper that ended the connection
 /// unanswered (`Lost`) or never answered (`TimedOut`): one that refuses to
-/// run turns its waiting clients away and exits with its code. With no
-/// code to show, launchd isn't running it: turned off, as far as BoxPilot
-/// can tell.
+/// run turns its waiting clients away and exits with its code, which
+/// `launchctl print` gives any account, root or not (`last_exit_code`).
+/// With no code to show, launchd isn't running it: turned off.
 pub fn failure_status(failure: HelperFailure, last_exit: Option<i32>) -> HelperStatus {
     match failure {
         HelperFailure::Open(OpenError::NotInstalled) => HelperStatus::NotInstalled,
@@ -348,7 +348,9 @@ fn shipped(contents: &Path) -> Option<Shipped> {
 }
 
 /// The helper's last exit code, once it has stopped, from `launchctl
-/// print` (by its absolute path, no shell; it needs no privilege to read).
+/// print` (by its absolute path, no shell). It needs no privilege to read:
+/// CI's macOS job reads a broken install's code this way as an account
+/// without root, and fails if it can't.
 /// A helper that refuses to run turns its waiting clients away before it
 /// exits, so this waits for the exit, briefly. `None` if launchctl can't
 /// say, or the helper still runs.

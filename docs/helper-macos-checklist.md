@@ -90,9 +90,9 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   by hand: a symbolic link anywhere in either path, an owner other than
   root, the helper started from another path (10), no socket from launchd
   (17), started as another user (18). The GUI reads the exit code with
-  `launchctl print`, as the user, and Settings › TUN says why (**CI** for a
-  tampered sing-box, 12; if `launchctl print` gives an unprivileged account
-  no exit code, CI notes it and the GUI says "turned off" instead).
+  `launchctl print`, as the user, without root, and Settings › TUN says why
+  (**CI** for a tampered sing-box, 12: an account without root reads it,
+  and the step fails if the GUI says "turned off" instead).
 - Clients waiting while a broken helper exits get the end of the stream at
   once, and launchd doesn't start it again for them in a loop.
 - A malformed or missing owner record: the helper runs, and nobody may

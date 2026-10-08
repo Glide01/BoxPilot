@@ -602,9 +602,11 @@ step_gui_client() {
     seen=$("$GUI" status --contents "$CONTENTS" 2>&1) || :
     printf '%s\n' "$seen"
     sudo install -o root -g wheel -m 0755 "$CONTENTS/MacOS/sing-box" "$SING_BOX_PATH"
+    # An account without root reads launchd's exit code (CI has seen it):
+    # "turned off" here would be a regression.
     case $seen in
         *"status: broken $EXIT_MANIFEST_REFUSED "*) ok "a broken install shows its exit code, $EXIT_MANIFEST_REFUSED" ;;
-        *"status: turned-off "*) note "a broken install shows as turned off: launchctl print gave no exit code to $(id -un)" ;;
+        *"status: turned-off "*) fail "a broken install shows as turned off: launchctl print gave no exit code to $(id -un)" ;;
         *) fail "a tampered sing-box showed as something else (above)" ;;
     esac
     launchd_throttle
