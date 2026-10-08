@@ -126,7 +126,9 @@ pub struct TunOptions {
     pub proxy_port: u16,
     /// "Allow LAN connections": the local proxy listens beyond loopback.
     pub allow_lan: bool,
-    /// Have sing-box set the system proxy.
+    /// Set the system proxy to the local proxy while TUN runs: the helper
+    /// does on macOS; on Windows the GUI sets the user's own instead. The
+    /// helper's sing-box never does.
     pub system_proxy: bool,
 }
 

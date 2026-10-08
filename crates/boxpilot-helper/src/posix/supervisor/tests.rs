@@ -12,6 +12,7 @@ use crate::runcfg::{self, SystemProxy};
 use crate::testing::TempDir;
 use boxpilot_protocol::{ExitInfo, StartRequest, TunOptions};
 use serde_json::json;
+use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 
 fn me() -> u32 {
@@ -66,6 +67,9 @@ struct Install {
     layout: Layout,
     trust: Trust,
     cleanups: Arc<Mutex<Vec<Cleanup>>>,
+    starts: Arc<Mutex<Vec<AfterStart>>>,
+    /// "after_start" and "cleanup", in the order the platform got them.
+    order: Arc<Mutex<Vec<&'static str>>>,
     /// The stand-in for sandbox-exec, in a directory of its own.
     sandbox_exec: PathBuf,
     /// Where it records its arguments.
@@ -109,6 +113,8 @@ impl Install {
             layout,
             trust,
             cleanups: Arc::new(Mutex::new(Vec::new())),
+            starts: Arc::new(Mutex::new(Vec::new())),
+            order: Arc::new(Mutex::new(Vec::new())),
             sandbox_exec: system.join("sandbox-exec"),
             sandbox_record: root.join("sandbox-exec.args"),
         };
@@ -140,15 +146,20 @@ impl Install {
     }
 
     fn put_sing_box(&self, script: &str) {
-        let content = format!("#!/bin/sh\n{script}\n");
-        fs::write(self.sing_box(), &content).unwrap();
+        self.put_binary(format!("#!/bin/sh\n{script}\n").as_bytes());
+    }
+
+    /// sing-box's file, `content` whatever it is, and the manifest hashing
+    /// it.
+    fn put_binary(&self, content: &[u8]) {
+        fs::write(self.sing_box(), content).unwrap();
         fs::set_permissions(self.sing_box(), fs::Permissions::from_mode(0o755)).unwrap();
         let manifest = json!({
             "manifest_version": 1,
             "sing_box": {
                 "file": "sing-box",
                 "version": "1.14.2",
-                "sha256": sha256_hex(content.as_bytes()).unwrap()
+                "sha256": sha256_hex(content).unwrap()
             },
             "extra_files": []
         });
@@ -167,12 +178,20 @@ impl Install {
     }
 
     fn setup(&self) -> Setup {
-        let cleanups = self.cleanups.clone();
+        let (cleanups, starts) = (self.cleanups.clone(), self.starts.clone());
+        let (cleanup_order, start_order) = (self.order.clone(), self.order.clone());
         Setup {
             layout: self.layout.clone(),
             trust: self.trust.clone(),
             own_exe: None,
-            cleanup: Arc::new(move |plan: &Cleanup| cleanups.lock().unwrap().push(*plan)),
+            after_start: Arc::new(move |plan: &AfterStart| {
+                starts.lock().unwrap().push(*plan);
+                start_order.lock().unwrap().push("after_start");
+            }),
+            cleanup: Arc::new(move |plan: &Cleanup| {
+                cleanups.lock().unwrap().push(*plan);
+                cleanup_order.lock().unwrap().push("cleanup");
+            }),
             stop_grace: Duration::from_millis(300),
             sandbox_exec: self.sandbox_exec.clone(),
         }
@@ -184,6 +203,23 @@ impl Install {
 
     fn cleanups(&self) -> Vec<Cleanup> {
         self.cleanups.lock().unwrap().clone()
+    }
+
+    fn starts(&self) -> Vec<AfterStart> {
+        self.starts.lock().unwrap().clone()
+    }
+
+    fn order(&self) -> Vec<&'static str> {
+        self.order.lock().unwrap().clone()
+    }
+
+    /// Wait (at most 10 s) until the platform was told sing-box is up.
+    fn wait_for_start(&self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.starts().is_empty() {
+            assert!(Instant::now() < deadline, "sing-box was never seen up");
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -248,12 +284,30 @@ impl Seen {
     }
 }
 
-/// Prepare a run for `uid` with a minimal config, and spawn it.
-fn run(
-    supervisor: &PosixSupervisor,
-    uid: &str,
-    system_proxy: bool,
-) -> (PathBuf, Arc<Seen>, Result<Box<dyn Process>, HelperError>) {
+/// A spawned run: its directory, what its events said, and the spawn's
+/// result.
+type Spawned = (PathBuf, Arc<Seen>, Result<Box<dyn Process>, HelperError>);
+
+/// Prepare a run for `uid` with a minimal config, and spawn it. Its `api`
+/// port is one nothing listens on: the fake sing-box never comes up.
+fn run(supervisor: &PosixSupervisor, uid: &str, system_proxy: bool) -> Spawned {
+    let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    run_on(supervisor, uid, system_proxy, port)
+}
+
+/// `run`, with an `api` port the returned listener holds: the fake sing-box
+/// is up as soon as it runs, as the helper sees it.
+fn run_up(supervisor: &PosixSupervisor, uid: &str, system_proxy: bool) -> (Spawned, TcpListener) {
+    let api = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = api.local_addr().unwrap().port();
+    (run_on(supervisor, uid, system_proxy, port), api)
+}
+
+fn run_on(supervisor: &PosixSupervisor, uid: &str, system_proxy: bool, api_port: u16) -> Spawned {
     let (mut run, placement) = supervisor.prepare_run(uid).unwrap();
     let start = StartRequest {
         config: json!({"outbounds": [{"type": "direct", "tag": "direct"}]}).to_string(),
@@ -268,8 +322,8 @@ fn run(
     let prepared = runcfg::build(
         runcfg::check(start).unwrap(),
         &placement,
-        SystemProxy::AsRequested,
-        || Ok((41234, ())),
+        SystemProxy::ByHelper,
+        || Ok((api_port, ())),
         &[7; 32],
     )
     .unwrap();
@@ -287,7 +341,7 @@ fn a_run_starts_with_its_plan_and_stops_cleanly_on_sigterm() {
     };
     let supervisor = install.start().unwrap();
     assert_eq!(supervisor.installed().sing_box_version, "1.14.2");
-    let (run_dir, seen, process) = run(&supervisor, &me().to_string(), true);
+    let ((run_dir, seen, process), _api) = run_up(&supervisor, &me().to_string(), true);
     let mut process = process.unwrap();
     seen.wait_for_line("sing-box started");
     let run_text = run_dir.to_str().unwrap().to_owned();
@@ -348,6 +402,16 @@ fn a_run_starts_with_its_plan_and_stops_cleanly_on_sigterm() {
     // The account's own state, private.
     let user_dir = install.layout.user_dir(&me().to_string()).unwrap();
     assert!(verify::dir_only(&user_dir, Role::Private, &install.trust).is_ok());
+    // Once it is up, the helper does what sing-box's sandbox denies it: the
+    // system proxy, and the DNS flush.
+    install.wait_for_start();
+    assert_eq!(
+        install.starts(),
+        [AfterStart {
+            set_proxy: Some(7890),
+            flush_dns: true
+        }]
+    );
 
     process.stop();
     assert_eq!(
@@ -358,14 +422,15 @@ fn a_run_starts_with_its_plan_and_stops_cleanly_on_sigterm() {
         })
     );
     assert!(seen.lines().contains(&"stopping".to_owned()));
-    // sing-box unset its proxy itself: DNS only.
+    // The helper set the proxy, so it resets it, after a clean stop too.
     assert_eq!(
         install.cleanups(),
         [Cleanup {
-            reset_proxy: None,
+            reset_proxy: Some(7890),
             flush_dns: true
         }]
     );
+    assert_eq!(install.order(), ["after_start", "cleanup"]);
     assert!(!install.layout.run_marker().exists());
     assert!(!run_dir.exists());
 }
@@ -396,7 +461,28 @@ fn a_sing_box_that_ignores_sigterm_is_killed_and_its_proxy_reset() {
             flush_dns: true
         }]
     );
+    // It never came up: nothing was set up after it, and the reset is
+    // the conservative one either way.
+    assert!(install.starts().is_empty());
     assert!(!run_dir.exists());
+}
+
+/// A stop while the helper still waits for sing-box to come up: nothing
+/// is set up after it, and the cleanup still runs.
+#[test]
+fn a_run_stopped_before_it_is_up_sets_nothing_up() {
+    let Some(install) = Install::new("sup-not-up", POLITE) else {
+        return;
+    };
+    let supervisor = install.start().unwrap();
+    let (_, seen, process) = run(&supervisor, &me().to_string(), true);
+    let mut process = process.unwrap();
+    seen.wait_for_line("sing-box started");
+    let began = Instant::now();
+    process.stop();
+    assert!(began.elapsed() < Duration::from_secs(5));
+    assert!(install.starts().is_empty());
+    assert_eq!(install.order(), ["cleanup"]);
 }
 
 #[test]
@@ -416,7 +502,7 @@ fn a_sing_box_that_dies_on_its_own_is_cleaned_up_after() {
     );
     // Stopping what has exited returns at once, and changes nothing.
     process.stop();
-    // No proxy was set: DNS only.
+    // No proxy was asked for: DNS only.
     assert_eq!(
         install.cleanups(),
         [Cleanup {
@@ -424,6 +510,7 @@ fn a_sing_box_that_dies_on_its_own_is_cleaned_up_after() {
             flush_dns: true
         }]
     );
+    assert!(install.starts().is_empty());
     assert!(!install.layout.run_marker().exists());
     assert!(!run_dir.exists());
 }

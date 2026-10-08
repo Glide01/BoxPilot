@@ -82,10 +82,11 @@ pub const HELPER_INSTALLED_BY_APP: bool = cfg!(target_os = "macos");
 ///   the user's, so the helper never lets it, and BoxPilot sets the user's
 ///   as the user (`process::enable_system_proxy`), and clears it on stop.
 /// - **macOS: no.** The proxy is a setting of each network service there,
-///   which the helper's root sing-box writes itself with `networksetup`
-///   (on a standard account too, where the user's own `networksetup`
-///   can't), unsets on its stop, and the helper resets after a crash. The
-///   GUI touching it as well would only race it.
+///   which the helper writes itself, as root, with `networksetup` (on a
+///   standard account too, where the user's own `networksetup` can't) once
+///   its sing-box is up, and resets after the run and after a crash (its
+///   sing-box's sandbox denies it `networksetup`). The GUI touching it as
+///   well would only race it.
 pub const GUI_SETS_SYSTEM_PROXY: bool = cfg!(target_os = "windows");
 
 /// Which sing-box a start runs.
@@ -149,11 +150,11 @@ pub fn open() -> Result<Arc<dyn HelperIo>, OpenError> {
 }
 
 /// The typed options of a helper start, from the settings. `system_proxy`
-/// is what the user asked for. Whether the helper's sing-box writes the
-/// proxy is the helper's rule per platform (`runcfg::SYSTEM_PROXY`): never
-/// on Windows, where the GUI sets the user's proxy itself instead, as the
-/// user (`process::enable_system_proxy`); as asked on macOS, where the GUI
-/// leaves it to sing-box ([`GUI_SETS_SYSTEM_PROXY`]).
+/// is what the user asked for. Who sets the proxy is the helper's rule per
+/// platform (`runcfg::SYSTEM_PROXY`); the helper's sing-box never does:
+/// on Windows the GUI sets the user's proxy itself instead, as the user
+/// (`process::enable_system_proxy`); on macOS the helper sets it as asked,
+/// and the GUI leaves it alone ([`GUI_SETS_SYSTEM_PROXY`]).
 pub fn tun_options(settings: &AppSettings) -> TunOptions {
     TunOptions {
         ipv6: settings.tun_ipv6,

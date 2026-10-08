@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 pub struct RunDir {
     path: PathBuf,
     system_proxy: Option<u16>,
+    api_port: Option<u16>,
     account_dir: Option<PathBuf>,
 }
 
@@ -31,6 +32,7 @@ impl RunDir {
         Self {
             path,
             system_proxy: None,
+            api_port: None,
             account_dir: None,
         }
     }
@@ -57,22 +59,30 @@ impl RunDir {
     }
 
     /// Write the run's config and attachments, each as a new file, and
-    /// remember what the config changes outside the run directory
-    /// ([`RunDir::system_proxy_port`]).
+    /// remember what the platform does around it
+    /// ([`RunDir::system_proxy_port`], [`RunDir::api_port`]).
     pub fn write(&mut self, prepared: &Prepared) -> io::Result<()> {
         self.create_file(CONFIG_FILE, prepared.config().as_bytes())?;
         for (name, content) in prepared.files() {
             self.create_file(name, content)?;
         }
         self.system_proxy = prepared.system_proxy_port();
+        self.api_port = Some(prepared.api().port());
         Ok(())
     }
 
     /// The written config's `Prepared::system_proxy_port`: the OS proxy
-    /// setting this run's sing-box points at `127.0.0.1` and this port,
-    /// which the platform resets if sing-box exits without undoing it.
+    /// setting the platform points at `127.0.0.1` and this port while this
+    /// run's sing-box is up, and resets after it.
     pub fn system_proxy_port(&self) -> Option<u16> {
         self.system_proxy
+    }
+
+    /// The loopback port of the written config's `api` service, the last
+    /// thing sing-box starts: once it accepts, sing-box is up (its inbounds
+    /// and TUN routes before it).
+    pub fn api_port(&self) -> Option<u16> {
+        self.api_port
     }
 
     /// Create a directory in the run directory, for sing-box's `TEMP` and
@@ -162,7 +172,7 @@ mod tests {
         build(
             check(start).unwrap(),
             &placement,
-            SystemProxy::AsRequested,
+            SystemProxy::ByHelper,
             || Ok((41234, ())),
             &[7; 32],
         )
@@ -200,6 +210,7 @@ mod tests {
             json!(path.join("attachment-67656f").to_str().unwrap())
         );
         assert_eq!(run.system_proxy_port(), None);
+        assert_eq!(run.api_port(), Some(41234));
         drop(run);
         assert!(!path.exists(), "the run directory goes with the run");
         assert_eq!(names(&temp.0), Vec::<String>::new());

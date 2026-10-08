@@ -1,6 +1,6 @@
 //! The macOS platform layer (ADR 0006, the macOS phase): the launchd
-//! daemon's entry, launchd's socket, the system proxy and DNS cleanup, and
-//! the system log. Everything POSIX it does through `posix`, which is
+//! daemon's entry, launchd's socket, the system proxy and the DNS flush
+//! around sing-box (set once it is up, undone after), and the system log. Everything POSIX it does through `posix`, which is
 //! tested on Linux too.
 //!
 //! How the daemon runs:
@@ -118,6 +118,7 @@ pub fn main() -> i32 {
         layout: Layout::installed_macos(),
         trust: Trust::root(),
         own_exe: Some(PathBuf::from(HELPER_PATH)),
+        after_start: Arc::new(system::set_up),
         cleanup: Arc::new(system::carry_out),
         stop_grace: STOP_GRACE,
         sandbox_exec: PathBuf::from(SANDBOX_EXEC),

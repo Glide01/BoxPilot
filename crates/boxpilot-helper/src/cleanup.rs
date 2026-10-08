@@ -1,19 +1,25 @@
-//! What the macOS helper undoes after a sing-box of its own (ADR 0006 rule
-//! 6), as pure decisions, so they are tested on every OS. The macOS layer
-//! carries them out (`networksetup`, `dscacheutil`, `killall`, by absolute
-//! path, never through a shell).
+//! What the macOS helper does around a sing-box of its own (ADR 0006 rule
+//! 6, and "System proxy"), as pure decisions, so they are tested on every
+//! OS. The macOS layer carries them out (`networksetup`, `route`,
+//! `dscacheutil`, `killall`, by absolute path, never through a shell).
 //!
+//! - **Once sing-box is up** ([`after_start`]), the helper flushes DNS, and
+//!   sets the system proxy if the start asked for it. sing-box would do
+//!   both itself (sing-tun runs `dscacheutil`; the mixed inbound's
+//!   `set_system_proxy` runs `networksetup`), but its sandbox denies it
+//!   every program but itself (`sandboxplan`): `networksetup` runs a shell
+//!   and writes SystemConfiguration's files. So the helper, which isn't
+//!   sandboxed, does what sing-box did, the way it did it
+//!   (`boxpilot_runconfig::system_proxy`).
 //! - **DNS is flushed after every run**, however it ended:
 //!   mDNSResponder may have cached answers that came through the tunnel (a
 //!   fake-IP profile's, say), which mean nothing once it is down. Flushing
 //!   mDNSResponder needs root, so only the helper can (ADR 0005).
-//! - **The system proxy is reset only when sing-box couldn't do it
-//!   itself**: the run had `set_system_proxy` on, and sing-box didn't exit
-//!   cleanly (code 0) after the helper asked it to stop. A sing-box that
-//!   crashed, was killed, or exited on its own may have left the proxy on.
-//!   The reset uses ADR 0005's conservative rule, narrowed to the port this
-//!   run used (`boxpilot_runconfig::system_proxy`): a proxy the user or
-//!   another program set is left alone.
+//! - **The system proxy is reset after every run that asked for it**: the
+//!   helper set it, and nothing else undoes it. The reset uses ADR 0005's
+//!   conservative rule, narrowed to the port this run used
+//!   (`boxpilot_runconfig::system_proxy`): a proxy the user or another
+//!   program set is left alone.
 //! - **After a crash of the helper itself**, the same, for the run it died
 //!   with. Before each spawn it writes a marker into the state directory
 //!   saying whether that run sets the system proxy, and on which port
@@ -27,8 +33,6 @@
 //!   say which proxy would be the helper's.
 
 #![forbid(unsafe_code)]
-
-use boxpilot_protocol::ExitInfo;
 
 /// The longest marker the helper reads; a real one is under 30 bytes.
 pub const MAX_MARKER_BYTES: usize = 64;
@@ -74,14 +78,23 @@ pub fn parse_marker(bytes: &[u8]) -> Option<Marker> {
     })
 }
 
-/// How a run ended, as the platform saw it.
+/// What to do once sing-box is up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RunEnd {
-    /// The run's `RunDir::system_proxy_port`.
-    pub system_proxy: Option<u16>,
-    /// The helper asked sing-box to stop before it exited.
-    pub stop_requested: bool,
-    pub exit: ExitInfo,
+pub struct AfterStart {
+    /// Set the SOCKS, web and secure web proxies of the default route's
+    /// network service to `127.0.0.1` and this port.
+    pub set_proxy: Option<u16>,
+    /// Flush the DNS caches (`dscacheutil -flushcache`, mDNSResponder).
+    pub flush_dns: bool,
+}
+
+/// What to do once sing-box is up: `system_proxy` is the run's
+/// `RunDir::system_proxy_port`.
+pub fn after_start(system_proxy: Option<u16>) -> AfterStart {
+    AfterStart {
+        set_proxy: system_proxy,
+        flush_dns: true,
+    }
 }
 
 /// What to undo.
@@ -93,11 +106,11 @@ pub struct Cleanup {
     pub flush_dns: bool,
 }
 
-/// What to undo after a run.
-pub fn after_run(end: &RunEnd) -> Cleanup {
-    let clean = end.stop_requested && end.exit.code == Some(0) && end.exit.signal.is_none();
+/// What to undo after a run, however it ended: `system_proxy` is the run's
+/// `RunDir::system_proxy_port`.
+pub fn after_run(system_proxy: Option<u16>) -> Cleanup {
     Cleanup {
-        reset_proxy: if clean { None } else { end.system_proxy },
+        reset_proxy: system_proxy,
         flush_dns: true,
     }
 }
@@ -114,10 +127,6 @@ pub fn after_crash(marker: Option<Marker>) -> Cleanup {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn exit(code: Option<i32>, signal: Option<i32>) -> ExitInfo {
-        ExitInfo { code, signal }
-    }
 
     #[test]
     fn markers_round_trip() {
@@ -177,51 +186,43 @@ mod tests {
         assert_eq!(parse_marker(&long), None);
     }
 
-    /// sing-box stopped by the helper, cleanly: it unset its proxy itself.
+    /// Once sing-box is up: DNS always, the proxy as the start asked.
     #[test]
-    fn a_clean_stop_leaves_the_proxy_to_sing_box() {
-        let end = RunEnd {
-            system_proxy: Some(7890),
-            stop_requested: true,
-            exit: exit(Some(0), None),
-        };
+    fn once_up_the_helper_does_what_sing_box_did() {
         assert_eq!(
-            after_run(&end),
-            Cleanup {
-                reset_proxy: None,
+            after_start(Some(7890)),
+            AfterStart {
+                set_proxy: Some(7890),
+                flush_dns: true
+            }
+        );
+        assert_eq!(
+            after_start(None),
+            AfterStart {
+                set_proxy: None,
                 flush_dns: true
             }
         );
     }
 
+    /// The helper set the proxy, so it resets it after every run that
+    /// asked for it, a clean stop included; DNS always.
     #[test]
-    fn anything_else_resets_the_runs_proxy() {
-        for (stop_requested, exit) in [
-            // SIGKILL after the grace period.
-            (true, exit(None, Some(9))),
-            // "sing-box did not close!"
-            (true, exit(Some(1), None)),
-            // Crashed, or exited on its own, even with 0.
-            (false, exit(None, Some(11))),
-            (false, exit(Some(1), None)),
-            (false, exit(Some(0), None)),
-            // Unknown.
-            (true, exit(None, None)),
-        ] {
-            let end = RunEnd {
-                system_proxy: Some(7890),
-                stop_requested,
-                exit,
-            };
-            assert_eq!(after_run(&end).reset_proxy, Some(7890), "{end:?}");
-            assert!(after_run(&end).flush_dns);
-            let end = RunEnd {
-                system_proxy: None,
-                ..end
-            };
-            assert_eq!(after_run(&end).reset_proxy, None, "{end:?}");
-            assert!(after_run(&end).flush_dns);
-        }
+    fn after_every_run_the_runs_proxy_is_reset() {
+        assert_eq!(
+            after_run(Some(7890)),
+            Cleanup {
+                reset_proxy: Some(7890),
+                flush_dns: true
+            }
+        );
+        assert_eq!(
+            after_run(None),
+            Cleanup {
+                reset_proxy: None,
+                flush_dns: true
+            }
+        );
     }
 
     #[test]

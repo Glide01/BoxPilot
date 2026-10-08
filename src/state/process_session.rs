@@ -311,9 +311,9 @@ impl ProcessSession {
         // sets it, as the user: the helper's SYSTEM sing-box never does. One
         // WinINet call, here rather than in the start, so it is set exactly
         // while this run is `Running`, and the stop's cleanup clears it.
-        // macOS: the helper's sing-box sets and unsets it itself, so the
-        // run is marked as not having set it, and no stop or exit path
-        // here touches it (`GUI_SETS_SYSTEM_PROXY`).
+        // macOS: the helper sets and unsets it itself, so the run is
+        // marked as not having set it, and no stop or exit path here
+        // touches it (`GUI_SETS_SYSTEM_PROXY`).
         let mut set_system_proxy = false;
         if pending.set_system_proxy && GUI_SETS_SYSTEM_PROXY {
             if let Launch::Helper { options, .. } = &pending.launch {

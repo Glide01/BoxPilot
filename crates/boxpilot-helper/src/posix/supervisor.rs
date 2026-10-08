@@ -15,9 +15,13 @@
 //! - **Each run** gets a fresh 0700 directory under a random name, its
 //!   `HOME` and `TMPDIR` inside it, and sing-box's lines go to the starting
 //!   connection while it runs. Before the spawn the helper writes the run
-//!   marker (`cleanup`); once sing-box has exited it carries out
-//!   `cleanup::after_run` through the platform's [`Setup::cleanup`], removes
-//!   the marker and the run directory, and only then reports `exited`.
+//!   marker (`cleanup`). Once sing-box is up (its `api` service, the last
+//!   thing it starts, accepts) the helper carries out `cleanup::after_start`
+//!   through [`Setup::after_start`]: the DNS flush and the system proxy
+//!   sing-box's sandbox denies it. Once sing-box has exited it waits for
+//!   that to finish, carries out `cleanup::after_run` through
+//!   [`Setup::cleanup`], removes the marker and the run directory, and only
+//!   then reports `exited`.
 //! - **sing-box runs only under its sandbox** (`sandboxplan`): spawned
 //!   through [`Setup::sandbox_exec`], verified like the binaries before
 //!   every spawn, which applies the profile and then executes the verified
@@ -30,7 +34,7 @@
 
 use super::child::{self, Launch, Reaper};
 use super::verify::{self, Refused, Why};
-use crate::cleanup::{self, Cleanup, Marker, RunEnd, MAX_MARKER_BYTES};
+use crate::cleanup::{self, AfterStart, Cleanup, Marker, MAX_MARKER_BYTES};
 use crate::exit;
 use crate::helper::{HelperError, Installed, Process, RunEvents, Supervisor};
 use crate::helper_log;
@@ -46,6 +50,7 @@ use crate::spawnplan;
 use boxpilot_policy::Placement;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,9 +58,15 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// Between SIGTERM and SIGKILL: room for sing-box to remove its routes and
-/// unset the system proxy itself.
+/// Between SIGTERM and SIGKILL: room for sing-box to remove its routes.
 pub const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// How long sing-box may take to come up before the helper stops waiting
+/// to set things up after it: as long as the GUI waits for a start.
+const UP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How often the helper looks whether sing-box is up.
+const UP_POLL: Duration = Duration::from_millis(100);
 
 /// How long, once sing-box has exited, its output is still read: a process
 /// it started may hold its pipes a little longer.
@@ -64,6 +75,9 @@ const DRAIN_GRACE: Duration = Duration::from_secs(5);
 /// The platform's cleanup after a run, or after a crash (`cleanup`).
 pub type CleanupFn = Arc<dyn Fn(&Cleanup) + Send + Sync>;
 
+/// What the platform does once sing-box is up (`cleanup::after_start`).
+pub type AfterStartFn = Arc<dyn Fn(&AfterStart) + Send + Sync>;
+
 /// How the helper is set up: the installed daemon's fixed paths, or a
 /// test's tree.
 pub struct Setup {
@@ -71,7 +85,11 @@ pub struct Setup {
     pub trust: Trust,
     /// The helper's own executable, verified with its directory chain.
     pub own_exe: Option<PathBuf>,
-    /// Carries out a `Cleanup`: on macOS, the system proxy and DNS.
+    /// Carries out an `AfterStart`: on macOS, sets the system proxy and
+    /// flushes DNS.
+    pub after_start: AfterStartFn,
+    /// Carries out a `Cleanup`: on macOS, resets the system proxy and
+    /// flushes DNS.
     pub cleanup: CleanupFn,
     /// Between SIGTERM and SIGKILL.
     pub stop_grace: Duration,
@@ -421,6 +439,7 @@ impl Supervisor for PosixSupervisor {
             events,
             done: done.clone(),
             stop_requested: stop_requested.clone(),
+            after_start: self.setup.after_start.clone(),
             cleanup: self.setup.cleanup.clone(),
             marker,
             max_log_line: self.max_log_line,
@@ -512,15 +531,19 @@ struct Watch {
     events: Arc<dyn RunEvents>,
     done: Arc<Done>,
     stop_requested: Arc<AtomicBool>,
+    after_start: AfterStartFn,
     cleanup: CleanupFn,
     marker: PathBuf,
     max_log_line: usize,
 }
 
 impl Watch {
-    /// Drain both pipes while sing-box runs; once it has exited, clean up
-    /// (the system proxy and DNS, the marker, then the run directory) and
-    /// only then report `exited`.
+    /// Drain both pipes while sing-box runs, and set things up once it is
+    /// up (in a thread of its own, so the exit is reaped at once); once it
+    /// has exited, wait for that thread, clean up (the system proxy and
+    /// DNS, the marker, then the run directory) and only then report
+    /// `exited`. The set-up is over before the cleanup starts, so a proxy
+    /// set late is still reset.
     fn until_exit(self) {
         let Watch {
             reaper,
@@ -530,10 +553,36 @@ impl Watch {
             events,
             done,
             stop_requested,
+            after_start,
             cleanup,
             marker,
             max_log_line,
         } = self;
+        let over = Arc::new(AtomicBool::new(false));
+        let set_up = run.api_port().and_then(|api_port| {
+            let system_proxy = run.system_proxy_port();
+            let over = over.clone();
+            let stop_requested = stop_requested.clone();
+            let spawned = thread::Builder::new()
+                .name("sing-box-up".into())
+                .spawn(move || {
+                    let gone =
+                        || over.load(Ordering::SeqCst) || stop_requested.load(Ordering::SeqCst);
+                    if !wait_until_up(api_port, gone) {
+                        return;
+                    }
+                    let plan = cleanup::after_start(system_proxy);
+                    helper_log!("sing-box is up; setting up after it ({plan:?})");
+                    after_start(&plan);
+                });
+            match spawned {
+                Ok(thread) => Some(thread),
+                Err(error) => {
+                    helper_log!("no thread to set up after sing-box: {error}");
+                    None
+                }
+            }
+        });
         let readers: Vec<JoinHandle<()>> = [stdout, stderr]
             .into_iter()
             .map(|pipe| {
@@ -546,13 +595,12 @@ impl Watch {
             })
             .collect();
         let exit = reaper.wait();
+        over.store(true, Ordering::SeqCst);
+        if let Some(set_up) = set_up {
+            let _ = set_up.join();
+        }
         join_for(readers, DRAIN_GRACE);
-        let end = RunEnd {
-            system_proxy: run.system_proxy_port(),
-            stop_requested: stop_requested.load(Ordering::SeqCst),
-            exit,
-        };
-        let plan = cleanup::after_run(&end);
+        let plan = cleanup::after_run(run.system_proxy_port());
         helper_log!("sing-box exited ({exit:?}); cleaning up ({plan:?})");
         cleanup(&plan);
         if let Err(error) = fs::remove_file(&marker) {
@@ -561,6 +609,31 @@ impl Watch {
         drop(run);
         events.exited(exit);
         done.set();
+    }
+}
+
+/// Wait until sing-box's `api` service accepts on `api_port`: sing-box
+/// starts it after its inbounds, so its TUN routes are up then. `false` if
+/// `gone` says the run ended or is being stopped first, or after
+/// [`UP_TIMEOUT`].
+fn wait_until_up(api_port: u16, gone: impl Fn() -> bool) -> bool {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, api_port));
+    let deadline = Instant::now() + UP_TIMEOUT;
+    loop {
+        if gone() {
+            return false;
+        }
+        if TcpStream::connect_timeout(&address, UP_POLL).is_ok() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            helper_log!(
+                "sing-box's api service didn't accept within {}s: nothing set up after it",
+                UP_TIMEOUT.as_secs()
+            );
+            return false;
+        }
+        thread::sleep(UP_POLL);
     }
 }
 
