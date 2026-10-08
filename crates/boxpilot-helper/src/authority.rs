@@ -5,10 +5,12 @@
 //!
 //! Members of Administrators and of Network Configuration Operators may
 //! start and stop, as in WireGuard for Windows: who belongs to those groups
-//! is the administrator's call. Administrators counts whether the caller
-//! runs elevated or not: UAC's filtered token keeps the group as deny-only,
-//! and an administrator's unelevated GUI is the expected caller. Network
-//! Configuration Operators counts only when enabled.
+//! is the administrator's call. Both count whether the caller runs elevated
+//! or not. UAC filters Network Configuration Operators exactly as it filters
+//! Administrators: a member's unelevated token carries the group as
+//! deny-only, and an administrator's (or operator's) unelevated GUI is the
+//! expected caller. A token can't gain a group it wasn't logged on with, so
+//! a deny-only entry still says the account is a member.
 //!
 //! Everything else is read-only (`hello` and `status`), and so is any token
 //! that is not a plain user's: a restricted token, an AppContainer, or one
@@ -44,17 +46,17 @@ pub struct TokenFacts {
     pub app_container: bool,
 }
 
-/// Whether these groups make a caller one that may start: Administrators,
-/// enabled or deny-only, or Network Configuration Operators, enabled.
+/// Whether these groups make a caller one that may start: Administrators
+/// or Network Configuration Operators, each enabled or deny-only. A group
+/// listed with neither attribute (a disabled group) grants nothing.
 pub fn groups_may_start(groups: &[(String, u32)]) -> bool {
     groups.iter().any(|(group, attributes)| {
-        let enabled = attributes & SE_GROUP_ENABLED != 0;
-        let deny_only = attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0;
-        match group.as_str() {
-            sid::ADMINISTRATORS => enabled || deny_only,
-            sid::NETWORK_CONFIGURATION_OPERATORS => enabled && !deny_only,
-            _ => false,
-        }
+        let member = attributes & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY) != 0;
+        member
+            && matches!(
+                group.as_str(),
+                sid::ADMINISTRATORS | sid::NETWORK_CONFIGURATION_OPERATORS
+            )
     })
 }
 
@@ -142,21 +144,23 @@ mod tests {
         );
     }
 
+    /// An operator's elevated token (the group enabled), and the filtered
+    /// token UAC gives the same operator unelevated (the group deny-only,
+    /// as for Administrators). Listed but disabled, it grants nothing.
     #[test]
-    fn network_configuration_operators_may_start_only_when_enabled() {
-        let enabled = with(
-            sid::NETWORK_CONFIGURATION_OPERATORS,
-            MANDATORY | ENABLED_BY_DEFAULT | SE_GROUP_ENABLED,
-        );
-        assert_eq!(
-            authority(&facts(enabled, MEDIUM_INTEGRITY)),
-            Authority::MayStart
-        );
+    fn network_configuration_operators_may_start_elevated_or_not() {
         for attributes in [
-            0,
+            MANDATORY | ENABLED_BY_DEFAULT | SE_GROUP_ENABLED,
             SE_GROUP_USE_FOR_DENY_ONLY,
-            SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY,
         ] {
+            let groups = with(sid::NETWORK_CONFIGURATION_OPERATORS, attributes);
+            assert_eq!(
+                authority(&facts(groups, MEDIUM_INTEGRITY)),
+                Authority::MayStart,
+                "{attributes:#x}"
+            );
+        }
+        for attributes in [0, MANDATORY, ENABLED_BY_DEFAULT] {
             let groups = with(sid::NETWORK_CONFIGURATION_OPERATORS, attributes);
             assert_eq!(
                 authority(&facts(groups, MEDIUM_INTEGRITY)),
@@ -164,6 +168,31 @@ mod tests {
                 "{attributes:#x}"
             );
         }
+    }
+
+    /// An operator's sandboxed or low-integrity process is read-only, as an
+    /// administrator's is.
+    #[test]
+    fn an_operators_unusual_tokens_are_read_only() {
+        let operator = || {
+            facts(
+                with(
+                    sid::NETWORK_CONFIGURATION_OPERATORS,
+                    SE_GROUP_USE_FOR_DENY_ONLY,
+                ),
+                MEDIUM_INTEGRITY,
+            )
+        };
+        let mut restricted = operator();
+        restricted.restricted = true;
+        let mut app_container = operator();
+        app_container.app_container = true;
+        let mut low = operator();
+        low.integrity = Some(LOW);
+        for token in [restricted, app_container, low] {
+            assert_eq!(authority(&token), Authority::ReadOnly, "{token:?}");
+        }
+        assert_eq!(authority(&operator()), Authority::MayStart);
     }
 
     /// A group that is listed but neither enabled nor deny-only grants
