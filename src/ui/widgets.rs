@@ -717,7 +717,7 @@ impl<V: Clone + PartialEq> SearchableListItem for Choice<V> {
 }
 
 /// A small dropdown for a setting row with three or more choices
-/// (Language, Appearance, Close button): the current choice and a caret
+/// (Language, Appearance): the current choice and a caret
 /// ([`plain_select`]), the rest in a menu below with a check on the
 /// current one. Mouse or keyboard (Tab to it, Up/Down/Enter, Esc);
 /// `on_select` runs as soon as a choice is picked, re-picking the current

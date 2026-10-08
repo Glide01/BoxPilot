@@ -239,9 +239,6 @@ pub struct AppSettings {
     /// local proxy inbound. Off = loopback only.
     #[serde(default)]
     pub allow_lan: bool,
-    /// What the window's close button does.
-    #[serde(default)]
-    pub close_action: CloseAction,
     /// Check GitHub for a newer BoxPilot release in the background.
     #[serde(default = "default_true")]
     pub check_updates: bool,
@@ -277,18 +274,6 @@ pub enum LanguagePreference {
     System,
 }
 
-/// What the window's close button does. Unknown values load as `Ask`.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum CloseAction {
-    MinimizeToTray,
-    Quit,
-    // Last: serde requires the `other` fallback to be the final variant.
-    #[default]
-    #[serde(other)]
-    Ask,
-}
-
 pub fn default_true() -> bool {
     true
 }
@@ -320,7 +305,6 @@ impl Default for AppSettings {
             theme: ThemePreference::default(),
             language: LanguagePreference::default(),
             allow_lan: false,
-            close_action: CloseAction::default(),
             check_updates: true,
             skipped_update_version: None,
         };
@@ -558,7 +542,6 @@ mod tests {
         assert_eq!(settings.theme, ThemePreference::System);
         assert_eq!(settings.language, LanguagePreference::System);
         assert!(!settings.allow_lan);
-        assert_eq!(settings.close_action, CloseAction::Ask);
         assert!(settings.check_updates, "update checks default on");
         assert_eq!(settings.skipped_update_version, None);
         let saved = serde_json::to_value(&settings).unwrap();
@@ -567,16 +550,16 @@ mod tests {
 
     /// Preference values from a newer release must load as the default,
     /// not fail the whole parse (which would back up and reset settings).
+    /// Keys from a setting since removed (`close_action`) are ignored.
     #[test]
     fn unknown_preference_values_load_as_defaults() {
         let json = r#"{"proxy_mode": true, "proxy_port": 18888,
-            "theme": "auto", "language": "fr", "close_action": "hibernate"}"#;
+            "theme": "auto", "language": "fr", "close_action": "quit"}"#;
         let settings: AppSettings = serde_json::from_str(json).unwrap();
         assert!(settings.proxy_mode);
         assert_eq!(settings.proxy_port, 18888);
         assert_eq!(settings.theme, ThemePreference::System);
         assert_eq!(settings.language, LanguagePreference::System);
-        assert_eq!(settings.close_action, CloseAction::Ask);
     }
 
     /// The preference enums serialize to their documented strings.
@@ -592,10 +575,6 @@ mod tests {
                 "zh-CN",
             ),
             (serde_json::to_value(LanguagePreference::System), "system"),
-            (
-                serde_json::to_value(CloseAction::MinimizeToTray),
-                "minimize_to_tray",
-            ),
         ];
         for (value, expected) in cases {
             assert_eq!(to(value.unwrap()), expected);
@@ -964,7 +943,6 @@ mod tests {
             theme: ThemePreference::Dark,
             language: LanguagePreference::SimplifiedChinese,
             allow_lan: true,
-            close_action: CloseAction::MinimizeToTray,
             check_updates: false,
             skipped_update_version: Some("1.14.0".into()),
         };
@@ -980,7 +958,6 @@ mod tests {
         assert_eq!(loaded.theme, ThemePreference::Dark);
         assert_eq!(loaded.language, LanguagePreference::SimplifiedChinese);
         assert!(loaded.allow_lan);
-        assert_eq!(loaded.close_action, CloseAction::MinimizeToTray);
         assert!(!loaded.check_updates);
         assert_eq!(loaded.skipped_update_version.as_deref(), Some("1.14.0"));
         let _ = fs::remove_dir_all(&dir);

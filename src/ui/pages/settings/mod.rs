@@ -2,7 +2,7 @@
 //! 管理在 `ProfilesPage`。
 //!
 //! Feature rows live in one slot file each (`language`, `appearance`,
-//! `window`, `lan`, `diagnostics`, `updates`). Every slot exposes the same
+//! `lan`, `diagnostics`, `updates`). Every slot exposes the same
 //! `rows(app_state, window, cx) -> Vec<AnyElement>`, called once per render
 //! and placed into the card layout below; a card made only of slot rows is
 //! omitted while its slots return nothing.
@@ -12,7 +12,6 @@ mod diagnostics;
 mod lan;
 mod language;
 mod updates;
-mod window;
 
 use crate::core::presentation::sanitize_port;
 use crate::core::settings::{PROXY_PORT, TUN_AVAILABLE};
@@ -94,7 +93,6 @@ impl Render for SettingsPage {
         let app_state = self.app_state.clone();
         let mut general_rows = language::rows(&app_state, window, cx);
         general_rows.extend(appearance::rows(&app_state, window, cx));
-        general_rows.extend(window::rows(&app_state, window, cx));
         let lan_rows = lan::rows(&app_state, window, cx);
         let diagnostics_rows = diagnostics::rows(&app_state, window, cx);
         let update_rows = updates::rows(&app_state, window, cx);

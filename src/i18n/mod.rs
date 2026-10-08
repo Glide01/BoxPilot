@@ -138,7 +138,6 @@ pub struct Strings {
     pub chart: Chart,
     pub tray: Tray,
     pub app_menu: AppMenu,
-    pub close_dialog: CloseDialog,
     pub dialogs: Dialogs,
     pub messages: Messages,
     pub errors: Errors,
@@ -645,12 +644,6 @@ pub struct Settings {
     pub appearance: &'static str,
     pub theme_light: &'static str,
     pub theme_dark: &'static str,
-    pub close_button: &'static str,
-    pub close_hint: &'static str,
-    pub close_no_tray_hint: &'static str,
-    pub close_ask: &'static str,
-    pub close_minimize: &'static str,
-    pub close_quit: &'static str,
     pub local_proxy_port: &'static str,
     pub allow_lan: &'static str,
     pub lan_on_at: Fmt1,
@@ -761,15 +754,6 @@ pub struct AppMenu {
     pub window: &'static str,
     pub minimize: &'static str,
     pub close_window: &'static str,
-}
-
-/// The first-close "keep running in the tray?" dialog.
-pub struct CloseDialog {
-    pub title: &'static str,
-    pub body: &'static str,
-    pub dont_ask_again: &'static str,
-    pub quit: &'static str,
-    pub keep: &'static str,
 }
 
 /// Root-level dialogs.

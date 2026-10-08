@@ -76,8 +76,8 @@ still matters: Apple silicon refuses to run unsigned code at all.
   not ADR 0004's colour / greyscale app icon but a one-colour template glyph
   (`assets/tray/`), a box in outline while disconnected and filled while
   connected, which AppKit tints for a light or dark menu bar. So the tray
-  is always available, and ADR 0004's Ask / Minimize to tray / Quit flow
-  applies unchanged. The app has a menu bar of its own: Settings… (⌘,),
+  is always available, and closing the window always leaves BoxPilot
+  running in it (ADR 0004). The app has a menu bar of its own: Settings… (⌘,),
   Services, Hide (⌘H), Hide Others, Show All, Quit (⌘Q); Edit, whose items
   are gpui-component's text input actions; Window (Minimize ⌘M, Close Window
   ⌘W). Quit is the same `cx.quit()` as the tray's, and AppKit routes the

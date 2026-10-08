@@ -2,11 +2,11 @@
 //! Edit menu and a Window menu, with their standard shortcuts.
 //!
 //! Every item is a gpui action handled app-wide. Quit is the same `cx.quit()`
-//! as the tray's and the close dialog's, so it ends in the one cleanup path
-//! (ADR 0004: `on_app_quit` drops `AppState`, which stops sing-box and
-//! resets the system proxy) — as do the Dock's Quit and logging out, which
-//! AppKit turns into the same terminate. Close Window goes through the
-//! close button's own decision (Ask / Minimize to tray / Quit). The Edit
+//! as the tray's, so it ends in the one cleanup path (ADR 0004:
+//! `on_app_quit` drops `AppState`, which stops sing-box and resets the
+//! system proxy) — as do the Dock's Quit and logging out, which
+//! AppKit turns into the same terminate. Close Window does what the close
+//! button does (closes to the tray, or quits without one). The Edit
 //! items are gpui-component's text-input actions, which `Input` already
 //! binds to ⌘C / ⌘V / …; the menu only makes them discoverable and
 //! clickable, greyed out while no text field has focus.

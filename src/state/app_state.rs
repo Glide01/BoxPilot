@@ -11,9 +11,9 @@ use crate::core::paths::{
     runtime_config_path,
 };
 use crate::core::settings::{
-    default_auto_update_interval, default_update_via_sing_box, AppSettings, CloseAction,
-    LanguagePreference, Profile, ProfileSource, StatusEvent, StatusLevel, ThemePreference,
-    CONFIG_FILENAME, SING_EXECUTABLE, TUN_AVAILABLE,
+    default_auto_update_interval, default_update_via_sing_box, AppSettings, LanguagePreference,
+    Profile, ProfileSource, StatusEvent, StatusLevel, ThemePreference, CONFIG_FILENAME,
+    SING_EXECUTABLE, TUN_AVAILABLE,
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::sub_usage::{SubscriptionUsage, UsageLevel};
@@ -1287,16 +1287,6 @@ impl AppState {
         self.settings.allow_lan = value;
         self.save_settings();
         self.restart_if_running(cx);
-        cx.notify();
-    }
-
-    /// Settings › General "Close button".
-    pub fn set_close_action(&mut self, value: CloseAction, cx: &mut Context<Self>) {
-        if self.settings.close_action == value {
-            return;
-        }
-        self.settings.close_action = value;
-        self.save_settings();
         cx.notify();
     }
 

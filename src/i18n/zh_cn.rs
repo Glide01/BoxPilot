@@ -450,12 +450,6 @@ pub static ZH_CN: Strings = Strings {
         appearance: "外观",
         theme_light: "浅色",
         theme_dark: "深色",
-        close_button: "关闭按钮",
-        close_hint: "在托盘中运行时保持连接。",
-        close_no_tray_hint: "此桌面没有托盘，关闭窗口即退出。",
-        close_ask: "询问",
-        close_minimize: "最小化到托盘",
-        close_quit: "退出",
         local_proxy_port: "本地代理端口",
         allow_lan: "允许局域网连接",
         lan_on_at: |at| {
@@ -553,13 +547,6 @@ pub static ZH_CN: Strings = Strings {
         window: "窗口",
         minimize: "最小化",
         close_window: "关闭窗口",
-    },
-    close_dialog: CloseDialog {
-        title: "让 BoxPilot 在托盘中继续运行？",
-        body: "留在托盘中时 sing-box 保持连接，退出则停止。",
-        dont_ask_again: "不再询问",
-        quit: "退出",
-        keep: "留在托盘",
     },
     dialogs: Dialogs {
         import_title: "导入订阅配置？",

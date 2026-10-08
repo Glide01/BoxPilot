@@ -113,6 +113,5 @@ durations such as 1小时23分 excepted).
 | Settings | 设置 | Sections: 常规 / 网络 / TUN / 故障排查 / 关于 |
 | System (follow the OS) | 跟随系统 | Language and Appearance options |
 | Appearance: Light / Dark | 外观：浅色 / 深色 | |
-| Close button: Ask / Minimize to tray / Quit | 关闭按钮：询问 / 最小化到托盘 / 退出 | |
 | Update (a profile) | 更新 | Check for updates (BoxPilot) = 检查更新 |
 | Update through sing-box | 通过 sing-box 更新 | Per-subscription switch: fetch via the local proxy port, direct retry on failure |

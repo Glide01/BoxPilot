@@ -1,6 +1,6 @@
 //! The main window's lifecycle: opening it, surfacing it for every launch
-//! attempt, and what its close button does — quit, or (with a tray icon
-//! up) close the window and keep BoxPilot running. See
+//! attempt, and what its close button does — with a tray icon up, close
+//! the window and keep BoxPilot running; without one, quit. See
 //! `docs/adr/0004-tray-and-window-lifecycle.md`.
 //!
 //! "Hide to tray" closes the window for real (gpui has no per-window hide,
@@ -11,21 +11,13 @@
 //! proxy.
 
 use crate::actions::ShowSettings;
-use crate::core::settings::{CloseAction, StatusEvent, StatusLevel};
+use crate::core::settings::{StatusEvent, StatusLevel};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
 use crate::state::{ActivateRequested, AppState};
-use crate::ui::widgets::{dialog_button, TextLabel};
 use crate::ui::{theme, title_bar, toast, tray, RootView};
 use gpui::*;
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    checkbox::Checkbox,
-    dialog::DialogFooter,
-    Root, WindowExt,
-};
-use std::cell::Cell;
-use std::rc::Rc;
+use gpui_component::Root;
 
 /// The one main window, and the `AppState` that outlives it.
 pub struct MainWindow {
@@ -38,8 +30,6 @@ pub struct MainWindow {
     /// Set by the close path that decided to keep running; read (and
     /// cleared) when the window is gone. False = closing quits.
     keep_running_on_close: bool,
-    /// The "Keep BoxPilot running in the tray?" prompt is open.
-    close_prompt_open: bool,
     /// The open window's `RootView` routes status events to its toasts.
     /// False while closed, and for the rest of the effect cycle that opened
     /// the window: gpui activates its subscriptions only after that.
@@ -51,33 +41,6 @@ pub struct MainWindow {
 }
 
 impl Global for MainWindow {}
-
-/// What a click on the close button does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CloseDecision {
-    /// Close the window now; keep the app running only if `keep_running`.
-    Close { keep_running: bool },
-    /// Keep the window and ask the user first.
-    AskFirst,
-}
-
-/// The close button's effect for the user's setting. Without a tray icon
-/// the window is the only way back, so closing always quits — exactly the
-/// behaviour from before the tray existed.
-pub fn close_decision(action: CloseAction, tray_available: bool) -> CloseDecision {
-    if !tray_available {
-        return CloseDecision::Close {
-            keep_running: false,
-        };
-    }
-    match action {
-        CloseAction::Ask => CloseDecision::AskFirst,
-        CloseAction::MinimizeToTray => CloseDecision::Close { keep_running: true },
-        CloseAction::Quit => CloseDecision::Close {
-            keep_running: false,
-        },
-    }
-}
 
 /// Take ownership of `app_state` for the app's lifetime and wire the
 /// app-level handlers. Opens nothing; see [`show`].
@@ -142,7 +105,6 @@ pub fn init(app_state: Entity<AppState>, cx: &mut App) {
         handle: None,
         last_bounds: None,
         keep_running_on_close: false,
-        close_prompt_open: false,
         view_routes_status: false,
         parked_status: None,
         _subscriptions: subscriptions,
@@ -287,7 +249,6 @@ fn open(cx: &mut App) {
         Ok(handle) => {
             let parked = cx.update_global::<MainWindow, _>(|main, _| {
                 main.handle = Some(handle);
-                main.close_prompt_open = false;
                 main.view_routes_status = false;
                 main.parked_status.take()
             });
@@ -316,36 +277,19 @@ fn open(cx: &mut App) {
 }
 
 /// The platform's close request (title-bar button, Alt+F4, taskbar
-/// "Close window", compositor close). `true` lets the window close.
+/// "Close window", compositor close). Always lets the window close: with a
+/// tray icon up BoxPilot keeps running in it; without one the window is the
+/// only way back, so closing quits — exactly the behaviour from before the
+/// tray existed.
 fn should_close(window: &mut Window, cx: &mut App) -> bool {
     remember_bounds(window, cx);
-    let Some(action) = cx
-        .try_global::<MainWindow>()
-        .map(|main| main.app_state.read(cx).settings.close_action)
-    else {
-        return true;
-    };
-    match close_decision(action, tray::is_available(cx)) {
-        CloseDecision::Close { keep_running } => {
-            set_keep_running(keep_running, cx);
-            true
-        }
-        CloseDecision::AskFirst => {
-            let prompt_open = cx
-                .try_global::<MainWindow>()
-                .is_some_and(|main| main.close_prompt_open);
-            if !prompt_open {
-                ask_keep_running(window, cx);
-            }
-            false
-        }
-    }
+    set_keep_running(tray::is_available(cx), cx);
+    true
 }
 
 /// The close button BoxPilot draws itself (a client-decorated Linux
 /// window; on Windows the OS turns ours into its own close request), and
-/// the macOS Close Window item. Same path as the platform's:
-/// `should_close` decides.
+/// the macOS Close Window item. Same path as the platform's.
 pub fn request_close(window: &mut Window, cx: &mut App) {
     if should_close(window, cx) {
         window.remove_window();
@@ -363,7 +307,6 @@ fn on_window_closed(cx: &mut App, window_id: WindowId) {
     cx.update_global::<MainWindow, _>(|main, _| {
         main.handle = None;
         main.keep_running_on_close = false;
-        main.close_prompt_open = false;
         main.view_routes_status = false;
     });
     if !keep_running {
@@ -381,125 +324,5 @@ fn remember_bounds(window: &Window, cx: &mut App) {
 fn set_keep_running(keep_running: bool, cx: &mut App) {
     if cx.has_global::<MainWindow>() {
         cx.update_global::<MainWindow, _>(|main, _| main.keep_running_on_close = keep_running);
-    }
-}
-
-fn set_close_prompt_open(open: bool, cx: &mut App) {
-    if cx.has_global::<MainWindow>() {
-        cx.update_global::<MainWindow, _>(|main, _| main.close_prompt_open = open);
-    }
-}
-
-/// Persist the answer when "Don't ask again" is ticked.
-fn remember_close_action(remember: bool, action: CloseAction, cx: &mut App) {
-    if !remember {
-        return;
-    }
-    if let Some(app_state) = cx
-        .try_global::<MainWindow>()
-        .map(|main| main.app_state.clone())
-    {
-        app_state.update(cx, |state, cx| state.set_close_action(action, cx));
-    }
-}
-
-/// First close with "Ask": keep running in the tray, or quit? Esc and the
-/// dialog's × dismiss it and leave the window open.
-fn ask_keep_running(window: &mut Window, cx: &mut App) {
-    set_close_prompt_open(true, cx);
-    let remember = Rc::new(Cell::new(false));
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let t = &crate::i18n::s().close_dialog;
-        let remember_toggle = remember.clone();
-        let remember_quit = remember.clone();
-        let remember_keep = remember.clone();
-        alert
-            .title(t.title)
-            .description(t.body)
-            .child(
-                Checkbox::new("close-remember")
-                    .label(t.dont_ask_again)
-                    .checked(remember.get())
-                    .on_click(move |checked: &bool, window, _| {
-                        remember_toggle.set(*checked);
-                        window.refresh();
-                    }),
-            )
-            .close_button(true)
-            .on_close(|_, _, cx| set_close_prompt_open(false, cx))
-            .footer(
-                DialogFooter::new()
-                    .child(
-                        dialog_button(Button::new("close-quit"))
-                            .text_label(t.quit)
-                            .on_click(move |_, window, cx| {
-                                window.close_dialog(cx);
-                                set_close_prompt_open(false, cx);
-                                remember_close_action(remember_quit.get(), CloseAction::Quit, cx);
-                                cx.quit();
-                            }),
-                    )
-                    .child(
-                        dialog_button(Button::new("close-keep"))
-                            .primary()
-                            .text_label(t.keep)
-                            .on_click(move |_, window, cx| {
-                                window.close_dialog(cx);
-                                set_close_prompt_open(false, cx);
-                                remember_close_action(
-                                    remember_keep.get(),
-                                    CloseAction::MinimizeToTray,
-                                    cx,
-                                );
-                                // The icon may have gone while the prompt
-                                // was up: then this close quits after all.
-                                set_keep_running(tray::is_available(cx), cx);
-                                remember_bounds(window, cx);
-                                window.remove_window();
-                            }),
-                    ),
-            )
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    // Not `super::*`: that brings in `gpui::*`, whose `test` attribute
-    // macro would shadow the built-in one.
-    use super::{close_decision, CloseDecision};
-    use crate::core::settings::CloseAction;
-
-    #[test]
-    fn without_a_tray_closing_always_quits() {
-        for action in [
-            CloseAction::Ask,
-            CloseAction::MinimizeToTray,
-            CloseAction::Quit,
-        ] {
-            assert_eq!(
-                close_decision(action, false),
-                CloseDecision::Close {
-                    keep_running: false
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn with_a_tray_the_setting_decides() {
-        assert_eq!(
-            close_decision(CloseAction::Ask, true),
-            CloseDecision::AskFirst
-        );
-        assert_eq!(
-            close_decision(CloseAction::MinimizeToTray, true),
-            CloseDecision::Close { keep_running: true }
-        );
-        assert_eq!(
-            close_decision(CloseAction::Quit, true),
-            CloseDecision::Close {
-                keep_running: false
-            }
-        );
     }
 }

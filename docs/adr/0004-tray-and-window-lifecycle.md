@@ -10,34 +10,37 @@ BoxPilot now has a **system tray icon** — colour while connected, greyscale
 otherwise, tooltip "BoxPilot — Connected/Disconnected/Starting…" — whose menu
 covers what people switch most: Show BoxPilot, Connect/Disconnect, System
 Proxy, Proxy Mode, Clash Mode (while switchable), Profile (with two or more)
-and Quit BoxPilot. Left click opens the window. And **closing the window can
-leave BoxPilot running**: Settings › General "Close button" is Ask (default) /
-Minimize to tray / Quit, and the first close under Ask asks "Keep BoxPilot
-running in the tray?" with a "Don't ask again" box.
+and Quit BoxPilot. Left click opens the window. And **closing the window
+leaves BoxPilot running in the tray**; quitting is the tray menu's (or, on
+macOS, the app menu's) job.
+
+*Revised:* this first shipped with a Settings › General "Close button" choice
+(Ask by default / Minimize to tray / Quit) and a first-close "Keep BoxPilot
+running in the tray?" dialog with "Don't ask again". Both are gone: with a
+tray, closing always keeps running. A `close_action` key in an older settings
+file is ignored.
 
 ## How it works
 
 - **Lifetime.** `ui::app_window::MainWindow` (a gpui global) owns `AppState`
   for the app's lifetime; gpui runs with `QuitMode::Explicit`. Quitting is
-  decided in one place: the window closed without "keep running" → quit;
-  tray Quit → quit; the Ask dialog's Quit → quit. `on_app_quit` removes the
-  global, which drops `AppState` → `ProcessSession`, whose `Drop` stops
-  sing-box and resets the system proxy — the same cleanup as before, just
-  reached from the global instead of the window. gpui never drops globals
-  itself, so that removal is load-bearing.
+  decided in one place: the window closed without "keep running" (no tray)
+  → quit; tray Quit → quit. `on_app_quit` removes the global, which drops
+  `AppState` → `ProcessSession`, whose `Drop` stops sing-box and resets the
+  system proxy — the same cleanup as before, just reached from the global
+  instead of the window. gpui never drops globals itself, so that removal is
+  load-bearing.
 - **"Hide" means close.** gpui has no per-window hide, and a Wayland client
-  can't hide its toplevel at all. Minimize-to-tray closes the window for real
-  (its views are dropped, which also stops them rendering); "Show BoxPilot"
+  can't hide its toplevel at all. Closing to the tray closes the window for
+  real (its views are dropped, which also stops them rendering); "Show BoxPilot"
   opens a fresh one at the last bounds. Page state such as the selected page
   starts over; everything that matters lives in `AppState` and survives.
 - **No tray, no change.** The close button only keeps BoxPilot running while
   a tray icon is actually showing (`tray::is_available`). Without one — a
   Linux desktop with no StatusNotifier host (e.g. GNOME without the
   AppIndicator extension), a headless/xvfb session, a failed registration —
-  closing quits exactly as before, and the Settings row shows no choice
-  and no control, only the hint "Closing the window quits BoxPilot. This
-  desktop has no system tray to keep it running in." If the host goes away
-  while the window is closed, the window reopens.
+  closing quits exactly as before. If the host goes away while the window
+  is closed, the window reopens.
 - **Backends.** Windows: `tray-icon` + `muda`, created on the UI thread,
   whose hidden window gpui's own `GetMessageW` loop pumps. Linux: a
   StatusNotifierItem over D-Bus via `ksni` (no GTK), registered on a thread
@@ -83,8 +86,7 @@ small handoffs close that gap:
 - A Linux TUN-mode Connect from the tray that needs the one-time grant
   reopens the window to ask for it (the prompt lives there).
 - Quitting is still the only thing that stops sing-box behind the user's
-  back; closing the window under "Minimize to tray" deliberately doesn't.
-  The dialog says so ("Quit stops sing-box").
+  back; closing the window (with a tray) deliberately doesn't.
 - Windows runs elevated; tray clicks come from the (non-elevated) shell via
   tray-icon's window messages. Needs checking on a real desktop, as do KDE
   and GNOME+AppIndicator.
