@@ -20,6 +20,10 @@
 //!   token, restricted (`CreateRestrictedToken`): every privilege but
 //!   `SeChangeNotifyPrivilege` deleted, not merely disabled, so sing-box
 //!   can't enable it again, and the integrity level lowered to High.
+//!
+//! **macOS** takes the same arguments, as an argv (`posix_spawn` by
+//! absolute path: nothing is searched for, and no shell parses anything),
+//! and its own environment from nothing: [`posix_environment`].
 
 #![forbid(unsafe_code)]
 
@@ -144,6 +148,39 @@ pub fn environment(system_root: &str, temp: &str, profile: &str) -> Vec<(String,
     ];
     vars.sort_by_key(|(name, _)| name.to_uppercase());
     vars
+}
+
+/// sing-box's `PATH` on macOS: the system's own directories, all
+/// SIP-protected. sing-box runs `networksetup` by name for the system proxy
+/// (`common/settings/proxy_darwin.go`), so it needs one, and nothing a user
+/// can write may be in it.
+pub const POSIX_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// sing-box's whole environment on macOS, built from nothing, never
+/// inherited from the helper (ADR 0006 rule 2, "Environment"): `PATH`
+/// ([`POSIX_PATH`]), and `HOME` and `TMPDIR` inside the run directory. No
+/// `SUDO_*`, no user's `HOME`. Sorted by name.
+pub fn posix_environment(home: &str, tmp: &str) -> Vec<(String, String)> {
+    vec![
+        ("HOME".to_owned(), home.to_owned()),
+        ("PATH".to_owned(), POSIX_PATH.to_owned()),
+        ("TMPDIR".to_owned(), tmp.to_owned()),
+    ]
+}
+
+/// The `name=value` strings `posix_spawn` takes as its environment.
+pub fn posix_environment_strings(vars: &[(String, String)]) -> Result<Vec<String>, PlanError> {
+    vars.iter()
+        .map(|(name, value)| {
+            if name.is_empty() || name.contains('=') {
+                return Err(PlanError::BadName);
+            }
+            if name.contains('\0') || value.contains('\0') {
+                return Err(PlanError::Nul);
+            }
+            Ok(format!("{name}={value}"))
+        })
+        .collect()
 }
 
 /// The UTF-16 environment block `CreateProcessW` takes with
@@ -309,6 +346,55 @@ mod tests {
                 ("windir", r"C:\Windows"),
             ]
             .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_posix_environment_is_built_from_nothing() {
+        let vars = posix_environment("/s/runs/ab/home", "/s/runs/ab/tmp");
+        assert_eq!(
+            vars,
+            [
+                ("HOME", "/s/runs/ab/home"),
+                ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+                ("TMPDIR", "/s/runs/ab/tmp"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        );
+        assert_eq!(
+            posix_environment_strings(&vars).unwrap(),
+            [
+                "HOME=/s/runs/ab/home",
+                "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+                "TMPDIR=/s/runs/ab/tmp"
+            ]
+        );
+        // Every PATH entry is a system directory, never /usr/local.
+        for dir in POSIX_PATH.split(':') {
+            assert!(
+                ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].contains(&dir),
+                "{dir}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posix_environment_that_cant_be_passed_is_refused() {
+        assert_eq!(
+            posix_environment_strings(&[("A=B".into(), "1".into())]),
+            Err(PlanError::BadName)
+        );
+        assert_eq!(
+            posix_environment_strings(&[("".into(), "1".into())]),
+            Err(PlanError::BadName)
+        );
+        assert_eq!(
+            posix_environment_strings(&[("A".into(), "1\0B=2".into())]),
+            Err(PlanError::Nul)
+        );
+        assert_eq!(
+            posix_environment_strings(&[]).unwrap(),
+            Vec::<String>::new()
         );
     }
 

@@ -30,10 +30,24 @@ pub struct TempDir(pub PathBuf);
 
 impl TempDir {
     pub fn new(tag: &str) -> Self {
+        Self::under(&std::env::temp_dir(), tag)
+    }
+
+    /// One beside the test binary, in the build directory: unlike the
+    /// system temp dir (`/tmp`, writable by everyone; under `/var/folders`
+    /// on macOS, through a link), a chain of directories that the POSIX
+    /// verification can pass.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub fn in_build_dir(tag: &str) -> Self {
+        let exe = std::env::current_exe().unwrap();
+        Self::under(exe.parent().unwrap(), tag)
+    }
+
+    fn under(parent: &Path, tag: &str) -> Self {
         let mut random = [0u8; 8];
         getrandom::fill(&mut random).unwrap();
         let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
-        let path = std::env::temp_dir().join(format!("boxpilot-helper-{tag}-{name}"));
+        let path = parent.join(format!("boxpilot-helper-{tag}-{name}"));
         fs::create_dir(&path).unwrap();
         Self(path)
     }
