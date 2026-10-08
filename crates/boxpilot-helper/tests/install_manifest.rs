@@ -9,6 +9,10 @@
 //! doesn't match, a file nobody accounts for, or one `wix/main.wxs` doesn't
 //! install then fails the release instead of every user's TUN start.
 //!
+//! The macOS release job does the same for the payload in the BoxPilot.app
+//! it built (`BOXPILOT_HELPER_MACOS_CONTENTS`), which
+//! `packaging/macos/helper-install.sh` installs.
+//!
 //! One more check runs everywhere, unignored: the MSI creates the state
 //! folder where the helper looks for it, with the DACL the helper requires.
 
@@ -84,6 +88,76 @@ fn the_staged_helper_directory_is_what_the_helper_accepts() {
     assert!(
         unstaged.is_empty() || unstaged == [OPTIONAL],
         "wix/main.wxs installs {unstaged:?}, which is not staged"
+    );
+}
+
+/// The names in `dir`.
+fn names(dir: &Path) -> BTreeSet<String> {
+    fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect()
+}
+
+/// The macOS payload inside a built BoxPilot.app (ADR 0006 rule 7): what
+/// `packaging/macos/helper-install.sh` installs. The release job builds the
+/// DMG, mounts it, and runs this with `--ignored` and
+/// `BOXPILOT_HELPER_MACOS_CONTENTS` set to the app's `Contents` directory.
+/// A manifest the helper would refuse, a sing-box that isn't the app's own,
+/// a file nobody accounts for, or scripts and a plist other than the
+/// repository's then fail the release instead of every user's install.
+#[test]
+#[ignore = "checks a built BoxPilot.app; CI runs it with BOXPILOT_HELPER_MACOS_CONTENTS set"]
+fn the_macos_payload_is_what_the_helper_accepts() {
+    use boxpilot_protocol::endpoint::macos;
+    let contents = PathBuf::from(
+        env::var_os("BOXPILOT_HELPER_MACOS_CONTENTS")
+            .expect("BOXPILOT_HELPER_MACOS_CONTENTS names BoxPilot.app/Contents"),
+    );
+    let payload = contents.join(macos::BUNDLE_PAYLOAD_DIR);
+    let bytes = fs::read(payload.join(MANIFEST_FILE)).unwrap();
+    let manifest = manifest::parse(&bytes).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(manifest.sing_box.file, "sing-box");
+    assert!(
+        manifest.extra_files.is_empty(),
+        "the macOS sing-box loads nothing from beside itself"
+    );
+    if let Some(version) = env::var_os("BOXPILOT_HELPER_SINGBOX_VERSION") {
+        assert_eq!(Some(manifest.sing_box.version.as_str()), version.to_str());
+    }
+    // The helper's sing-box is the app's own, byte for byte, as signed.
+    let sing_box = contents.join(macos::BUNDLE_SING_BOX);
+    let reader = File::open(&sing_box).unwrap_or_else(|e| panic!("{}: {e}", sing_box.display()));
+    manifest::verify("sing-box", &manifest.sing_box.sha256, reader)
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    let expected = BTreeSet::from(
+        [
+            MANIFEST_FILE,
+            macos::PLIST_FILE,
+            macos::INSTALL_SCRIPT,
+            macos::UNINSTALL_SCRIPT,
+        ]
+        .map(str::to_owned),
+    );
+    assert_eq!(names(&payload), expected, "the payload's files");
+    let executables =
+        BTreeSet::from(["BoxPilot", "sing-box", "boxpilot-helper"].map(str::to_owned));
+    assert_eq!(names(&contents.join("MacOS")), executables);
+    assert!(contents.join(macos::BUNDLE_HELPER).is_file());
+
+    // What the install runs as root is the repository's.
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/macos");
+    for script in [macos::INSTALL_SCRIPT, macos::UNINSTALL_SCRIPT] {
+        assert_eq!(
+            fs::read(payload.join(script)).unwrap(),
+            fs::read(repo.join(script)).unwrap(),
+            "{script}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(payload.join(macos::PLIST_FILE)).unwrap(),
+        boxpilot_helper::launchd::plist()
     );
 }
 
