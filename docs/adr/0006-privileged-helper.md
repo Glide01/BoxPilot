@@ -1,9 +1,9 @@
 # TUN goes through a privileged helper that runs its own sing-box on a config it has checked
 
 **Status: proposed.** This is a design; nothing here is implemented yet.
-Accepting it narrows ADR 0002 and refines ADR 0005 (see "Conflicts with
-earlier ADRs"), and it leaves five questions to the owner (see "Open
-questions").
+Its trade-offs are settled by separation of tasks (课题分离, below).
+Accepting it refines ADR 0005, and draws a boundary around ADR 0002
+without changing it (see "Conflicts with earlier ADRs").
 
 TUN mode needs privileges the logged-in user doesn't have: a TUN device,
 routes and DNS. BoxPilot gets them three different ways today:
@@ -15,10 +15,14 @@ routes and DNS. BoxPilot gets them three different ways today:
 - **macOS** has no TUN mode. ADR 0005 chose "a privileged launchd helper"
   for it, and noted that such a helper conflicts with ADR 0002.
 
-This ADR designs that helper. macOS is its first user. Windows is its
-second: the helper lets the Windows GUI stop running as Administrator.
-Linux keeps its setcap copy, for the reason given at the end of "The
-problem".
+This ADR designs that helper:
+
+- **Windows is its first user.** The helper lets the GUI stop running as
+  Administrator, which today lends admin rights to whatever a profile
+  asks for.
+- **macOS is its second.** The helper brings TUN there.
+- **Linux keeps its setcap copy,** for the reason given at the end of
+  "The problem".
 
 ## What we defend against
 
@@ -39,6 +43,9 @@ Attackers, most likely first:
    compromised app.
 5. **Hosts on the LAN,** through a listener a config opens on `0.0.0.0`.
 
+Against (1), BoxPilot defends the privilege *it* lends, not the user's
+own (see the next section).
+
 **Accepted, as Tailscale and Mullvad accept it:** a process running as the
 owner can do what the owner can do through BoxPilot, including starting
 TUN with a config the policy allows. The helper's job is to make sure
@@ -47,6 +54,28 @@ that is *all* it gets.
 **Out of scope:** attackers who already have root or Administrator,
 physical access, and the moment of the one-time install (see "Install,
 upgrade, removal").
+
+## Whose task is it (separation of tasks, 课题分离)
+
+Every trade-off in this ADR is settled by one question: **whose task is
+it?** A risk belongs to whoever's privilege is at stake and whoever made
+the choice. BoxPilot does its own task completely, and stays out of
+everyone else's.
+
+| Whose task | What it covers | So BoxPilot … |
+|---|---|---|
+| The user's | which profiles to trust; what a profile does with the user's own privilege; privilege the user brings of their own accord (running BoxPilot as root or Administrator) | runs the profile as written (ADR 0002) and doesn't police it |
+| BoxPilot's | privilege BoxPilot acquires and lends: the helper's root or SYSTEM, and today's self-elevation on Windows | lets no profile get more of it than "bring TUN up or down" |
+| The administrator's | who may control machine-wide networking on a shared machine | follows what the OS says (an administrator prompt, group membership), with no setting of its own |
+| The OS's | passwords, peer identity, file permissions | uses them and never reimplements them |
+| Upstream's | sing-box's features and its own policy | neither forks nor patches sing-box |
+| Other projects' | their unfixed bugs | cites only published fixes |
+
+**The line between the first two rows is the whole design.** The same
+profile runs as written at the user's privilege, and under the policy at
+privilege BoxPilot lends. Windows today is the one place where the two
+are mixed, because BoxPilot elevates everything. That is why Windows
+comes first.
 
 ## The problem: the config is a program's input, and that program may be root
 
@@ -89,32 +118,34 @@ docs.
 (Inbound-side features, such as hysteria2's file masquerade, can't arrive
 at all: BoxPilot already replaces a profile's `inbounds` with its own.)
 
-Run as the user, each of these is the user's own power. **Run as root or
-SYSTEM, each one is a privilege-escalation primitive, and a profile config
-is attacker input (1).** BoxPilot never writes any of these fields itself:
-it injects only `inbounds`, `cache_file.enabled` and its own loopback
-`api` service. Everything above comes from the profile.
+**At the user's privilege, each of these is the user's own power, and the
+user's task. At root or SYSTEM, each one is a privilege-escalation
+primitive, and it is BoxPilot's task, because BoxPilot lent that
+privilege.** BoxPilot never writes any of these fields itself: it injects
+only `inbounds`, `cache_file.enabled` and its own loopback `api` service.
+Everything above comes from the profile.
 
 Upstream projects have reached the same conclusion twice:
 
 - **sing-box 1.14.0-alpha.45:** "configurations that use privileges
   unrelated to networking are now rejected by default; an insecure mode
-  is available to allow them." The policy lives only in sing-box's own
-  desktop client daemon (`experimental/boxdd`). That daemon confines file
-  access to its working directory, resolving symlinks, and checks
-  features one by one. **The plain `sing-box run` that BoxPilot bundles
-  registers no policy.**
+  is available to allow them."
+  - The policy lives only in sing-box's own desktop client daemon
+    (`experimental/boxdd`), which confines file access to its working
+    directory (resolving symlinks) and checks features one by one.
+  - **The plain `sing-box run` that BoxPilot bundles registers no
+    policy.**
 - **mihomo 1.19.6 (May 2025):** "For security reasons, all paths
   appearing in the configuration file will be limited to workdir."
   `SAFE_PATHS` widens that.
 
-**Why Linux is already safe.** The setcap copy still runs as the user.
+**Why Linux is already fine.** The setcap copy still runs as the user.
 `CAP_NET_ADMIN` lets it open a TUN device and edit routes. It does not
 bypass file permissions, and a program the config starts doesn't inherit
-it. So a hostile config gets exactly the user's own file access, as in
-Proxy mode, and ADR 0002's "run the config as written" is safe there. It
-stops being safe once sing-box runs as root (macOS) or Administrator
-(Windows today).
+it. So what BoxPilot lends there is network-only, and everything else a
+hostile config does happens at the user's own privilege, as in Proxy
+mode. That stops being true once sing-box runs as root (macOS) or as
+Administrator (Windows today).
 
 ## Decision
 
@@ -140,7 +171,7 @@ after three rounds of fixes: "Owner identity cannot carry this weight"
 
 | Request | Carries → returns |
 |---|---|
-| `Hello` | protocol version → helper version, the installed sing-box's version and hash, whether the caller is the owner |
+| `Hello` | protocol version → helper version, the installed sing-box's version and hash, whether the caller may start |
 | `Start` | the profile config (bytes), its attachments, typed TUN options (IPv6, proxy port, Allow LAN, system proxy) → the API port and secret |
 | `Stop` | — |
 | `Status` | → running or stopped, the last exit reason |
@@ -177,6 +208,9 @@ gpui and no I/O, and is unit-tested the way `prepare_config` is. The GUI
 runs it so it can explain a refusal before it asks the helper. The
 helper runs it again, and only the helper's verdict counts.
 
+It applies **only to privilege BoxPilot lends.** A profile that runs at
+the user's own privilege never meets it.
+
 - **Parse defensively,** with size and nesting limits.
   - Top-level keys come from an allowlist: `log`, `dns`, `ntp`,
     `certificate`, `endpoints`, `outbounds`, `route`, `experimental`.
@@ -195,7 +229,9 @@ helper runs it again, and only the helper's verdict counts.
   - each tailscale endpoint's `state_directory` and `taildrop_directory`
     go in the owner's state directory under the helper's tree. That keeps
     a Tailscale login across connects.
-- **Files travel as content.**
+- **Files travel as content.** Which files a profile may read is decided
+  by the user's own access, the user's task; the helper never reads one
+  on its own privilege.
   - When a profile references a local file (a `.srs` rule set, a CA
     certificate, a client key), the GUI reads it *as the user* and sends
     it as an attachment.
@@ -219,12 +255,13 @@ helper runs it again, and only the helper's verdict counts.
   - every profile `service`, which the absent-`services` rule already
     covers.
   
-  A profile that needs one of these still runs in Proxy mode, as the
-  user.
+  A profile that needs one of these still runs in Proxy mode, at the
+  user's own privilege. Choosing between the two is the user's call.
 - **Control planes.** The profile's own `clash_api`, `v2ray_api` and
-  `api` services do not run on the privileged path. Only the helper's
-  `api` does, on loopback with a per-run secret. This narrows ADR 0002;
-  see open question 1.
+  `api` services do not run on the privileged path: a control plane over
+  a root process is BoxPilot's task, not the profile's. Only the helper's
+  `api` runs, on loopback with a per-run secret. A profile's dashboard
+  keeps working in Proxy mode, as written.
 - **Environment.** sing-box starts with a scrubbed environment: no
   `SUDO_*`, and no user `HOME`. Its `-D`, working directory and `HOME`
   are the run directory, and stdin is null.
@@ -260,28 +297,34 @@ policy.
 - **Not under `/usr/local` on macOS.** With Homebrew on an Intel Mac it
   belongs to the user, and the chain check would refuse it anyway.
 
-### 4. Authentication by kernel identity
+### 4. Who may ask: kernel identity, and the administrator decides
 
+**Identity:**
+
+- **Windows:** impersonate the pipe client, and read the user SID and
+  groups from its token.
 - **macOS:** the peer's uid from the socket: `LOCAL_PEERCRED`, or
   `LOCAL_PEERTOKEN` for the full audit token.
-- **Windows:** impersonate the pipe client, and read the user SID from
-  its token.
 - **Not used:** PIDs (they are reused, so checks race), bundle IDs, the
   code signature of an ad-hoc build, or a secret compiled into a public
   binary.
-- **Authorization:**
-  - The *owner*, recorded at install in a root-owned file, and
-    administrators may `Start` and `Stop`.
-  - Other local accounts get `Hello` and `Status` only: no logs, no
-    control. This is Tailscale's operator model.
+
+**Authorization** is the administrator's task, so it comes from the OS,
+not from a BoxPilot setting:
+
+- **Windows:** members of Administrators (elevated or not) and of Network
+  Configuration Operators may `Start` and `Stop`, as in WireGuard for
+  Windows. Who belongs to those groups is the administrator's call.
+- **macOS:** the *owner*, the account an administrator authorized
+  through the install prompt, recorded in a root-owned file.
+  - Another account takes over with its own administrator prompt.
+  - The last account authorized holds it, as with ADR 0003's grant on
+    Linux.
+- **Everyone else** gets `Hello` and `Status` only: no logs, no control.
+  This is Tailscale's operator model.
 
 ### 5. Transports the OS protects; no loopback HTTP
 
-- **macOS:** a Unix socket that **launchd creates** from the daemon's
-  plist (`Sockets`, adopted with `launch_activate_socket`), in root-owned
-  `/var/run`.
-  - The mode is 0666, because every user shares group `staff`.
-  - Every connection is authorized by uid (rule 4).
 - **Windows:** a pipe the service creates under
   `\\.\pipe\ProtectedPrefix\Administrators\BoxPilot\helper`. Only
   administrators can create names under that prefix. Tailscale and
@@ -293,32 +336,53 @@ policy.
     OpenVPN's CVE-2024-24974;
   - the SDDL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)`, with no
     low-integrity label.
+- **macOS:** a Unix socket that **launchd creates** from the daemon's
+  plist (`Sockets`, adopted with `launch_activate_socket`), in root-owned
+  `/var/run`.
+  - The mode is 0666, because every user shares group `staff`.
+  - Every connection is authorized by uid (rule 4).
 - **No TCP listener at all,** so DNS rebinding has nothing to reach
   (Tailscale's TS-2022-004 and TS-2022-005).
 
 ### 6. Lifecycle and cleanup
 
 - **sing-box is session-bound.** It stops when the connection that
-  started it closes, so a crashed GUI never leaves a root sing-box
-  behind. That matches `PR_SET_PDEATHSIG` on Linux today, and it replaces
-  the macOS pid file for TUN.
+  started it closes. A root sing-box nobody is asking for any more would
+  be a task nobody owns, so a crashed GUI never leaves one behind. That
+  matches `PR_SET_PDEATHSIG` on Linux today, and ADR 0004's "quitting
+  stops sing-box". It also replaces the macOS pid file for TUN.
 - **The helper starts on demand and exits when idle,** so no root process
   lingers while TUN is off.
-  - **macOS:** launchd socket activation.
   - **Windows:** a demand-start service whose DACL grants interactive
     users `SERVICE_START` and `SERVICE_QUERY_STATUS` only, never
     `SERVICE_CHANGE_CONFIG`, which would let them repoint its binary.
+  - **macOS:** launchd socket activation.
 - **Crash cleanup belongs to the helper,** which runs as root, under
   ADR 0005's conservative rules:
+  - **Windows:** remove stale `sing-tun` adapters
+    (`remove_tun_adapter`).
   - **macOS:** reset the system proxy only while it still points at
     `127.0.0.1`, and flush mDNSResponder (which needs root; see
     ADR 0005).
-  - **Windows:** remove stale `sing-tun` adapters
-    (`remove_tun_adapter`).
 - **No shells at runtime.** Every tool is called by absolute path, never
   through a shell, and no `sh` or AppleScript string is built at runtime.
 
 ### 7. Install, upgrade, removal
+
+**Windows:**
+
+- **The per-machine MSI,** which is already elevated, installs the
+  service through its `ServiceInstall` / `ServiceControl` tables. No
+  custom actions (Mandiant, 2023). So TUN needs no prompt of its own on
+  Windows.
+- **A fixed directory.** The helper and its own copy of sing-box go in
+  `[ProgramFiles64Folder]BoxPilot\Helper`, which is *not* configurable.
+  Today's MSI lets the user choose `APPLICATIONFOLDER`, and a SYSTEM
+  service must never run from a folder its user picked.
+- **State** goes in `%ProgramData%\BoxPilot\Helper`, created with a
+  protected SYSTEM + Administrators DACL. On start, the service checks
+  that ACL, and refuses a folder a user created first: `ProgramData`
+  lets users create subfolders.
 
 **macOS** (no Developer ID, and macOS 12 is supported):
 
@@ -332,12 +396,14 @@ policy.
     so XPC's `setCodeSigningRequirement` can't name "BoxPilot" across
     versions either.
 - **One administrator prompt instead.** `osascript … with administrator
-  privileges` runs a fixed install script.
+  privileges` runs a fixed install script, and the same prompt records
+  the owner (rule 4).
   - The AppleScript text is a constant. Values (the bundle path, the
     owner's uid) arrive through `on run argv`, and reach the shell only
     as positional arguments wrapped in `quoted form of`, never inside the
-    script text. That is the rule `privilege::grant_command` already
-    follows, and the same hostile-path test applies.
+    script text.
+  - That is the rule `privilege::grant_command` already follows, and the
+    same hostile-path test applies.
 - **What it installs,** all root:wheel and not writable by anyone else:
   - `/Library/PrivilegedHelperTools/io.github.glide01.boxpilot.helper`;
   - sing-box, its manifest and the per-owner state in
@@ -346,53 +412,41 @@ policy.
 - **Login Items.** macOS 13+ lists the helper under Login Items. If the
   user turns it off there, BoxPilot treats it as not installed.
 
-**Windows:**
-
-- **The per-machine MSI,** which is already elevated, installs the
-  service through its `ServiceInstall` / `ServiceControl` tables. No
-  custom actions (Mandiant, 2023).
-- **A fixed directory.** The helper and its own copy of sing-box go in
-  `[ProgramFiles64Folder]BoxPilot\Helper`, which is *not* configurable.
-  Today's MSI lets the user choose `APPLICATIONFOLDER`, and a SYSTEM
-  service must never run from a folder its user picked.
-- **State** goes in `%ProgramData%\BoxPilot\Helper`, created with a
-  protected SYSTEM + Administrators DACL. On start, the service checks
-  that ACL, and refuses a folder a user created first: `ProgramData`
-  lets users create subfolders.
-
 **Upgrade.** `Hello` reports the helper's protocol version and the hash of
-its sing-box. When they don't match what this BoxPilot ships, the GUI
-asks to reinstall, as ADR 0003's per-version grant does today. The helper
-never runs a sing-box it didn't install.
+its sing-box. When they don't match what this BoxPilot ships:
 
-**Removal** works without the app:
+- on Windows, the MSI upgrade replaces both;
+- on macOS, the GUI asks to reinstall, as ADR 0003's per-version grant
+  does today.
 
-- the MSI uninstall on Windows;
-- on macOS, two documented commands (`launchctl bootout`, then removing
-  the three paths).
+The helper never runs a sing-box it didn't install.
 
-Settings › TUN also has a "Remove helper" button (one administrator
-prompt).
+**Removal** works without the app: the MSI uninstall on Windows, and two
+documented commands on macOS (`launchctl bootout`, then removing the
+three paths). On macOS, Settings › TUN also has a "Remove helper" button
+(one administrator prompt).
 
-**Install-time trust.** The payload is copied out of the user-writable app
-bundle, so a same-user process could swap it during that one prompt. That
-is the same exposure as any installer, and as ADR 0003's grant. After
-install, nothing in the privileged path is user-writable.
+**Install-time trust.** On macOS the payload is copied out of the
+user-writable app bundle, so a same-user process could swap it during
+that one prompt. That is the same exposure as any installer, and as
+ADR 0003's grant: the user's session at that moment is the user's task.
+After install, nothing in the privileged path is user-writable.
 
-**Passwords.** BoxPilot never sees, stores or forwards the administrator
-password; only the OS prompt does. (v2rayN stored the user's sudo
-password for TUN until 2025.)
+**Passwords** are the OS's task. BoxPilot never sees, stores or forwards
+the administrator password; only the OS prompt does. (v2rayN stored the
+user's sudo password for TUN until 2025.)
 
 ### 8. Per platform
 
-| | macOS (phase 1) | Windows (phase 2) | Linux |
+| | Windows (phase 1) | macOS (phase 2) | Linux |
 |---|---|---|---|
-| sing-box runs as | root, via the helper | SYSTEM, via the helper | the user + `CAP_NET_ADMIN` (ADR 0003) |
-| The GUI runs as | the user | the user (`ensure_elevated` goes) | the user |
-| Transport | launchd-created Unix socket | named pipe under ProtectedPrefix | — |
-| Caller identity | `LOCAL_PEERCRED` uid | the impersonated token's SID | — |
-| Config policy | enforced by the helper | enforced by the helper | not needed for privilege; see open question 2 |
-| Proxy mode | unprivileged, unchanged | unprivileged | unprivileged |
+| sing-box runs as | SYSTEM, via the helper | root, via the helper | the user + `CAP_NET_ADMIN` (ADR 0003) |
+| The GUI runs as | the user (`ensure_elevated` goes) | the user | the user |
+| Transport | named pipe under ProtectedPrefix | launchd-created Unix socket | — |
+| Caller identity | the impersonated token | `LOCAL_PEERCRED` uid | — |
+| Who may start TUN | Administrators, Network Configuration Operators | the owner an administrator authorized | the user an administrator granted (ADR 0003) |
+| Config policy | enforced by the helper | enforced by the helper | none: the profile runs at the user's privilege |
+| Proxy mode | unprivileged, as written | unprivileged, as written | unprivileged, as written |
 
 **Linux stays on setcap.** A capability on a process that still runs as
 the user is a smaller trusted surface than a long-lived root daemon with
@@ -405,6 +459,12 @@ a protocol. Two hardening notes:
   root-owned directory, checked with `SO_PEERCRED` (or `SO_PEERPIDFD`).
   Never polkit's PID-based `unix-process` subject, which polkit itself
   documents as racy.
+
+**Privilege the user brings is theirs.** BoxPilot no longer elevates
+itself anywhere. When the user runs BoxPilot as Administrator or root of
+their own accord, that privilege is theirs to lend. BoxPilot then starts
+sing-box directly, as written, the way `TunPlan::UseBundled` already does
+on Linux. Only privilege BoxPilot has to obtain goes through the helper.
 
 ## Lessons from comparable software
 
@@ -424,7 +484,8 @@ Only published advisories, fixes and audits are cited here.
     just on IPC", watchdog restarts included.
   
   → No binary path in the protocol (1). Authentication is not
-  authorization (2). Check on every spawn path (3).
+  authorization (2). Check on every spawn path (3). Becoming an owner
+  takes an administrator (4).
 - **Clash for Windows, CVE-2022-40126.** A Service Mode profile directory
   that users could write led to privilege escalation. → Everything a
   privileged process consumes is admin-only, or travels as content (2, 7).
@@ -438,7 +499,7 @@ Only published advisories, fixes and audits are cited here.
   Its `SAFE_PATHS` escape hatch protects only when the *privileged* side
   sets it. → The policy lives in the helper (2).
 - **sing-box 1.14's desktop daemon.** It has a feature policy and a file
-  manager confined to its work directory. `sing-box run` has neither. →
+  manager confined to its work directory; `sing-box run` has neither. →
   BoxPilot's helper enforces its own (2). If `sing-box run` ever exposes
   that policy, it becomes a second layer, not the only one.
 - **WireGuard for Windows.**
@@ -446,13 +507,15 @@ Only published advisories, fixes and audits are cited here.
     `SeLoadDriverPrivilege`.
   - Its UI gets inherited unnamed pipes, so there is no named endpoint to
     attack.
+  - It serves Administrators, and Network Configuration Operators when an
+    administrator allows it.
   - `PostUp` scripts stay off unless an admin-only registry value
     (`DangerousScriptExecution`) turns them on.
   
-  → On the privileged path there is no GUI switch for a refused
-  feature. If one is ever needed, it is an admin-only setting, as with
-  WireGuard. Measuring what wintun needs and dropping the rest is phase-2
-  hardening.
+  → Authorization from OS groups (4). On the privileged path there is no
+  GUI switch for a refused feature; if one is ever needed, it is an
+  admin-only setting, as with WireGuard. Measuring what wintun needs and
+  dropping the rest is Windows-phase hardening.
 - **Tailscale, CVE-2022-41924 and CVE-2022-41925.** Websites could reach
   its loopback HTTP API through DNS rebinding, and on Windows reconfigure
   the daemon. Its LocalAPI is now a ProtectedPrefix named pipe on
@@ -483,51 +546,52 @@ Only published advisories, fixes and audits are cited here.
 
 ## Conflicts with earlier ADRs
 
-- **ADR 0002 is narrowed.**
-  - "A config's own controllers run exactly as written" still holds
-    while sing-box runs as the user: Proxy mode everywhere, and TUN on
-    Linux.
-  - On the privileged path, the profile's `clash_api`, `v2ray_api` and
-    `api` services don't run, and the policy above applies.
-  - This reverses part of a decision the owner made explicitly, so it
-    needs their sign-off (open question 1).
-- **ADR 0005 is refined.** The plan stands, with three changes:
+- **ADR 0002 keeps its scope.**
+  - "A config's own controllers run exactly as written" governs the
+    profile at the user's own privilege: Proxy mode everywhere, TUN on
+    Linux, and both modes on Windows once the GUI is no longer elevated.
+  - The privileged path is ground ADR 0002 never covered; there the
+    policy above applies.
+  - Windows today is where the two were mixed, because BoxPilot lent
+    admin to everything. Phase 1 separates them by not elevating, not by
+    policing profiles.
+- **ADR 0005 is refined.** The plan stands, with four changes:
   - its `SMAppService` branch waits until BoxPilot has a Developer ID;
   - callers are authenticated by uid, not by code signature;
   - its "paths forced into its own directory … or sandboxed" becomes:
     paths refused unless they come as attachments, the listed features
-    refused, *and* a sandbox.
+    refused, *and* a sandbox;
+  - macOS becomes the second phase, after Windows.
 - **ADR 0003 is unchanged,** apart from the two hardening notes above.
-- **Windows `ensure_elevated` goes in phase 2.** The deep-link pipe's
+- **Windows `ensure_elevated` goes in phase 1.** The deep-link pipe's
   `Everyone` + low-integrity DACL exists only so a non-elevated sender
   can reach an elevated GUI. Once the GUI isn't elevated, the pipe can
   take the default DACL, add `PIPE_REJECT_REMOTE_CLIENTS`, and cap the
   size of what it reads.
 
-## Open questions for the owner
+## Trade-offs, decided
 
-1. **Dashboards in helper TUN mode.**
-   - *Proposed:* the profile's own controllers don't run.
-   - *Alternative:* run them on loopback only, with a secret, without
-     `external_ui`. That keeps Yacd-style dashboards working, at the cost
-     of a control plane on a root process that every local account and
-     every DNS-rebinding page can probe, guarded by one secret.
-2. **The policy for unprivileged starts too?** A profile that makes
-   sing-box start a program is dangerous at any privilege level, and
-   upstream's own client now refuses that by default.
-   - *Recommended:* refuse the tor outbound's `executable_path` and the
-     OpenConnect wrappers on every start, with an override that a local
-     profile can opt into, but a subscription never can.
-   - This narrows ADR 0002 for everyone.
-3. **Shared machines.**
-   - *Proposed:* only the owner and administrators may start or stop.
-   - *Alternative:* any console user.
-4. **Session-bound sing-box.**
-   - *Proposed:* sing-box stops with its session.
-   - *Alternative:* sing-box survives a GUI crash and the GUI reattaches.
-5. **Phases.**
-   - *Proposed:* macOS first, because it unblocks TUN there.
-   - *Then Windows,* because it ends the elevated GUI.
+Each is settled by the separation above. The owner can still override
+any of them.
+
+1. **Dashboards in helper TUN mode: off.** A control plane over a root
+   process is BoxPilot's task. Wanting a dashboard with every profile
+   feature is the user's choice, and Proxy mode serves it as written.
+2. **No policy for starts at the user's own privilege.**
+   - What a profile does there is the user's task, so ADR 0002 stands
+     unchanged.
+   - An earlier draft of this ADR recommended refusing program-running
+     features on every start. That would have been BoxPilot doing the
+     user's task, so it is withdrawn.
+3. **Shared machines: the administrator decides,** through the OS
+   (rule 4). BoxPilot adds no multi-user setting of its own.
+4. **sing-box is session-bound.** Keeping a root process alive for a GUI
+   that is gone is a task nobody gave the helper.
+5. **Windows first, then macOS.**
+   - Windows' self-elevation is BoxPilot's own task, and it lends admin
+     to profiles today.
+   - macOS lacks a feature, but nothing there is exposed.
+   - Security comes first.
 
 ## Consequences
 
@@ -537,23 +601,28 @@ Only published advisories, fixes and audits are cited here.
     graph has no gpui and no reqwest.
   - The config policy and the protocol live in a small, pure crate
     (no I/O, no gpui) that both the GUI and the helper use.
-  - `ProcessSession` gets a second backend, a helper session, next to the
-    local child.
+  - `ProcessSession` gets a second backend, a helper session, next to
+    the local child.
+  - On Windows, `ensure_elevated` is removed, and TUN uses the helper
+    the MSI installs.
   - On macOS, `TUN_AVAILABLE` becomes "the helper is installed and
-    current".
-  - "Install helper" is a prompt like Linux's grant prompt, and
+    current". "Install helper" is a prompt like Linux's grant prompt, and
     Settings › TUN shows the helper's state with a Remove button.
   - The UI term is "Privileged helper" (特权助手, already used in the
     README). It goes into `CONTEXT.md` when this ADR is accepted.
-- **Cache file.** In helper TUN mode `cache.db` lives in the helper's
+- **The portable exe** uses the helper if the MSI installed one. Run as
+  Administrator by the user's own choice, it starts sing-box directly, as
+  written, as it does today. With neither, its TUN mode is unavailable,
+  and Home says how to get it.
+- **Cache file.** In helper TUN mode, `cache.db` lives in the helper's
   tree, so the selected nodes and the Clash mode are remembered per mode.
   BoxPilot can replay the last selection through the API on start.
 - **System proxy.**
-  - On macOS, a root sing-box's `networksetup` works on standard
-    accounts too, which closes a gap ADR 0005 notes.
-  - On Windows, a SYSTEM sing-box's `set_system_proxy` would write
-    SYSTEM's settings. So in phase 2 the GUI either sets the user's proxy
-    itself, or TUN mode leaves the system proxy off.
+  - **Windows:** the user's proxy setting is the user's task. In phase 1
+    the GUI sets it itself, as the user; a SYSTEM sing-box never writes
+    it.
+  - **macOS:** a root sing-box's `networksetup` also works on standard
+    accounts, which closes a gap ADR 0005 notes.
 - **Profiles that need a refused feature** run in Proxy mode only. A TUN
   start says which field was refused and why.
 
@@ -569,7 +638,7 @@ Only published advisories, fixes and audits are cited here.
   `BOXPILOT_DATA_DIR`, so the helper runs unprivileged in CI against a
   temporary tree.
 - **A release checklist on real machines.** Each of these must hold:
-  - another account's connection gets no `Start`;
+  - an account the administrator hasn't authorized gets no `Start`;
   - a remote client is refused, and so is an oversized frame;
   - a squatted pipe, socket or `ProgramData` folder is refused;
   - sing-box dies with its session;
@@ -583,18 +652,25 @@ Only published advisories, fixes and audits are cited here.
 - **setuid-root sing-box.** Rejected, as ADR 0005 already recorded: any
   user process gets a root sing-box running its own config, with nothing
   in between.
-- **Elevate the whole GUI** (Windows today). That puts subscription
-  parsing, deep links, HTTP and rendering in an admin process. It stays
-  only until phase 2.
+- **Elevate the whole GUI** (Windows today). It lends admin rights to
+  profile content, mixing the user's task with BoxPilot's, and it puts
+  subscription parsing, deep links, HTTP and rendering in an admin
+  process. It ends in phase 1.
+- **A policy on every start** (an earlier draft's recommendation). It
+  would guard users against profiles they chose, at their own privilege:
+  the user's task, not BoxPilot's. Rejected.
+- **A first-come owner** (the first account to connect becomes the
+  owner, with no prompt). It would make BoxPilot decide who controls
+  machine-wide networking, which is the administrator's task. Rejected.
 - **sing-box's own desktop daemon as the helper.** It would bring
-  upstream's policy for free, but it is not usable. On Windows its pipe
+  upstream's policy for free, but it is not usable: on Windows its pipe
   admits only its own signed clients (ADR 0002), and there is none for
   macOS.
 - **A Go helper that embeds sing-box with upstream's policy registered.**
-  Upstream would maintain the policy feature by feature. But BoxPilot
-  would build sing-box itself instead of shipping the release binary, the
-  hook is internal API, and the helper would be Go in a Rust project.
-  Revisit if `sing-box run` ever exposes the policy.
+  Upstream would maintain the policy feature by feature. But building and
+  patching sing-box is upstream's task, the hook is internal API, and the
+  helper would be Go in a Rust project. Revisit if `sing-box run` ever
+  exposes the policy.
 - **A denylist of known-dangerous fields.** Easier against today's
   schema, but it silently reopens the hole the next time upstream adds a
   field. Rejected for deny-by-shape.
