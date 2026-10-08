@@ -154,7 +154,13 @@ mod tests {
             args[script..],
             [
                 PROMPT.to_owned(),
-                format!("{}/Resources/Helper/helper-install.sh", contents.display()),
+                // Joined as the platform joins paths: the tests run on
+                // Windows too, where `join` adds a backslash.
+                contents
+                    .join("Resources/Helper")
+                    .join("helper-install.sh")
+                    .to_string_lossy()
+                    .into_owned(),
                 contents.to_string_lossy().into_owned(),
                 "501".to_owned(),
             ]
@@ -183,10 +189,11 @@ mod tests {
                 args[script..],
                 [
                     PROMPT.to_owned(),
-                    format!(
-                        "{}/Resources/Helper/helper-uninstall.sh",
-                        contents.display()
-                    ),
+                    contents
+                        .join("Resources/Helper")
+                        .join("helper-uninstall.sh")
+                        .to_string_lossy()
+                        .into_owned(),
                     flag.to_owned(),
                 ]
             );

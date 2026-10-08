@@ -201,8 +201,10 @@ pub fn judge(meta: &Meta, role: Role, trust: &Trust) -> Result<(), ModeRefusal> 
 /// [`SYSTEM_SYMLINKS`] and `real` is the same path under `/private`. Both
 /// must be absolute and plain (no `.` or `..`).
 pub fn explained_by_system_links(path: &Path, real: &Path) -> bool {
+    // `has_root`, which on Unix is `is_absolute`: the tests run on Windows
+    // too, where a path without a drive isn't absolute.
     let plain = |p: &Path| {
-        p.is_absolute()
+        p.has_root()
             && p.components()
                 .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
     };
