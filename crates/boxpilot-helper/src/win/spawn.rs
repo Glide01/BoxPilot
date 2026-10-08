@@ -126,7 +126,10 @@ fn output_pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
 /// A `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` attribute list. It points at the
 /// handle array it was built from, so it borrows it.
 struct HandleList<'a> {
-    buf: Vec<u64>,
+    /// The list's storage. Only `list` touches it, through the pointer
+    /// taken from it mutably once: the calls write into it.
+    _buf: Vec<u64>,
+    list: LPPROC_THREAD_ATTRIBUTE_LIST,
     _handles: PhantomData<&'a [HANDLE]>,
 }
 
@@ -149,10 +152,12 @@ impl<'a> HandleList<'a> {
         let mut buf = vec![0u64; size.div_ceil(size_of::<u64>())];
         let list = LPPROC_THREAD_ATTRIBUTE_LIST(buf.as_mut_ptr().cast::<c_void>());
         // SAFETY: `buf` holds `size` writable, 8-aligned bytes, and its heap
-        // allocation stays put for as long as the list lives.
+        // allocation stays put (it is never resized) for as long as the
+        // list lives.
         unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut size) }.map_err(io_error)?;
         let initialized = Self {
-            buf,
+            _buf: buf,
+            list,
             _handles: PhantomData,
         };
         // SAFETY: the list is initialized; `handles` outlives it (the
@@ -173,7 +178,7 @@ impl<'a> HandleList<'a> {
     }
 
     fn list(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
-        LPPROC_THREAD_ATTRIBUTE_LIST(self.buf.as_ptr() as *mut c_void)
+        self.list
     }
 }
 
