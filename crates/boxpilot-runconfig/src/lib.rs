@@ -16,6 +16,10 @@
 //! What is injected comes from typed options ([`Inject`]), never from the
 //! profile: a profile's own `inbounds` are replaced, and its own services
 //! stay beside BoxPilot's rather than under it.
+//!
+//! The privileged helper adds one thing the GUI doesn't:
+//! [`reject_loopback`], a first route rule that keeps a SYSTEM sing-box
+//! from connecting to this machine's loopback on anyone's behalf.
 
 #![forbid(unsafe_code)]
 
@@ -47,6 +51,24 @@ pub const API_SERVICE_TAG: &str = "boxpilot-api";
 /// `Origin` at all, which the CORS layer lets through. Also how BoxPilot
 /// recognizes its own service in a config fed back to it.
 pub const API_ALLOWED_ORIGIN: &str = "http://boxpilot.invalid";
+
+/// The destinations [`reject_loopback`] refuses by address: IPv4 and IPv6
+/// loopback, the IPv4-mapped forms of IPv4 loopback, and the unspecified
+/// addresses, which reach the local host on some systems (Linux, macOS).
+pub const LOOPBACK_CIDRS: &[&str] = &[
+    "127.0.0.0/8",
+    "::1/128",
+    "::ffff:127.0.0.0/104",
+    "0.0.0.0/8",
+    "::/128",
+    "::ffff:0.0.0.0/104",
+];
+
+/// The destinations [`reject_loopback`] refuses by name: `localhost` and
+/// every name under it (RFC 6761), with and without the final dot. sing-box
+/// takes a `domain_suffix` without a leading dot as the name itself and its
+/// subdomains, and lowercases the name before matching.
+pub const LOOPBACK_DOMAIN_SUFFIXES: &[&str] = &["localhost", "localhost."];
 
 /// How many candidate ports [`pick_port_avoiding`] draws before giving up.
 pub const PORT_PICK_ATTEMPTS: usize = 16;
@@ -197,6 +219,53 @@ pub fn inject(config: &mut Map<String, Value>, options: &Inject<'_>) {
     ours["tag"] = Value::from(api_service_tag(&services));
     services.push(ours);
     config.insert("services".into(), Value::Array(services));
+}
+
+/// The route rule [`reject_loopback`] puts first, in sing-box 1.14's
+/// syntax: a destination that is a loopback address or a `localhost` name
+/// (these items are one "destination address" group, so any one matching
+/// is enough), from any inbound or endpoint, gets the `reject` action.
+pub fn loopback_rule() -> Value {
+    serde_json::json!({
+        "ip_cidr": LOOPBACK_CIDRS,
+        "domain_suffix": LOOPBACK_DOMAIN_SUFFIXES,
+        "action": "reject"
+    })
+}
+
+/// The privileged path only: put [`loopback_rule`] first in
+/// `route.rules`, before the profile's own, creating `route` and its
+/// `rules` if need be (a non-array `rules` gives way to an array, as
+/// [`inject`]'s `services` does).
+///
+/// A sing-box running as SYSTEM makes every connection it routes from a
+/// SYSTEM process. Without this, any local account could reach a service
+/// that listens on this machine's loopback only, through the mixed
+/// inbound (no password, on `127.0.0.1`, or the LAN with "Allow LAN"), and
+/// so could a peer of a WireGuard, Tailscale or OpenVPN-server endpoint;
+/// some such services trust a SYSTEM peer more than a user's. So the rule
+/// applies to every inbound and endpoint, not the mixed inbound alone. No
+/// legitimate traffic is lost: what goes through TUN never has a loopback
+/// destination, and an outbound's own server (a local SOCKS proxy, say) is
+/// dialed without a route rule.
+///
+/// What it can't see: a name that resolves to loopback (sing-box matches
+/// `ip_cidr` against an IP destination only, unless a `resolve` action ran
+/// first, which would change how every profile routes), and a
+/// `route-options` rule of the profile that sets `override_address` after
+/// it. The GUI's own run, at the user's privilege, has no such rule: there
+/// the profile runs as written (ADR 0002).
+pub fn reject_loopback(config: &mut Map<String, Value>) {
+    let rules = object_entry(config, "route")
+        .entry("rules")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !rules.is_array() {
+        *rules = Value::Array(Vec::new());
+    }
+    rules
+        .as_array_mut()
+        .expect("`rules` was just made an array")
+        .insert(0, loopback_rule());
 }
 
 /// Where the mixed inbound listens: every IPv4 interface when LAN
@@ -564,6 +633,79 @@ mod tests {
             r#"ApiService { port: 17900, secret: "<redacted>" }"#
         );
         assert_eq!(ApiService::new(1, &[]).secret_hex(), "");
+    }
+
+    /// The exact rule, in sing-box 1.14.2's syntax (`option/rule.go`,
+    /// `option/rule_action.go`).
+    #[test]
+    fn the_loopback_rule_is_sing_boxs_reject_rule() {
+        assert_eq!(
+            loopback_rule(),
+            json!({
+                "ip_cidr": [
+                    "127.0.0.0/8",
+                    "::1/128",
+                    "::ffff:127.0.0.0/104",
+                    "0.0.0.0/8",
+                    "::/128",
+                    "::ffff:0.0.0.0/104"
+                ],
+                "domain_suffix": ["localhost", "localhost."],
+                "action": "reject"
+            })
+        );
+    }
+
+    /// First, before the profile's own rules, which stay as they were and
+    /// in order; `route`'s other keys keep their place.
+    #[test]
+    fn the_loopback_rule_goes_first() {
+        let profile_rules = json!([
+            {"action": "sniff"},
+            {"ip_cidr": ["127.0.0.1/32"], "outbound": "direct"},
+            {"domain": ["example.com"], "outbound": "proxy"}
+        ]);
+        let Value::Object(mut root) = json!({
+            "route": {"final": "proxy", "rules": profile_rules.clone(), "auto_detect_interface": true}
+        }) else {
+            unreachable!()
+        };
+        reject_loopback(&mut root);
+        let route = &root["route"];
+        let rules = route["rules"].as_array().unwrap();
+        assert_eq!(rules[0], loopback_rule());
+        assert_eq!(Value::Array(rules[1..].to_vec()), profile_rules);
+        let keys: Vec<&String> = route.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["final", "rules", "auto_detect_interface"]);
+    }
+
+    #[test]
+    fn the_loopback_rule_makes_its_own_route_if_need_be() {
+        for config in [
+            json!({}),
+            json!({"route": "not an object"}),
+            json!({"route": {"rules": "not an array"}}),
+            json!({"route": {"final": "direct"}}),
+        ] {
+            let Value::Object(mut root) = config.clone() else {
+                unreachable!()
+            };
+            reject_loopback(&mut root);
+            assert_eq!(root["route"]["rules"], json!([loopback_rule()]), "{config}");
+        }
+    }
+
+    /// The GUI's own run has no such rule: `inject` never adds one.
+    #[test]
+    fn inject_alone_adds_no_route_rule() {
+        let api = api();
+        for proxy_mode in [false, true] {
+            let mut options = options(&api);
+            options.proxy_mode = proxy_mode;
+            let config = injected(json!({"route": {"rules": []}}), &options);
+            assert_eq!(config["route"], json!({"rules": []}));
+            assert_eq!(injected(json!({}), &options).get("route"), None);
+        }
     }
 
     #[test]

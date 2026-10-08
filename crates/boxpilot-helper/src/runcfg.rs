@@ -9,7 +9,9 @@
 //! 2. [`build`]: `materialize` with this start's [`Placement`], then
 //!    `boxpilot_runconfig`'s injection with the helper's own `api` service:
 //!    a loopback port none of the config's listeners or the proxy uses, and
-//!    a fresh secret from the OS RNG.
+//!    a fresh secret from the OS RNG. Then the privileged path's own first
+//!    route rule, `boxpilot_runconfig::reject_loopback`: a SYSTEM sing-box
+//!    never connects to this machine's loopback for anyone.
 //!
 //! sing-box runs on the serialization of what `build` returns, never on the
 //! bytes received: those can say things (duplicate keys, comments) that
@@ -20,7 +22,9 @@
 
 use boxpilot_policy::{Checked, Limits, Placement, Refusal};
 use boxpilot_protocol::{StartRequest, Started, TunOptions};
-use boxpilot_runconfig::{config_listen_ports, pick_port_avoiding, ApiService, Inject};
+use boxpilot_runconfig::{
+    config_listen_ports, pick_port_avoiding, reject_loopback, ApiService, Inject,
+};
 use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, TcpListener};
@@ -154,7 +158,8 @@ impl fmt::Display for BuildError {
 impl std::error::Error for BuildError {}
 
 /// Build the run config: the checked config materialized with `placement`,
-/// then BoxPilot's inbounds, cache file and `api` service injected. The
+/// then BoxPilot's inbounds, cache file and `api` service injected, and the
+/// rule that rejects loopback destinations put first in `route.rules`. The
 /// `api` service's port comes from `ports` (see `pick_port_avoiding`),
 /// avoiding the proxy port and every port the config itself listens on;
 /// its secret is `secret`.
@@ -195,6 +200,7 @@ pub fn build<H>(
             api: &api,
         },
     );
+    reject_loopback(root);
     let config = serde_json::to_string_pretty(&config)
         .map_err(|error| BuildError::Serialize(error.to_string()))?;
     Ok(Prepared { config, files, api })
@@ -304,6 +310,7 @@ mod tests {
                     "path": r"C:\State\users\S-1-5-21-1-2-3-1001\cache.db",
                     "enabled": true
                 }},
+                "route": {"rules": [boxpilot_runconfig::loopback_rule()]},
                 "inbounds": [
                     {
                         "type": "tun",
@@ -333,6 +340,28 @@ mod tests {
             }
         );
         assert!(prepared.files().is_empty());
+    }
+
+    /// The SYSTEM sing-box rejects loopback destinations before any rule of
+    /// the profile can route them, a profile's rule for 127.0.0.1 included.
+    #[test]
+    fn loopback_is_rejected_before_the_profiles_rules() {
+        let profile_rules = json!([
+            {"ip_cidr": ["127.0.0.1/32"], "outbound": "direct"},
+            {"domain_suffix": ["localhost"], "outbound": "direct"}
+        ]);
+        let (config, _) = built(
+            json!({
+                "outbounds": [{"type": "direct", "tag": "direct"}],
+                "route": {"rules": profile_rules.clone(), "final": "direct"}
+            }),
+            &[],
+        );
+        let rules = config["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules[0], boxpilot_runconfig::loopback_rule());
+        assert_eq!(rules[0]["action"], "reject");
+        assert_eq!(Value::Array(rules[1..].to_vec()), profile_rules);
+        assert_eq!(config["route"]["final"], "direct");
     }
 
     /// The request asks for the system proxy, and sing-box never gets it.
