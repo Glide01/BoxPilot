@@ -57,25 +57,185 @@ pub fn flush_dns_windows() -> Result<String, String> {
     }
 }
 
+/// Undo the system proxy, if it is still ours: on, and pointing at the
+/// loopback host BoxPilot's local proxy (or sing-box, which writes the same)
+/// listens on. A proxy the user has set since is left alone, as on Linux
+/// and macOS. Needs no elevation: it is the user's own WinINet setting
+/// (HKCU), changed through WinINet, which also tells running programs.
+///
+/// Runs after every stop: a local sing-box is killed on Windows and can't
+/// clear what it set, and the privileged helper's sing-box never sets it
+/// (`enable_system_proxy` does, for the user).
 #[cfg(target_os = "windows")]
 pub fn disable_system_proxy() -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    let output = Command::new("reg")
-        .args([
-            "add",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v", "ProxyEnable",
-            "/t", "REG_DWORD",
-            "/d", "0",
-            "/f",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| (s().errors.run_command)("reg", &e.to_string()))?;
-    if output.status.success() {
+    let Some((enabled, server)) = wininet::current() else {
+        return Ok(());
+    };
+    if !is_our_windows_proxy(enabled, &server) {
+        return Ok(());
+    }
+    wininet::set_direct().map_err(|e| (s().errors.disable_proxy)(&e.message()))
+}
+
+/// Point the user's system proxy at the local proxy on `port`, as sing-box's
+/// `set_system_proxy` would. For TUN through the privileged helper: a
+/// SYSTEM sing-box would write SYSTEM's proxy, not the user's, so the GUI
+/// sets the user's itself, as the user (ADR 0006, "System proxy").
+/// `disable_system_proxy` undoes it.
+#[cfg(target_os = "windows")]
+pub fn enable_system_proxy(port: u16) -> Result<(), String> {
+    wininet::set_proxy(&format!("127.0.0.1:{port}"), WINDOWS_PROXY_BYPASS)
+        .map_err(|e| (s().helper.proxy_failed)(&e.message()))
+}
+
+/// Never needed off Windows: only the Windows helper needs the GUI to set
+/// the system proxy, and sing-box sets it itself everywhere else.
+#[cfg(not(target_os = "windows"))]
+pub fn enable_system_proxy(_port: u16) -> Result<(), String> {
+    Ok(())
+}
+
+/// What the system proxy BoxPilot sets leaves alone: loopback and local
+/// (dotless) names.
+#[cfg(target_os = "windows")]
+const WINDOWS_PROXY_BYPASS: &str = "localhost;127.*;[::1];<local>";
+
+/// The current user's WinINet proxy settings for the LAN connection, read
+/// and written through WinINet's per-connection options, which update
+/// HKCU and are what Windows' own Settings app uses; each write is followed
+/// by the notifications that make running programs reload them.
+#[cfg(target_os = "windows")]
+mod wininet {
+    use std::ffi::c_void;
+    use std::mem::size_of;
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{GlobalFree, HGLOBAL};
+    use windows::Win32::Networking::WinInet::{
+        InternetQueryOptionW, InternetSetOptionW, INTERNET_OPTION_PER_CONNECTION_OPTION,
+        INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN,
+        INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_OPTIONW, INTERNET_PER_CONN_OPTIONW_0,
+        INTERNET_PER_CONN_OPTION_LISTW, INTERNET_PER_CONN_PROXY_BYPASS,
+        INTERNET_PER_CONN_PROXY_SERVER, PROXY_TYPE_DIRECT, PROXY_TYPE_PROXY,
+    };
+
+    fn option(
+        option: INTERNET_PER_CONN,
+        value: INTERNET_PER_CONN_OPTIONW_0,
+    ) -> INTERNET_PER_CONN_OPTIONW {
+        INTERNET_PER_CONN_OPTIONW {
+            dwOption: option,
+            Value: value,
+        }
+    }
+
+    /// A list over `options` for the LAN connection (no connection name).
+    fn list(options: &mut [INTERNET_PER_CONN_OPTIONW]) -> INTERNET_PER_CONN_OPTION_LISTW {
+        INTERNET_PER_CONN_OPTION_LISTW {
+            dwSize: size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+            pszConnection: PWSTR::null(),
+            dwOptionCount: options.len() as u32,
+            dwOptionError: 0,
+            pOptions: options.as_mut_ptr(),
+        }
+    }
+
+    /// Whether a manual proxy is on, and its server string; `None` if the
+    /// settings can't be read.
+    pub(super) fn current() -> Option<(bool, String)> {
+        let mut options = [
+            option(
+                INTERNET_PER_CONN_FLAGS,
+                INTERNET_PER_CONN_OPTIONW_0 { dwValue: 0 },
+            ),
+            option(
+                INTERNET_PER_CONN_PROXY_SERVER,
+                INTERNET_PER_CONN_OPTIONW_0 {
+                    pszValue: PWSTR::null(),
+                },
+            ),
+        ];
+        let mut query = list(&mut options);
+        let mut size = size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32;
+        // SAFETY: `query` points at `options`, both alive for the call;
+        // `size` is the list's own size.
+        unsafe {
+            InternetQueryOptionW(
+                None,
+                INTERNET_OPTION_PER_CONNECTION_OPTION,
+                Some(&mut query as *mut INTERNET_PER_CONN_OPTION_LISTW as *mut c_void),
+                &mut size,
+            )
+        }
+        .ok()?;
+        // SAFETY: WinINet filled both options with the kind each asked for.
+        let (flags, server) = unsafe { (options[0].Value.dwValue, options[1].Value.pszValue) };
+        let server_text = if server.is_null() {
+            String::new()
+        } else {
+            // SAFETY: a NUL-terminated string WinINet allocated with
+            // GlobalAlloc, read once, then freed as its docs say.
+            unsafe {
+                let text = server.to_string().unwrap_or_default();
+                let _ = GlobalFree(HGLOBAL(server.0 as *mut c_void));
+                text
+            }
+        };
+        Some((flags & PROXY_TYPE_PROXY != 0, server_text))
+    }
+
+    fn apply(options: &mut [INTERNET_PER_CONN_OPTIONW]) -> windows::core::Result<()> {
+        let settings = list(options);
+        // SAFETY: `settings` points at `options`, both alive for the call;
+        // the notifications take no buffer.
+        unsafe {
+            InternetSetOptionW(
+                None,
+                INTERNET_OPTION_PER_CONNECTION_OPTION,
+                Some(&settings as *const INTERNET_PER_CONN_OPTION_LISTW as *const c_void),
+                size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+            )?;
+            let _ = InternetSetOptionW(None, INTERNET_OPTION_SETTINGS_CHANGED, None, 0);
+            let _ = InternetSetOptionW(None, INTERNET_OPTION_REFRESH, None, 0);
+        }
         Ok(())
-    } else {
-        Err((s().errors.disable_proxy)(&String::from_utf8_lossy(&output.stderr)))
+    }
+
+    /// A manual proxy on `server`, bypassing `bypass`.
+    pub(super) fn set_proxy(server: &str, bypass: &str) -> windows::core::Result<()> {
+        let mut server: Vec<u16> = server.encode_utf16().chain(Some(0)).collect();
+        let mut bypass: Vec<u16> = bypass.encode_utf16().chain(Some(0)).collect();
+        let mut options = [
+            option(
+                INTERNET_PER_CONN_FLAGS,
+                INTERNET_PER_CONN_OPTIONW_0 {
+                    dwValue: PROXY_TYPE_PROXY | PROXY_TYPE_DIRECT,
+                },
+            ),
+            option(
+                INTERNET_PER_CONN_PROXY_SERVER,
+                INTERNET_PER_CONN_OPTIONW_0 {
+                    pszValue: PWSTR(server.as_mut_ptr()),
+                },
+            ),
+            option(
+                INTERNET_PER_CONN_PROXY_BYPASS,
+                INTERNET_PER_CONN_OPTIONW_0 {
+                    pszValue: PWSTR(bypass.as_mut_ptr()),
+                },
+            ),
+        ];
+        apply(&mut options)
+    }
+
+    /// No proxy: direct connections.
+    pub(super) fn set_direct() -> windows::core::Result<()> {
+        let mut options = [option(
+            INTERNET_PER_CONN_FLAGS,
+            INTERNET_PER_CONN_OPTIONW_0 {
+                dwValue: PROXY_TYPE_DIRECT,
+            },
+        )];
+        apply(&mut options)
     }
 }
 
@@ -275,6 +435,22 @@ fn is_our_macos_proxy(output: &str) -> bool {
     field("Enabled") == Some("Yes") && field("Server") == Some("127.0.0.1")
 }
 
+/// The Windows proxy is ours while a manual proxy is still on and its
+/// server is on the loopback host (BoxPilot writes `127.0.0.1:<port>`;
+/// sing-box's own `set_system_proxy` writes the same host). Takes WinINet's
+/// manual-proxy flag and server string. Pure so it is tested on every
+/// platform.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_our_windows_proxy(enabled: bool, server: &str) -> bool {
+    enabled
+        && server.split(';').any(|entry| {
+            // `127.0.0.1:7788`, `http://127.0.0.1:7788` or
+            // `http=127.0.0.1:7788`: the host is what matters.
+            let address = entry.rsplit(['=', '/']).next().unwrap_or("").trim();
+            address.rsplit_once(':').map_or(address, |(host, _)| host) == "127.0.0.1"
+        })
+}
+
 /// Match sing-box's wintun adapter by FriendlyName, case-insensitively. Pulled
 /// out as a pure fn (no `cfg`) so the one bit of judgement here — *which*
 /// adapters we uninstall — is unit-tested on every platform, even though the
@@ -292,9 +468,11 @@ fn is_sing_tun_friendly_name(name: &str) -> bool {
 /// path (it runs in prep, before sing-box spawns).
 ///
 /// Requires Administrator (`DiUninstallDevice` returns ERROR_ACCESS_DENIED
-/// otherwise) — we always run elevated via `ensure_elevated()`. Best-effort:
-/// any failure is logged and ignored, because sing-box recreates its own
-/// adapter at startup regardless.
+/// otherwise), so it runs only when the user started BoxPilot elevated and
+/// TUN runs a local sing-box. Without that, TUN goes through the privileged
+/// helper, which removes stale adapters itself (ADR 0006 rule 6), and this
+/// is skipped. Best-effort: any failure is logged and ignored, because
+/// sing-box recreates its own adapter at startup regardless.
 ///
 /// Cannot be compiled or exercised on macOS — verify via the CI MSVC build and
 /// a Windows smoke test (connect/disconnect/restart in TUN + kill-recovery).
@@ -308,6 +486,9 @@ pub fn remove_tun_adapter() {
     };
     use windows::Win32::Foundation::{BOOL, HWND};
 
+    if !crate::core::privileged_helper::process_is_elevated() {
+        return;
+    }
     eprintln!("TUN cleanup: removing sing-tun adapters (native SetupAPI)");
 
     unsafe {
@@ -442,6 +623,8 @@ pub fn flush_dns_macos() {
 }
 
 /// Pre-start prep (TUN cleanup + DNS flush). Run on a background thread.
+/// Nothing here needs elevation except the Windows adapter cleanup, which
+/// skips itself without it: `ipconfig /flushdns` works for a standard user.
 pub fn prepare_process_start(is_tun_mode: bool) {
     if is_tun_mode {
         remove_tun_adapter();
@@ -759,6 +942,23 @@ mod tests {
         let status = terminate_child(&mut child, Duration::from_millis(300)).unwrap();
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Same rule on Windows: only a manual proxy still on the loopback host
+    /// is cleared, in whichever spelling WinINet holds it.
+    #[test]
+    fn windows_proxy_is_ours_only_when_on_and_on_loopback() {
+        assert!(is_our_windows_proxy(true, "127.0.0.1:7788"));
+        assert!(is_our_windows_proxy(true, "http://127.0.0.1:7788"));
+        assert!(is_our_windows_proxy(
+            true,
+            "http=127.0.0.1:7788;https=127.0.0.1:7788"
+        ));
+        assert!(is_our_windows_proxy(true, "127.0.0.1"));
+        assert!(!is_our_windows_proxy(false, "127.0.0.1:7788"));
+        assert!(!is_our_windows_proxy(true, "proxy.corp.example:3128"));
+        assert!(!is_our_windows_proxy(true, "127.0.0.10:7788"));
+        assert!(!is_our_windows_proxy(true, ""));
     }
 
     #[test]

@@ -37,7 +37,7 @@
 - 支持 Direct3D 11 feature level 11_0 的 GPU
   - 不支持无 GPU passthrough 的 Hyper-V / Parallels 环境
   - 不支持纯 RDP 会话（除非启用 `BasicRender` shim）
-- 管理员权限（管理 TUN 适配器、系统代理注册表、DNS 需要；启动时自动请求 UAC 提权）
+- 不需要管理员权限，启动时不再请求 UAC 提权。TUN 模式由安装包（MSI）安装的特权助手（`BoxPilotHelper` 服务）提供，账户需属于 Administrators 或 Network Configuration Operators 组；没装特权助手的便携版要以管理员身份运行才能用 TUN 模式。代理模式两者都不需要
 
 ### Linux
 
@@ -90,7 +90,7 @@ BoxPilot 没有 Apple 开发者签名（只做了 ad-hoc 签名，未经公证�
 
 界面语言默认跟随系统（中文系统显示简体中文），可在「设置 › 常规 › 语言」切换。下文用中文界面的名称，括号里是英文界面的名称。
 
-1. 启动 BoxPilot（Windows 上同意 UAC 提权；macOS 第一次打开见上文）。
+1. 启动 BoxPilot（macOS 第一次打开见上文）。
 2. 在「配置」（Profiles）页点「添加」（Add）添加配置——粘贴订阅链接或选择本地 JSON 文件；也可以直接点击浏览器中的 `sing-box://` 导入链接。
 3. 回到「首页」（Home），点大圆按钮连接。
 4. 用「代理模式」（Proxy Mode：TUN / 代理）和「系统代理」（System Proxy）开关控制代理行为。

@@ -3,8 +3,9 @@
 //! Five `Entity<T>` types form the reactive graph:
 //! - [`LogBuffer`] — the Logs page lines (pipes + sing-box API log stream,
 //!   merged by `core::log_merge`) + level filter
-//! - [`ProcessSession`] — child process lifecycle, encoded as a single
-//!   `ProcessState` enum (`Stopped` / `Preparing` / `Running`)
+//! - [`ProcessSession`] — sing-box's lifecycle, encoded as a single
+//!   `ProcessState` enum (`Stopped` / `Preparing` / `Running`); a running
+//!   sing-box is BoxPilot's child or the privileged helper's (`RunBackend`)
 //! - [`ProxyGroups`] — selector outbound groups (sing-box API group stream,
 //!   ordered by config)
 //! - [`Traffic`] — live runtime status: rates, memory, connections, totals,
@@ -37,7 +38,9 @@ pub use clash_mode::ClashMode;
 pub use connections::Connections;
 pub use log_buffer::LogBuffer;
 pub use network_tools::NetworkTools;
-pub use process_session::{PendingStart, ProcessSession, ProcessState};
+pub use process_session::{
+    HelperApi, Launch, PendingStart, ProcessSession, ProcessState, RunBackend,
+};
 pub use proxy_groups::{DelayState, GroupSource, ProxyGroups};
 pub use tailscale::TailscaleState;
 pub use traffic::Traffic;

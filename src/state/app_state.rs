@@ -5,6 +5,9 @@ use crate::core::orchestration::{
 };
 #[cfg(target_os = "linux")]
 use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
+use crate::core::privileged_helper::{
+    process_is_elevated, start_route, tun_options, StartRoute, HELPER_PLATFORM,
+};
 use crate::core::process::query_sing_box_version;
 use crate::core::paths::{
     create_private_dir, get_app_data_dir, get_install_dir, profile_config_path,
@@ -31,7 +34,7 @@ use crate::state::clash_mode::ClashMode;
 use crate::state::connections::Connections;
 use crate::state::log_buffer::LogBuffer;
 use crate::state::network_tools::NetworkTools;
-use crate::state::process_session::{ApiPortLost, PendingStart, ProcessSession};
+use crate::state::process_session::{ApiPortLost, HelperApi, Launch, PendingStart, ProcessSession};
 use crate::state::proxy_groups::ProxyGroups;
 use crate::state::tailscale::TailscaleState;
 use crate::state::traffic::Traffic;
@@ -176,7 +179,8 @@ pub struct AppState {
     view_ready: Option<oneshot::Sender<()>>,
     /// sing-box API endpoint + secret of the current (or last) run. `launch`
     /// makes a fresh one for every start, writes it into the runtime config
-    /// and hands the same value to every entity below (`set_api`).
+    /// and hands the same value to every entity below (`set_api`); a start
+    /// through the privileged helper gets the helper's (`HelperApi`).
     api: SingBoxApi,
     pub process: Entity<ProcessSession>,
     pub logs: Entity<LogBuffer>,
@@ -443,6 +447,13 @@ impl AppState {
                 } else if stopped {
                     this.redo_start_if_api_port_lost(cx);
                 }
+            })
+            .detach();
+
+            // A run through the privileged helper listens where the helper
+            // said; every entity gets it before the Running edge.
+            cx.subscribe(&process, |this: &mut AppState, _, api: &HelperApi, cx| {
+                this.set_api(api.0, cx)
             })
             .detach();
 
@@ -924,8 +935,13 @@ impl AppState {
     /// Validate paths, prepare the config, and ask the `ProcessSession` to
     /// start. No-op if a process is already running or starting. Every start
     /// — toggle, and the restarts after a settings / profile change or an
-    /// auto-update — comes through here, so the Linux TUN gate below covers
-    /// them all.
+    /// auto-update — comes through here, so the Linux TUN gate below and the
+    /// Windows route (`StartRoute`) cover them all.
+    ///
+    /// On Windows, TUN from a BoxPilot the user didn't run as Administrator
+    /// goes through the privileged helper (ADR 0006); BoxPilot never
+    /// elevates itself. Proxy mode, and TUN with privilege the user brought,
+    /// run the bundled sing-box as written, as before.
     pub fn start_process(&mut self, cx: &mut Context<Self>) {
         if !self.process.read(cx).is_stopped() {
             return;
@@ -943,28 +959,38 @@ impl AppState {
             return;
         }
 
+        let route = start_route(
+            HELPER_PLATFORM,
+            self.settings.proxy_mode,
+            process_is_elevated(),
+        );
         let sing_path = self.sing_box_path();
-        if !sing_path.exists() {
-            cx.emit(StatusEvent {
-                level: StatusLevel::Error,
-                message: (s().messages.sing_box_not_found)(
-                    SING_EXECUTABLE,
-                    &sing_path.display().to_string(),
-                ),
-            });
-            return;
-        }
-
-        // The runtime config carries the `api` service, which older binaries
-        // reject; say so instead of letting sing-box die on an unknown type.
-        // Unknown version (query failed / still running) → let it try.
-        if let Some(version) = self.sing_box_version.as_deref() {
-            if !supports_api_service(version) {
+        // The helper runs a sing-box of its own, which it checks itself
+        // (its version comes with `hello`): the bundled one plays no part.
+        if route == StartRoute::Local {
+            if !sing_path.exists() {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Error,
-                    message: (s().messages.sing_box_too_old)(version, MIN_SING_BOX_VERSION),
+                    message: (s().messages.sing_box_not_found)(
+                        SING_EXECUTABLE,
+                        &sing_path.display().to_string(),
+                    ),
                 });
                 return;
+            }
+
+            // The runtime config carries the `api` service, which older
+            // binaries reject; say so instead of letting sing-box die on an
+            // unknown type. Unknown version (query failed / still running)
+            // → let it try.
+            if let Some(version) = self.sing_box_version.as_deref() {
+                if !supports_api_service(version) {
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message: (s().messages.sing_box_too_old)(version, MIN_SING_BOX_VERSION),
+                    });
+                    return;
+                }
             }
         }
 
@@ -985,7 +1011,31 @@ impl AppState {
             return;
         }
 
-        self.launch(sing_path, cx);
+        match route {
+            StartRoute::Helper => self.launch_through_helper(cx),
+            StartRoute::Local => self.launch(sing_path, cx),
+        }
+    }
+
+    /// Hand a TUN start through the privileged helper to `ProcessSession`.
+    /// Its prep builds the request off the UI thread (the profile's local
+    /// files, the policy), asks the helper, and reports a refusal, a missing
+    /// or disabled helper, or an account it won't serve as an error toast:
+    /// nothing starts then, and nothing falls back to elevating. The
+    /// helper's own `api` service replaces BoxPilot's (`HelperApi`).
+    fn launch_through_helper(&mut self, cx: &mut Context<Self>) {
+        self.api_port_retry = self.api_port_retry.launched();
+        let pending = PendingStart {
+            launch: Launch::Helper {
+                config_path: self.active_config_path(),
+                app_dir: self.app_dir.clone(),
+                options: tun_options(&self.settings),
+            },
+            proxy_mode: self.settings.proxy_mode,
+            set_system_proxy: self.settings.set_system_proxy,
+        };
+        self.process.update(cx, |p, cx| p.start(pending, cx));
+        cx.notify();
     }
 
     /// Write the runtime config and hand the start to `ProcessSession`,
@@ -1008,12 +1058,14 @@ impl AppState {
         };
 
         let pending = PendingStart {
-            sing_path,
-            config_path,
-            working_dir: self.app_dir.clone(),
+            launch: Launch::Local {
+                sing_path,
+                config_path,
+                working_dir: self.app_dir.clone(),
+                api_port,
+            },
             proxy_mode: self.settings.proxy_mode,
             set_system_proxy: self.settings.set_system_proxy,
-            api_port,
         };
 
         self.process.update(cx, |p, cx| p.start(pending, cx));
@@ -1223,7 +1275,8 @@ impl AppState {
     }
 
     /// Settings 页改本地代理端口:同 `set_proxy_mode`——持久化并在
-    /// 运行中(或启动中)立即重启生效(注册表系统代理由 sing-box 按入站端口自写)。
+    /// 运行中(或启动中)立即重启生效(注册表系统代理由 sing-box 按入站端口自写;
+    /// 经特权助手的 TUN 由 BoxPilot 在启动时按新端口写)。
     pub fn set_proxy_port(&mut self, value: u16, cx: &mut Context<Self>) {
         if self.settings.proxy_port == value {
             return;

@@ -55,8 +55,9 @@ codegen-units = 1
 # `default-features = false` drops `wayland`/`x11` activation at our level.
 # It does NOT suppress gpui's `windows-manifest` feature — that's in gpui's
 # defaults and gpui-component (transitively) activates them, so gpui's bundled
-# MANIFEST is embedded. We let that be the single MANIFEST source; admin
-# elevation is handled at runtime via `ensure_elevated()` in `src/main.rs`.
+# MANIFEST is embedded. We let that be the single MANIFEST source. BoxPilot
+# never asks to run elevated: TUN on Windows goes through the privileged
+# helper (ADR 0006).
 gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, features = ["font-kit"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
 gpui-component = "=0.7.0"
@@ -100,22 +101,24 @@ if-addrs = "0.15"
 # Already in the dep graph via gpui and gpui-component: adds no new crate.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
-# Used by `ensure_elevated()` in `src/main.rs` (token elevation check +
-# `ShellExecuteW("runas", ...)` self-relaunch), by the deep-link
-# single-instance pipe in `core/single_instance.rs` (Pipes + FileSystem for
-# CreateNamedPipeW/ReadFile), by the privileged-helper client in
-# `core/privileged_helper/windows.rs` (the helper's pipe with overlapped
-# I/O, starting its demand-start service and reading its exit code —
-# System_Services), and by `remove_tun_adapter()` in
-# `core/process.rs` (SetupAPI device enumeration + DiUninstallDevice to drop
-# stale sing-tun adapters natively, replacing a slow powershell+pnputil shell-
-# out — Win32_Devices_DeviceAndDriverInstallation). Version matches
-# gpui-component's pin to avoid duplicate `windows` crate versions in the dep graph.
+# Used by the deep-link single-instance pipe in `core/single_instance.rs`
+# (Pipes + FileSystem for CreateNamedPipeW/ReadFile, Security for its DACL),
+# by the privileged-helper client in `core/privileged_helper/windows.rs`
+# (the helper's pipe with overlapped I/O, starting its demand-start service
+# and reading its exit code — System_Services — and the token elevation
+# check), by the user's system proxy in `core/process.rs` (WinINet's
+# per-connection options + refresh — Networking_WinInet), and by
+# `remove_tun_adapter()` in `core/process.rs` (SetupAPI device enumeration +
+# DiUninstallDevice to drop stale sing-tun adapters natively, replacing a
+# slow powershell+pnputil shell-out — Win32_Devices_DeviceAndDriverInstallation).
+# Version matches gpui-component's pin to avoid duplicate `windows` crate
+# versions in the dep graph.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_Networking_WinInet",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
@@ -123,8 +126,6 @@ windows = { version = "0.58", features = [
     "Win32_System_Pipes",
     "Win32_System_Services",
     "Win32_System_Threading",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
 ] }
 # System tray icon + menu. Its hidden window is pumped by gpui's main-thread
 # message loop.

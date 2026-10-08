@@ -12,95 +12,19 @@ use box_pilot_gui::ui::assets::AppAssets;
 use box_pilot_gui::ui::{app_window, locale, theme, tray};
 use gpui::*;
 
-/// On Windows, ensure the process is running with admin rights. If not,
-/// re-launch self via `ShellExecuteW("runas", ...)` (UAC prompt) and exit.
-/// Required because sing-box management touches TUN adapters, the system
-/// proxy registry, and DNS — all admin-only operations. The relaunch
-/// forwards argv so a deep link survives the elevation hop (browser launches
-/// us non-elevated with the URI as argv[1]).
-#[cfg(target_os = "windows")]
-fn ensure_elevated() {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::{w, PCWSTR};
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    unsafe {
-        let mut token = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_ok() {
-            let mut elevation = TOKEN_ELEVATION::default();
-            let mut size = 0u32;
-            let ok = GetTokenInformation(
-                token,
-                TokenElevation,
-                Some(&mut elevation as *mut _ as *mut _),
-                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-                &mut size,
-            )
-            .is_ok();
-            let _ = CloseHandle(token);
-            if ok && elevation.TokenIsElevated != 0 {
-                return;
-            }
-        }
-    }
-
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    let mut exe_w: Vec<u16> = exe.as_os_str().encode_wide().collect();
-    exe_w.push(0);
-
-    // Quote-wrap each argument. Deep-link URIs contain no quotes (they're
-    // percent-encoded), so plain wrapping is sufficient.
-    let params = std::env::args()
-        .skip(1)
-        .map(|a| format!("\"{}\"", a))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let params_w: Vec<u16> = std::ffi::OsStr::new(&params)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    unsafe {
-        ShellExecuteW(
-            HWND::default(),
-            w!("runas"),
-            PCWSTR::from_raw(exe_w.as_ptr()),
-            if params.is_empty() {
-                PCWSTR::null()
-            } else {
-                PCWSTR::from_raw(params_w.as_ptr())
-            },
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
-    }
-    std::process::exit(0);
-}
-
 fn main() {
-    // A browser-launched deep link arrives as argv[1] in a fresh,
-    // non-elevated process. If a primary instance is already running, hand
-    // the link over BEFORE the elevation check — the common path then needs
-    // no UAC prompt at all. An empty forward (no URI) just keeps a plain
-    // second launch from spawning a duplicate sing-box manager.
+    // A browser-launched deep link arrives as argv[1] in a fresh process.
+    // If a primary instance is already running, hand the link over and
+    // exit. An empty forward (no URI) just keeps a plain second launch from
+    // spawning a duplicate sing-box manager. BoxPilot never elevates itself:
+    // TUN on Windows goes through the privileged helper (ADR 0006), so the
+    // primary runs at whatever privilege the user started it with.
     let deeplink_arg = std::env::args()
         .nth(1)
         .filter(|arg| box_pilot_gui::core::deeplink::is_deeplink(arg));
     if box_pilot_gui::core::single_instance::try_forward(deeplink_arg.as_deref()) {
         return;
     }
-
-    #[cfg(target_os = "windows")]
-    ensure_elevated();
 
     // Launch attempts reaching this instance: our own argv link, plus every
     // one the pipe server forwards later (and, on macOS, the Apple events
