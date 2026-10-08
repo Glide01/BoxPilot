@@ -7,7 +7,7 @@ use super::folders;
 use super::security::{create_dir, SecurityDescriptor};
 use super::spawn::{self, Job, Launch};
 use super::sys::wait_handle;
-use super::verify::{self, Refused};
+use super::verify::{self, Refused, Why};
 use crate::acl::{Role, Trusted};
 use crate::exit;
 use crate::helper::{HelperError, Installed, Process, RunEvents, Supervisor};
@@ -78,9 +78,7 @@ impl WinSupervisor {
             installed,
             max_log_line,
         };
-        supervisor
-            .open_binaries()
-            .map_err(|error| (exit::MANIFEST_REFUSED, error.0))?;
+        supervisor.open_binaries()?;
         supervisor
             .prepare_state()
             .map_err(|error| (exit::STATE_DIR_REFUSED, error.0))?;
@@ -117,18 +115,21 @@ impl WinSupervisor {
     /// The helper directory verified, and every file the manifest names
     /// opened sharing only reads, verified and hashed: sing-box first. The
     /// handles keep the files as they were hashed while they are open.
-    fn open_binaries(&self) -> Result<Vec<File>, HelperError> {
+    fn open_binaries(&self) -> Result<Vec<File>, StartError> {
         let layout = &self.setup.layout;
         let trusted = &self.setup.trusted;
         verify::dir_chain(layout.helper_dir(), Role::Object, trusted)
-            .map_err(|refused| HelperError::new(refused.to_string()))?;
+            .map_err(|refused| (exit::HELPER_DIR_REFUSED, refused.to_string()))?;
         let mut held = Vec::new();
         for (name, sha256) in self.manifest.files() {
             let path = layout.helper_file(name);
-            let file = verify::open_file(&path, trusted)
-                .map_err(|refused| HelperError::new(refused.to_string()))?;
-            manifest::verify(name, sha256, &file)
-                .map_err(|error| HelperError::new(format!("{}: {error}", path.display())))?;
+            let file = verify::open_file(&path, trusted).map_err(installed_file_refused)?;
+            manifest::verify(name, sha256, &file).map_err(|error| {
+                (
+                    exit::MANIFEST_REFUSED,
+                    format!("{}: {error}", path.display()),
+                )
+            })?;
             held.push(file);
         }
         Ok(held)
@@ -181,11 +182,21 @@ impl WinSupervisor {
     }
 }
 
+/// The manifest, or a file it names, refused: missing or unreadable doesn't
+/// match the manifest, anything else (its ACL, a reparse point) is the
+/// helper directory's fault (`boxpilot_protocol::endpoint::exit`).
+fn installed_file_refused(refused: Refused) -> StartError {
+    let code = match refused.why {
+        Why::Io(_) => exit::MANIFEST_REFUSED,
+        Why::Acl(_) | Why::NotAbsolute | Why::NotAFile => exit::HELPER_DIR_REFUSED,
+    };
+    (code, refused.to_string())
+}
+
 /// Read the manifest through a verified handle, at most its size limit.
 fn read_manifest(layout: &Layout, trusted: &Trusted) -> Result<Manifest, StartError> {
     let path = layout.manifest_file();
-    let file = verify::open_file(&path, trusted)
-        .map_err(|refused| (exit::HELPER_DIR_REFUSED, refused.to_string()))?;
+    let file = verify::open_file(&path, trusted).map_err(installed_file_refused)?;
     let mut bytes = Vec::new();
     file.take(MAX_MANIFEST_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
@@ -240,7 +251,9 @@ impl Supervisor for WinSupervisor {
     ) -> Result<Box<dyn Process>, HelperError> {
         // Checked on every spawn (ADR 0006 rule 3), and the files held open
         // from the hash until CreateProcessW has returned.
-        let held = self.open_binaries()?;
+        let held = self
+            .open_binaries()
+            .map_err(|(_, message)| HelperError::new(message))?;
         self.verify_state()?;
         let io_error = |what: &str, error: io::Error| HelperError::new(format!("{what}: {error}"));
         let temp = run
