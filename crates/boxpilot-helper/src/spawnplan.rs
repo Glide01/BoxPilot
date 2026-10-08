@@ -1,7 +1,7 @@
 //! What sing-box is started with on Windows, as pure data (ADR 0006 rule 2,
-//! "Environment"): its command line and its environment block. The Windows
-//! layer passes both to `CreateProcessW` with the full application path, so
-//! nothing is searched for.
+//! "Environment"): its command line, its environment block and its process
+//! mitigations. The Windows layer passes them to `CreateProcessW` with the
+//! full application path, so nothing is searched for.
 //!
 //! - **Arguments**: `run -D <run dir> -c <run dir>\config.json
 //!   --disable-color`, quoted by the rules the MSVC runtime and Go both
@@ -12,10 +12,34 @@
 //!   sing-box, then from `PATH`, and a user-writable `PATH` entry would let
 //!   a user plant that DLL in a SYSTEM process), and `TEMP`, `TMP` and
 //!   `USERPROFILE` inside the run directory.
+//! - **Mitigations** ([`SING_BOX_MITIGATIONS`]): no image from a remote
+//!   share or with a low integrity label, no legacy extension points.
 
 #![forbid(unsafe_code)]
 
 use std::fmt;
+
+/// `PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON`
+/// (winbase.h): no AppInit DLLs, Winsock LSPs, global window hooks or IMEs
+/// are loaded into the process. Windows 8 and later.
+pub const MITIGATION_EXTENSION_POINT_DISABLE: u64 = 1 << 32;
+/// `PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON`: no
+/// image from a remote device (a UNC share). Windows 10 1511 and later.
+pub const MITIGATION_IMAGE_LOAD_NO_REMOTE: u64 = 1 << 52;
+/// `PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON`:
+/// no image a low-integrity process could have written (one with a low
+/// mandatory label). Windows 10 1511 and later.
+pub const MITIGATION_IMAGE_LOAD_NO_LOW_LABEL: u64 = 1 << 56;
+
+/// The process mitigations sing-box starts with
+/// (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`, one DWORD64): only ones that
+/// can't stop a sing-box from working. Not `IMAGE_LOAD_PREFER_SYSTEM32`
+/// (bit 60), which would change where `libcronet.dll` is looked for, nor a
+/// restricted token, which waits for wintun's needs to be measured on
+/// Windows (ADR 0006).
+pub const SING_BOX_MITIGATIONS: u64 = MITIGATION_EXTENSION_POINT_DISABLE
+    | MITIGATION_IMAGE_LOAD_NO_REMOTE
+    | MITIGATION_IMAGE_LOAD_NO_LOW_LABEL;
 
 /// Why a command line or environment block could not be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +232,17 @@ mod tests {
             .expect("argv[0] is quoted")
             .1;
         parse_args(rest)
+    }
+
+    /// The winbase.h values (mingw-w64 and the Windows SDK agree), and
+    /// nothing else: "prefer System32" (bit 60) stays off.
+    #[test]
+    fn sing_box_starts_with_exactly_these_mitigations() {
+        assert_eq!(MITIGATION_EXTENSION_POINT_DISABLE, 0x0000_0001_0000_0000);
+        assert_eq!(MITIGATION_IMAGE_LOAD_NO_REMOTE, 0x0010_0000_0000_0000);
+        assert_eq!(MITIGATION_IMAGE_LOAD_NO_LOW_LABEL, 0x0100_0000_0000_0000);
+        assert_eq!(SING_BOX_MITIGATIONS, 0x0110_0001_0000_0000);
+        assert_eq!(SING_BOX_MITIGATIONS & (1 << 60), 0);
     }
 
     #[test]

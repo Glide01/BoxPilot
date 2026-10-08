@@ -9,6 +9,10 @@
 //! - `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming only the write ends of its
 //!   stdout and stderr pipes: no other handle of the helper's is inherited,
 //!   and stdin is none;
+//! - `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` with
+//!   `spawnplan::SING_BOX_MITIGATIONS`: no image from a remote share or
+//!   with a low integrity label, and no legacy extension points (AppInit
+//!   DLLs, Winsock LSPs, global hooks, IMEs) loaded into it;
 //! - a job object with `KILL_ON_JOB_CLOSE` (if the helper dies, sing-box
 //!   dies with it), `DIE_ON_UNHANDLED_EXCEPTION`, and an active-process
 //!   limit of 1, so sing-box can't start a program. It is assigned before
@@ -38,7 +42,7 @@ use windows::Win32::System::Threading::{
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
     LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 /// The exit code sing-box gets when the helper stops it.
@@ -123,25 +127,30 @@ fn output_pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     Ok((read, write))
 }
 
-/// A `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` attribute list. It points at the
-/// handle array it was built from, so it borrows it.
-struct HandleList<'a> {
+/// sing-box's attribute list: `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` (the
+/// handles it inherits) and `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (the
+/// process mitigations it starts with). The list points at the handle
+/// array and at the policy value it was built from, so it borrows both.
+struct AttributeList<'a> {
     /// The list's storage. Only `list` touches it, through the pointer
     /// taken from it mutably once: the calls write into it.
     _buf: Vec<u64>,
     list: LPPROC_THREAD_ATTRIBUTE_LIST,
-    _handles: PhantomData<&'a [HANDLE]>,
+    _borrows: PhantomData<(&'a [HANDLE], &'a u64)>,
 }
 
-impl<'a> HandleList<'a> {
-    fn new(handles: &'a [HANDLE]) -> io::Result<Self> {
+impl<'a> AttributeList<'a> {
+    /// How many attributes the list holds.
+    const COUNT: u32 = 2;
+
+    fn new(handles: &'a [HANDLE], mitigations: &'a u64) -> io::Result<Self> {
         let mut size = 0usize;
         // SAFETY: a size query with no list; it fails with
         // ERROR_INSUFFICIENT_BUFFER by design and sets `size`.
         let _ = unsafe {
             InitializeProcThreadAttributeList(
                 LPPROC_THREAD_ATTRIBUTE_LIST::default(),
-                1,
+                Self::COUNT,
                 0,
                 &mut size,
             )
@@ -154,14 +163,16 @@ impl<'a> HandleList<'a> {
         // SAFETY: `buf` holds `size` writable, 8-aligned bytes, and its heap
         // allocation stays put (it is never resized) for as long as the
         // list lives.
-        unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut size) }.map_err(io_error)?;
+        unsafe { InitializeProcThreadAttributeList(list, Self::COUNT, 0, &mut size) }
+            .map_err(io_error)?;
         let initialized = Self {
             _buf: buf,
             list,
-            _handles: PhantomData,
+            _borrows: PhantomData,
         };
-        // SAFETY: the list is initialized; `handles` outlives it (the
-        // borrow `'a`), as the attribute keeps a pointer to it.
+        // SAFETY: the list is initialized, with room for `COUNT`
+        // attributes; `handles` outlives it (the borrow `'a`), as the
+        // attribute keeps a pointer to it.
         unsafe {
             UpdateProcThreadAttribute(
                 initialized.list(),
@@ -169,6 +180,20 @@ impl<'a> HandleList<'a> {
                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
                 Some(handles.as_ptr().cast::<c_void>()),
                 size_of_val(handles),
+                None,
+                None,
+            )
+        }
+        .map_err(io_error)?;
+        // SAFETY: as above; the policy is one DWORD64, the size passed, and
+        // `mitigations` outlives the list (the borrow `'a`).
+        unsafe {
+            UpdateProcThreadAttribute(
+                initialized.list(),
+                0,
+                PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
+                Some((mitigations as *const u64).cast::<c_void>()),
+                size_of::<u64>(),
                 None,
                 None,
             )
@@ -182,7 +207,7 @@ impl<'a> HandleList<'a> {
     }
 }
 
-impl Drop for HandleList<'_> {
+impl Drop for AttributeList<'_> {
     fn drop(&mut self) {
         // SAFETY: the list was initialized in `new` and is deleted once.
         unsafe { DeleteProcThreadAttributeList(self.list()) };
@@ -208,14 +233,15 @@ pub(crate) fn spawn(launch: &Launch<'_>) -> io::Result<Child> {
     let job = Job::new()?;
 
     let inherited = [raw(&stdout_write), raw(&stderr_write)];
-    let handle_list = HandleList::new(&inherited)?;
+    let mitigations = spawnplan::SING_BOX_MITIGATIONS;
+    let attributes = AttributeList::new(&inherited, &mitigations)?;
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdInput = HANDLE::default();
     startup.StartupInfo.hStdOutput = inherited[0];
     startup.StartupInfo.hStdError = inherited[1];
-    startup.lpAttributeList = handle_list.list();
+    startup.lpAttributeList = attributes.list();
     let mut info = PROCESS_INFORMATION::default();
     // SAFETY: every string is NUL-terminated and outlives the call;
     // `command_line` is writable, as CreateProcessW requires; the
@@ -245,7 +271,7 @@ pub(crate) fn spawn(launch: &Launch<'_>) -> io::Result<Child> {
     // SAFETY: CreateProcessW returned these two new handles, owned by
     // nobody else.
     let (process, thread) = unsafe { (own(info.hProcess), own(info.hThread)) };
-    drop(handle_list);
+    drop(attributes);
     // Only sing-box holds the write ends now: its exit ends the readers.
     drop(stdout_write);
     drop(stderr_write);
