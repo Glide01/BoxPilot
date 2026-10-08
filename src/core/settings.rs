@@ -11,13 +11,11 @@ use std::time::{Duration, SystemTime};
 pub const SING_EXECUTABLE: &str = "sing-box.exe";
 #[cfg(not(target_os = "windows"))]
 pub const SING_EXECUTABLE: &str = "sing-box";
-/// Whether BoxPilot can run sing-box in TUN mode on this platform. Not on
-/// macOS yet: a TUN device there needs root, which waits for a privileged
-/// helper (ADR 0005). While false, Proxy mode is forced — a saved TUN
-/// choice loads as Proxy (`AppSettings::load`), `set_proxy_mode` refuses
-/// TUN, Home greys the choice out, the tray menu has no Proxy Mode submenu
-/// and Settings no TUN section. The helper work lifts it here.
-pub const TUN_AVAILABLE: bool = !cfg!(target_os = "macos");
+/// Proxy mode is the first run's choice on macOS, TUN elsewhere. TUN on
+/// macOS needs the privileged helper, which takes an administrator prompt
+/// to install (ADR 0006 rule 7), so a first run doesn't start by asking
+/// for one; Settings › TUN installs it when the user wants TUN.
+pub const DEFAULT_PROXY_MODE: bool = cfg!(target_os = "macos");
 pub const CONFIG_FILENAME: &str = "config.json";
 /// Per-profile configs live in `<app_dir>/configs/<profile_id>.json`. The
 /// legacy single `config.json` is migrated into here on first launch.
@@ -208,6 +206,14 @@ impl Profile {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppSettings {
+    /// Proxy mode (`true`) or TUN. Loaded as saved on every platform. On
+    /// macOS TUN needs the privileged helper, whose state is only known
+    /// once BoxPilot has looked at it, off the UI thread
+    /// (`AppState::tun_available`); a saved TUN choice is never turned into
+    /// Proxy for it: not while the state is unknown, and not when the
+    /// helper turns out to be missing, since Proxy mode quietly carries
+    /// less traffic than the user chose. TUN stays chosen then, and a start
+    /// asks to install the helper first.
     pub proxy_mode: bool,
     #[serde(default)]
     pub set_system_proxy: bool,
@@ -295,7 +301,7 @@ pub fn default_proxy_port() -> u16 {
 impl Default for AppSettings {
     fn default() -> Self {
         let mut settings = Self {
-            proxy_mode: false,
+            proxy_mode: DEFAULT_PROXY_MODE,
             set_system_proxy: false,
             proxy_port: default_proxy_port(),
             tun_ipv6: false,
@@ -376,16 +382,7 @@ impl AppSettings {
             }
         };
         loaded.settings.normalize_profiles();
-        loaded.settings.restrict_proxy_mode(TUN_AVAILABLE);
         loaded
-    }
-
-    /// Without TUN on this platform, Proxy mode is the only mode — whatever
-    /// the file (or the TUN default of a first run) says.
-    pub fn restrict_proxy_mode(&mut self, tun_available: bool) {
-        if !tun_available {
-            self.proxy_mode = true;
-        }
     }
 
     /// Enforce the profile invariants every other consumer relies on:
@@ -512,16 +509,23 @@ fn back_up_bad_file(path: &Path) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
 
+    /// A first run starts in TUN mode, except on macOS, where TUN waits
+    /// for the privileged helper's install.
     #[test]
-    fn without_tun_proxy_mode_is_forced() {
-        let mut settings = AppSettings::default();
-        assert!(!settings.proxy_mode, "the default is TUN");
-        settings.restrict_proxy_mode(true);
-        assert!(!settings.proxy_mode);
-        settings.restrict_proxy_mode(false);
-        assert!(settings.proxy_mode);
-        settings.restrict_proxy_mode(false);
-        assert!(settings.proxy_mode);
+    fn the_first_run_mode_is_tun_except_on_macos() {
+        assert_eq!(AppSettings::default().proxy_mode, cfg!(target_os = "macos"));
+    }
+
+    /// A saved TUN choice loads as saved everywhere, macOS included: what
+    /// the helper's state means for it is decided later, never by a load.
+    #[test]
+    fn a_saved_tun_choice_loads_as_saved() {
+        let dir = temp_dir("saved_tun");
+        fs::write(dir.join(SETTINGS_FILE), r#"{"proxy_mode": false}"#).unwrap();
+        let loaded = AppSettings::load(&dir);
+        assert!(loaded.problem.is_none());
+        assert!(!loaded.settings.proxy_mode);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Settings files written by releases that predate `set_system_proxy` /
@@ -797,9 +801,7 @@ mod tests {
         assert!(loaded.persist);
         assert!(loaded.problem.is_none());
         let settings = loaded.settings;
-        // The defaults, as this platform allows them (Proxy mode without TUN).
-        let mut expected = AppSettings::default();
-        expected.restrict_proxy_mode(TUN_AVAILABLE);
+        let expected = AppSettings::default();
         assert_eq!(
             serde_json::to_string(&settings).unwrap(),
             serde_json::to_string(&expected).unwrap()

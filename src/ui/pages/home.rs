@@ -13,7 +13,6 @@ use crate::core::bytefmt::format_bytes;
 use crate::core::presentation::{
     profile_freshness, profile_row_info, runtime_info, ConnectionStatus,
 };
-use crate::core::settings::TUN_AVAILABLE;
 use crate::i18n::s;
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
@@ -157,6 +156,7 @@ impl Render for HomePage {
 
         let status = ConnectionStatus::from_flags(state.is_starting(cx), process.is_running());
         let proxy_mode = state.settings.proxy_mode;
+        let tun_available = state.tun_available();
         let system_proxy = state.settings.set_system_proxy;
         let status_title = status.label();
         let connected = status == ConnectionStatus::Connected;
@@ -414,12 +414,14 @@ impl Render for HomePage {
 
         // —— 快捷设置:代理模式 / 系统代理 / Clash 模式,一张分组卡 ——
         let mut quick_rows = vec![
-            // Without TUN on this platform (macOS, for now) its tab stays,
-            // greyed out, with the reason under the label.
+            // Without TUN here (macOS without its privileged helper) its tab
+            // stays, greyed out, with how to get it under the label. A saved
+            // TUN choice stays selected (`AppSettings::proxy_mode`): Proxy
+            // can be picked, and a start asks to install the helper.
             setting_row(
                 theme,
                 t.home.proxy_mode,
-                (!TUN_AVAILABLE).then_some(t.home.tun_unavailable),
+                (!tun_available).then_some(t.home.tun_needs_helper),
             )
             .child(
                 TabBar::new("proxy-mode")
@@ -429,7 +431,7 @@ impl Render for HomePage {
                         let value = *ix == 1;
                         app_state_mode.update(cx, |state, cx| state.set_proxy_mode(value, cx));
                     })
-                    .child(Tab::new().label(t.home.mode_tun).disabled(!TUN_AVAILABLE))
+                    .child(Tab::new().label(t.home.mode_tun).disabled(!tun_available))
                     .child(Tab::new().label(t.home.mode_proxy)),
             )
             .into_any_element(),

@@ -76,7 +76,7 @@ pub static ZH_CN: Strings = Strings {
         quick_settings: "快捷设置",
         profile: "配置",
         manage_profiles: "管理配置…",
-        tun_unavailable: "macOS 暂不支持 TUN。",
+        tun_needs_helper: "TUN 需要 BoxPilot 的特权助手：请在 设置 › TUN 中安装。",
     },
     profiles: Profiles {
         add: "添加",

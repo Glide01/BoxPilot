@@ -54,7 +54,7 @@ pub struct TraySnapshot {
     pub status: ConnectionStatus,
     /// `AppSettings::proxy_mode`: `true` = Proxy, `false` = TUN.
     pub proxy_mode: bool,
-    /// TUN can be chosen here (`settings::TUN_AVAILABLE`). Without it the
+    /// TUN can be chosen here (`AppState::tun_available`). Without it the
     /// menu has no Proxy Mode submenu: one option is no choice.
     pub tun_available: bool,
     pub system_proxy: bool,

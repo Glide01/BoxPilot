@@ -2,19 +2,20 @@
 //! 管理在 `ProfilesPage`。
 //!
 //! Feature rows live in one slot file each (`language`, `appearance`,
-//! `lan`, `diagnostics`, `updates`). Every slot exposes the same
+//! `lan`, `helper`, `diagnostics`, `updates`). Every slot exposes the same
 //! `rows(app_state, window, cx) -> Vec<AnyElement>`, called once per render
 //! and placed into the card layout below; a card made only of slot rows is
 //! omitted while its slots return nothing.
 
 mod appearance;
 mod diagnostics;
+mod helper;
 mod lan;
 mod language;
 mod updates;
 
 use crate::core::presentation::sanitize_port;
-use crate::core::settings::{PROXY_PORT, TUN_AVAILABLE};
+use crate::core::settings::PROXY_PORT;
 use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::widgets::{
@@ -94,6 +95,7 @@ impl Render for SettingsPage {
         let mut general_rows = language::rows(&app_state, window, cx);
         general_rows.extend(appearance::rows(&app_state, window, cx));
         let lan_rows = lan::rows(&app_state, window, cx);
+        let helper_rows = helper::rows(&app_state, window, cx);
         let diagnostics_rows = diagnostics::rows(&app_state, window, cx);
         let update_rows = updates::rows(&app_state, window, cx);
 
@@ -136,16 +138,18 @@ impl Render for SettingsPage {
             .into_any_element()];
         network_rows.extend(lan_rows);
 
-        let tun_rows = vec![setting_row(theme, t.ipv6, Some(t.ipv6_hint))
-            .child(
-                Switch::new("tun-ipv6")
-                    .checked(tun_ipv6)
-                    .on_click(move |checked: &bool, _, cx| {
+        // macOS: the privileged helper first; TUN depends on it there.
+        let mut tun_rows = helper_rows;
+        tun_rows.push(
+            setting_row(theme, t.ipv6, Some(t.ipv6_hint))
+                .child(Switch::new("tun-ipv6").checked(tun_ipv6).on_click(
+                    move |checked: &bool, _, cx| {
                         let value = *checked;
                         app_state_ipv6.update(cx, |state, cx| state.set_tun_ipv6(value, cx));
-                    }),
-            )
-            .into_any_element()];
+                    },
+                ))
+                .into_any_element(),
+        );
 
         let mut troubleshooting_rows = diagnostics_rows;
         // While connected the hint says why the button is unavailable, so it
@@ -188,8 +192,7 @@ impl Render for SettingsPage {
                 cards.child(section(t.general, general_rows))
             })
             .child(section(t.network, network_rows))
-            // No TUN on this platform yet (macOS): nothing to set for it.
-            .when(TUN_AVAILABLE, |cards| cards.child(section(t.tun, tun_rows)))
+            .child(section(t.tun, tun_rows))
             .child(section(t.troubleshooting, troubleshooting_rows))
             .child(section(t.about, about_rows));
 

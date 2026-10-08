@@ -170,7 +170,7 @@ fn snapshot_of(app_state: &Entity<AppState>, cx: &App) -> TraySnapshot {
     TraySnapshot {
         status: ConnectionStatus::from_flags(state.is_starting(cx), running),
         proxy_mode: state.settings.proxy_mode,
-        tun_available: crate::core::settings::TUN_AVAILABLE,
+        tun_available: state.tun_available(),
         system_proxy: state.settings.set_system_proxy,
         clash_modes,
         clash_current,

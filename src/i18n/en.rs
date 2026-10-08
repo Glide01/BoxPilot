@@ -80,7 +80,7 @@ pub static EN: Strings = Strings {
         quick_settings: "Quick settings",
         profile: "Profile",
         manage_profiles: "Manage profiles…",
-        tun_unavailable: "TUN isn't available on macOS yet.",
+        tun_needs_helper: "TUN needs BoxPilot's privileged helper: install it in Settings › TUN.",
     },
     profiles: Profiles {
         add: "Add",

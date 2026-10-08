@@ -5,8 +5,11 @@ use crate::core::orchestration::{
 };
 #[cfg(target_os = "linux")]
 use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
+use crate::core::privileged_helper::macos_install::{run_install, run_remove};
+use crate::core::privileged_helper::macos_status::{look, HelperStatus, StartGate};
 use crate::core::privileged_helper::{
-    process_is_elevated, start_route, tun_options, StartRoute, HELPER_PLATFORM,
+    process_is_elevated, start_route, tun_options, StartRoute, HELPER_INSTALLED_BY_APP,
+    HELPER_PLATFORM,
 };
 use crate::core::process::query_sing_box_version;
 use crate::core::paths::{
@@ -16,7 +19,7 @@ use crate::core::paths::{
 use crate::core::settings::{
     default_auto_update_interval, default_update_via_sing_box, AppSettings, LanguagePreference,
     Profile, ProfileSource, StatusEvent, StatusLevel, ThemePreference, CONFIG_FILENAME,
-    SING_EXECUTABLE, TUN_AVAILABLE,
+    SING_EXECUTABLE,
 };
 use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
 use crate::core::sub_usage::{SubscriptionUsage, UsageLevel};
@@ -150,6 +153,22 @@ pub struct ActivateRequested;
 #[cfg(target_os = "linux")]
 pub struct TunGrantRequested;
 
+/// A TUN start on macOS found the privileged helper missing, turned off,
+/// stale, broken or another account's, so nothing was started.
+/// `RootView` asks the user to install it (or reinstall it), worded by
+/// [`AppState::helper_status`]; confirming calls
+/// [`AppState::install_helper`] with `then_start`.
+pub struct HelperInstallRequested;
+
+/// What a change to the macOS helper does ([`AppState::install_helper`],
+/// [`AppState::remove_helper`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperChange {
+    /// Install it, or reinstall it over the one there.
+    Install,
+    Remove,
+}
+
 /// Top-level reactive state owned by `RootView`. Holds persisted settings,
 /// resolved paths, the child entities for the process and log subsystems,
 /// and an initial status message that `RootView` consumes once on startup.
@@ -210,11 +229,31 @@ pub struct AppState {
     /// Drains launch attempts (argv + single-instance pipe) for the lifetime
     /// of the app.
     _deeplink_task: Task<()>,
-    /// A Linux TUN-mode start that hasn't reached `ProcessSession` yet: the
-    /// background TUN-plan probe, or the pkexec grant. Holds off a second
-    /// start meanwhile; `stop_process` drops (cancels) it.
-    #[cfg(target_os = "linux")]
+    /// A TUN start that hasn't reached `ProcessSession` yet: on Linux the
+    /// background TUN-plan probe or the pkexec grant; on macOS the look at
+    /// the privileged helper, or the install its prompt led to. Holds off a
+    /// second start meanwhile; `stop_process` drops (cancels) it. Always
+    /// `None` on Windows.
     tun_gate: Option<Task<()>>,
+    /// The macOS privileged helper's state (Settings › TUN, and TUN's
+    /// availability: [`AppState::tun_available`]). Looked at off the UI
+    /// thread at startup, at every TUN start through it, and after an
+    /// install or a removal; `Unknown` until then, and always elsewhere.
+    pub helper_status: HelperStatus,
+    /// BoxPilot.app's `Contents` directory, when BoxPilot runs from an app
+    /// bundle that carries the helper's payload: what installs it, and what
+    /// it is judged against (`macos_status::app_bundle`). Found with the
+    /// first look at the helper; `None` until then, and elsewhere.
+    pub app_bundle: Option<PathBuf>,
+    /// A look at the helper of its own (at startup, or Settings shown), in
+    /// flight. A start's look or a change's that lands first drops it, and
+    /// with it its older result.
+    helper_probe: Option<Task<()>>,
+    /// An install or removal of the helper from Settings › TUN (macOS's
+    /// administrator prompt, then the script), in flight. Holds off TUN
+    /// starts through the helper, and other changes, meanwhile; a stop
+    /// doesn't cancel it.
+    helper_job: Option<(HelperChange, Task<()>)>,
     /// A config change arrived while sing-box was `Preparing` with the old
     /// one: that start was abandoned (`ConfigChangeAction::RedoStart`), and
     /// the process observer starts again once it is back to `Stopped`.
@@ -263,6 +302,8 @@ impl EventEmitter<ActivateRequested> for AppState {}
 
 #[cfg(target_os = "linux")]
 impl EventEmitter<TunGrantRequested> for AppState {}
+
+impl EventEmitter<HelperInstallRequested> for AppState {}
 
 impl AppState {
     pub fn new(launches: UnboundedReceiver<LaunchAttempt>, cx: &mut App) -> Entity<Self> {
@@ -378,7 +419,7 @@ impl AppState {
             move |cx| VpnStatus::new(api, runtime_config, &process, cx)
         });
 
-        cx.new(|cx| {
+        let state = cx.new(|cx| {
             // Drive ProxyGroups + Traffic + Connections from process
             // Running/Stopped edges.
             // The edge decision is pure (`core::orchestration`, unit-tested);
@@ -729,8 +770,11 @@ impl AppState {
                 groups_saw_running: false,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
-                #[cfg(target_os = "linux")]
                 tun_gate: None,
+                helper_status: HelperStatus::Unknown,
+                app_bundle: None,
+                helper_probe: None,
+                helper_job: None,
                 restart_pending: false,
                 api_port_retry: ApiPortRetry::default(),
                 fetch_seq: 0,
@@ -743,7 +787,12 @@ impl AppState {
                 update_notified: None,
                 _update_check_task: update_check_task,
             }
-        })
+        });
+        // macOS: whether TUN can be chosen depends on the helper. It is
+        // looked at off the UI thread; until then TUN counts as available,
+        // and a saved TUN choice stands (`AppSettings::proxy_mode`).
+        state.update(cx, |state, cx| state.refresh_helper_status(cx));
+        state
     }
 
     pub fn is_updating(&self) -> bool {
@@ -935,19 +984,16 @@ impl AppState {
     /// Validate paths, prepare the config, and ask the `ProcessSession` to
     /// start. No-op if a process is already running or starting. Every start
     /// — toggle, and the restarts after a settings / profile change or an
-    /// auto-update — comes through here, so the Linux TUN gate below and the
-    /// Windows route (`StartRoute`) cover them all.
+    /// auto-update — comes through here, so the Linux TUN gate below, the
+    /// route (`StartRoute`) and the macOS helper's gate cover them all.
     ///
-    /// On Windows, TUN from a BoxPilot the user didn't run as Administrator
-    /// goes through the privileged helper (ADR 0006); BoxPilot never
-    /// elevates itself. Proxy mode, and TUN with privilege the user brought,
-    /// run the bundled sing-box as written, as before.
+    /// On Windows and macOS, TUN from a BoxPilot the user didn't run as
+    /// Administrator or root goes through the privileged helper (ADR 0006);
+    /// BoxPilot never elevates itself. On macOS the helper is looked at
+    /// first (`start_helper_gated`). Proxy mode, and TUN with privilege the
+    /// user brought, run the bundled sing-box as written, as before.
     pub fn start_process(&mut self, cx: &mut Context<Self>) {
-        if !self.process.read(cx).is_stopped() {
-            return;
-        }
-        #[cfg(target_os = "linux")]
-        if self.tun_gate.is_some() {
+        if !self.process.read(cx).is_stopped() || self.tun_gate.is_some() {
             return;
         }
 
@@ -1012,9 +1058,221 @@ impl AppState {
         }
 
         match route {
+            // The helper is being installed or removed from Settings: TUN
+            // through it waits for that (Proxy mode doesn't).
+            StartRoute::Helper if HELPER_INSTALLED_BY_APP && self.helper_job.is_some() => {
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Warning,
+                    message: s().helper.busy_installing.to_string(),
+                })
+            }
+            StartRoute::Helper if HELPER_INSTALLED_BY_APP => self.start_helper_gated(cx),
             StartRoute::Helper => self.launch_through_helper(cx),
             StartRoute::Local => self.launch(sing_path, cx),
         }
+    }
+
+    /// Whether TUN can be chosen here (Home, the tray, `set_proxy_mode`):
+    /// always on Windows and Linux. On macOS, when BoxPilot runs as root
+    /// (the user's own privilege runs sing-box directly), or when the
+    /// privileged helper is installed and not turned off
+    /// (`HelperStatus::tun_available`), or not looked at yet: a start looks
+    /// again.
+    pub fn tun_available(&self) -> bool {
+        !HELPER_INSTALLED_BY_APP || process_is_elevated() || self.helper_status.tun_available()
+    }
+
+    /// Look at the macOS helper again, off the UI thread, and show what it
+    /// says: at startup, and whenever Settings is shown, so a helper turned
+    /// off or on in Login Items meanwhile shows as it is. No-op elsewhere,
+    /// as root (TUN needs no helper then), and while a look, a start's or a
+    /// change's, is already under way.
+    pub fn refresh_helper_status(&mut self, cx: &mut Context<Self>) {
+        if !HELPER_INSTALLED_BY_APP
+            || process_is_elevated()
+            || self.helper_probe.is_some()
+            || self.tun_gate.is_some()
+            || self.helper_job.is_some()
+        {
+            return;
+        }
+        self.helper_probe = Some(cx.spawn(async move |this, cx| {
+            let (bundle, status) = cx.background_executor().spawn(async { look() }).await;
+            let _ = this.update(cx, |state, cx| state.helper_looked_at(bundle, status, cx));
+        }));
+    }
+
+    /// What a look at the helper found. A startup look still in flight is
+    /// older: it is dropped.
+    fn helper_looked_at(
+        &mut self,
+        bundle: Option<PathBuf>,
+        status: HelperStatus,
+        cx: &mut Context<Self>,
+    ) {
+        self.helper_probe = None;
+        self.app_bundle = bundle;
+        self.helper_status = status;
+        cx.notify();
+    }
+
+    /// A TUN start through the macOS helper: look at it first (off the UI
+    /// thread; its state may have changed since the last look), then start
+    /// through it, ask to install or reinstall it (`HelperInstallRequested`),
+    /// or say why not, as Linux's TUN gate does with its grant. Shows as
+    /// Starting meanwhile; a stop drops it.
+    fn start_helper_gated(&mut self, cx: &mut Context<Self>) {
+        self.tun_gate = Some(cx.spawn(async move |this, cx| {
+            let (bundle, status) = cx.background_executor().spawn(async { look() }).await;
+            let _ = this.update(cx, |state, cx| {
+                state.tun_gate = None;
+                let can_install = bundle.is_some();
+                state.helper_looked_at(bundle, status, cx);
+                // Switched to Proxy mode meanwhile: no helper needed.
+                if state.settings.proxy_mode {
+                    state.start_process(cx);
+                    return;
+                }
+                match state.helper_status.start_gate(can_install) {
+                    StartGate::Start => state.launch_through_helper(cx),
+                    StartGate::Ask => cx.emit(HelperInstallRequested),
+                    StartGate::Refuse(message) => cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message,
+                    }),
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Install the macOS helper from BoxPilot.app, or reinstall it over the
+    /// one there, behind macOS's administrator prompt (`run_install`), off
+    /// the UI thread; then look at it again. `then_start`: the user agreed
+    /// in a TUN start's prompt, so this is that start's gate (Starting
+    /// meanwhile, a stop drops it), and it starts once the helper is ready.
+    /// From Settings it is a change of its own; a TUN run it had to stop
+    /// starts again once the reinstalled helper is ready.
+    pub fn install_helper(&mut self, then_start: bool, cx: &mut Context<Self>) {
+        self.change_helper(HelperChange::Install, then_start, cx);
+    }
+
+    /// Remove the macOS helper (`run_remove`; its state directory stays),
+    /// behind macOS's administrator prompt, off the UI thread; then look
+    /// again. TUN mode, if chosen, stays chosen: a start asks to install
+    /// the helper again (`AppSettings::proxy_mode`).
+    pub fn remove_helper(&mut self, cx: &mut Context<Self>) {
+        self.change_helper(HelperChange::Remove, false, cx);
+    }
+
+    /// Whether the helper can be installed, reinstalled or removed now:
+    /// from an app bundle, with no start, look or change under way.
+    pub fn can_change_helper(&self, cx: &App) -> bool {
+        self.app_bundle.is_some()
+            && self.tun_gate.is_none()
+            && self.helper_job.is_none()
+            && !self.process.read(cx).is_starting()
+    }
+
+    /// The install or removal from Settings under way, if any.
+    pub fn changing_helper(&self) -> Option<HelperChange> {
+        self.helper_job.as_ref().map(|(change, _)| *change)
+    }
+
+    fn change_helper(&mut self, change: HelperChange, then_start: bool, cx: &mut Context<Self>) {
+        if !self.can_change_helper(cx) {
+            return;
+        }
+        let Some(contents) = self.app_bundle.clone() else {
+            return;
+        };
+        // A run through the helper stops first: a reinstall replaces the
+        // daemon it runs under and a removal unloads it, either of which
+        // would end it as a lost connection.
+        let was_running = self.process.read(cx).runs_helper();
+        let stopped = self.stop_helper_run_first(cx);
+        let resume = then_start || (change == HelperChange::Install && was_running);
+        let job = cx.spawn(async move |this, cx| {
+            if let Some(stopped) = stopped {
+                stopped.await;
+            }
+            let (result, (bundle, status)) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = match change {
+                        HelperChange::Install => run_install(&contents),
+                        HelperChange::Remove => run_remove(&contents),
+                    };
+                    (result, look())
+                })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if then_start {
+                    state.tun_gate = None;
+                } else {
+                    state.helper_job = None;
+                }
+                state.helper_looked_at(bundle, status, cx);
+                let Err(message) = result else {
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Success,
+                        message: match change {
+                            HelperChange::Install => s().helper.installed,
+                            HelperChange::Remove => s().helper.removed,
+                        }
+                        .to_string(),
+                    });
+                    if resume {
+                        state.start_after_install(cx);
+                    }
+                    return;
+                };
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Error,
+                    message,
+                });
+            });
+        });
+        if then_start {
+            self.tun_gate = Some(job);
+        } else {
+            self.helper_job = Some((change, job));
+        }
+        cx.notify();
+    }
+
+    /// An install a TUN start asked for, or a reinstall that stopped a TUN
+    /// run, is done: start, if the helper is ready now (and nothing else is
+    /// starting or running). If it isn't (macOS kept it turned off, say),
+    /// say why, and ask nothing again.
+    fn start_after_install(&mut self, cx: &mut Context<Self>) {
+        if !self.process.read(cx).is_stopped() || self.tun_gate.is_some() {
+            return;
+        }
+        if self.settings.proxy_mode {
+            self.start_process(cx);
+            return;
+        }
+        match self.helper_status.start_gate(false) {
+            StartGate::Start => self.launch_through_helper(cx),
+            StartGate::Refuse(message) => cx.emit(StatusEvent {
+                level: StatusLevel::Error,
+                message,
+            }),
+            // Never without an install to offer.
+            StartGate::Ask => {}
+        }
+    }
+
+    /// Stop a run through the helper before its install changes: its
+    /// cleanup (the helper's `stopped`), to wait for. `None` if sing-box
+    /// isn't the helper's.
+    fn stop_helper_run_first(&mut self, cx: &mut Context<Self>) -> Option<Task<()>> {
+        if !self.process.read(cx).runs_helper() {
+            return None;
+        }
+        self.stop_process(cx);
+        self.process.update(cx, |process, _| process.take_cleanup())
     }
 
     /// Hand a TUN start through the privileged helper to `ProcessSession`.
@@ -1148,10 +1406,7 @@ impl AppState {
     pub fn stop_process(&mut self, cx: &mut Context<Self>) {
         self.restart_pending = false;
         self.api_port_retry = ApiPortRetry::Armed;
-        #[cfg(target_os = "linux")]
-        {
-            self.tun_gate = None;
-        }
+        self.tun_gate = None;
         self.process.update(cx, |p, cx| p.stop(cx));
         cx.notify();
     }
@@ -1223,9 +1478,10 @@ impl AppState {
         }
     }
 
-    /// A start is under way: sing-box `Preparing`, or a Linux TUN gate
-    /// (plan probe or pkexec prompt) still pending. What Home and the
-    /// sidebar show as Starting, and what holds the power button off.
+    /// A start is under way: sing-box `Preparing`, or a TUN gate still
+    /// pending (Linux: the plan probe or the pkexec prompt; macOS: the look
+    /// at the helper, or its install). What Home and the sidebar show as
+    /// Starting, and what holds the power button off.
     pub fn is_starting(&self, cx: &App) -> bool {
         matches!(self.start_phase(cx), StartPhase::Gated | StartPhase::Preparing)
     }
@@ -1239,7 +1495,6 @@ impl AppState {
         if process.is_starting() {
             return StartPhase::Preparing;
         }
-        #[cfg(target_os = "linux")]
         if self.tun_gate.is_some() {
             return StartPhase::Gated;
         }
@@ -1264,8 +1519,9 @@ impl AppState {
     }
 
     pub fn set_proxy_mode(&mut self, value: bool, cx: &mut Context<Self>) {
-        // No TUN here yet (macOS): Proxy mode stays.
-        if self.settings.proxy_mode == value || (!value && !TUN_AVAILABLE) {
+        // TUN can't be chosen here now (macOS without its helper): Proxy
+        // mode stays. Switching away from TUN is always allowed.
+        if self.settings.proxy_mode == value || (!value && !self.tun_available()) {
             return;
         }
         self.settings.proxy_mode = value;

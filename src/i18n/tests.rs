@@ -151,6 +151,7 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.helper.whole_config,
         t.helper.runs_program,
         t.helper.filesystem_path,
+        t.home.tun_needs_helper,
         t.settings.helper,
         t.settings.helper_not_installed,
         t.settings.helper_turned_off,
@@ -229,6 +230,7 @@ fn chinese_never_calls_sing_box_the_core() {
         ZH_CN.helper.install_prompt,
         ZH_CN.settings.helper,
         ZH_CN.dialogs.helper_install_title,
+        ZH_CN.home.tun_needs_helper,
     ] {
         assert!(text.contains("特权助手"), "{text}");
     }
@@ -341,6 +343,7 @@ fn chinese_uses_full_width_punctuation() {
         ZH_CN.dialogs.helper_take_over_body.to_string(),
         ZH_CN.dialogs.helper_turn_on_body.to_string(),
         ZH_CN.dialogs.helper_remove_body.to_string(),
+        ZH_CN.home.tun_needs_helper.to_string(),
     ];
     for sample in samples {
         let chars: Vec<char> = sample.chars().collect();

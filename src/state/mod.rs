@@ -31,7 +31,9 @@ pub mod tailscale;
 pub mod traffic;
 pub mod vpn;
 
-pub use app_state::{ActivateRequested, AppState, ImportRequested};
+pub use app_state::{
+    ActivateRequested, AppState, HelperChange, HelperInstallRequested, ImportRequested,
+};
 #[cfg(target_os = "linux")]
 pub use app_state::TunGrantRequested;
 pub use clash_mode::ClashMode;

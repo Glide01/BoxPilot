@@ -236,8 +236,9 @@ pub struct Home {
     pub profile: &'static str,
     /// Last item of the Home profile switcher: opens the Profiles page.
     pub manage_profiles: &'static str,
-    /// Under Proxy Mode where TUN can't be chosen (macOS, for now).
-    pub tun_unavailable: &'static str,
+    /// Under Proxy Mode where TUN can't be chosen: macOS without its
+    /// privileged helper, and how to get it.
+    pub tun_needs_helper: &'static str,
 }
 
 pub struct Profiles {

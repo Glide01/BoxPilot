@@ -14,7 +14,7 @@ use crate::actions::ShowSettings;
 use crate::core::settings::{StatusEvent, StatusLevel};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
-use crate::state::{ActivateRequested, AppState};
+use crate::state::{ActivateRequested, AppState, HelperInstallRequested};
 use crate::ui::{theme, title_bar, toast, tray, RootView};
 use gpui::*;
 use gpui_component::Root;
@@ -83,6 +83,22 @@ pub fn init(app_state: Entity<AppState>, cx: &mut App) {
                 let _ = handle.update(cx, |_, window, _| {
                     window.on_next_frame(move |window, cx| {
                         RootView::prompt_tun_grant(app_state, window, cx);
+                    });
+                });
+            }
+        }),
+    );
+    // The same for the macOS helper's install prompt.
+    subscriptions.push(
+        cx.subscribe(&app_state, |app_state, _: &HelperInstallRequested, cx| {
+            if is_open(cx) {
+                return;
+            }
+            show(cx);
+            if let Some(handle) = cx.try_global::<MainWindow>().and_then(|mw| mw.handle) {
+                let _ = handle.update(cx, |_, window, _| {
+                    window.on_next_frame(move |window, cx| {
+                        RootView::prompt_helper_install(app_state, true, window, cx);
                     });
                 });
             }

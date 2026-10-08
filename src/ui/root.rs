@@ -6,7 +6,7 @@ use crate::core::bytefmt::format_speed;
 use crate::core::presentation::{redact_url, ConnectionStatus};
 use crate::core::settings::StatusEvent;
 use crate::i18n::s;
-use crate::state::{AppState, ImportRequested};
+use crate::state::{AppState, HelperInstallRequested, ImportRequested};
 #[cfg(target_os = "linux")]
 use crate::state::TunGrantRequested;
 use crate::ui::pages::{
@@ -33,7 +33,8 @@ pub struct RootView {
     /// a click on anything not focusable itself lands focus back here.
     focus_handle: FocusHandle,
     /// Last `AppState::is_starting`, so the sidebar status re-renders when a
-    /// Linux TUN gate (which `ProcessSession` doesn't see) opens or closes.
+    /// TUN gate (Linux's grant, macOS's helper; `ProcessSession` doesn't see
+    /// either) opens or closes.
     starting: bool,
     /// Last `AppState::update_available().is_some()` — the Settings
     /// sidebar dot; re-rendered on its edges only, like `starting`.
@@ -174,6 +175,17 @@ impl RootView {
         )
         .detach();
 
+        // A macOS TUN start that needs the privileged helper installed (or
+        // reinstalled) stops short and asks here. Never emitted elsewhere.
+        cx.subscribe_in(
+            &app_state,
+            window,
+            |_, app_state, _: &HelperInstallRequested, window, cx| {
+                Self::prompt_helper_install(app_state.clone(), true, window, cx);
+            },
+        )
+        .detach();
+
         if let Some((level, message)) = app_state.update(cx, |state, _| state.pending_status.take())
         {
             cx.on_next_frame(window, move |_, _, cx| {
@@ -260,6 +272,12 @@ impl RootView {
             self.active_page = page;
             self.focus_handle.focus(window, cx);
             cx.notify();
+            // Settings › TUN shows the macOS helper as it is now (it may
+            // have been turned off or on in Login Items meanwhile).
+            if page == ActivePage::Settings {
+                self.app_state
+                    .update(cx, |state, cx| state.refresh_helper_status(cx));
+            }
         }
     }
 
@@ -344,6 +362,53 @@ impl RootView {
                 .ok_text(s().dialogs.grant)
                 .on_ok(move |_, _, cx| {
                     app_state.update(cx, |state, cx| state.grant_tun_permission(cx));
+                    true
+                })
+        });
+    }
+
+    /// Offer to install (or reinstall) the macOS privileged helper, worded
+    /// by its state (`HelperStatus::install_prompt`), as Linux offers its
+    /// TUN grant. Cancel changes nothing; OK runs the install, whose
+    /// administrator prompt is macOS's own. `then_start`: asked by a TUN
+    /// start, which goes on once the helper is ready.
+    pub(crate) fn prompt_helper_install(
+        app_state: Entity<AppState>,
+        then_start: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let prompt = app_state.read(cx).helper_status.install_prompt();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let app_state = app_state.clone();
+            alert
+                .title(prompt.title)
+                .description(prompt.body)
+                .confirm()
+                .ok_text(prompt.ok)
+                .on_ok(move |_, _, cx| {
+                    app_state.update(cx, |state, cx| state.install_helper(then_start, cx));
+                    true
+                })
+        });
+    }
+
+    /// Confirm removing the macOS privileged helper (Settings › TUN). OK
+    /// runs the removal, behind macOS's administrator prompt.
+    pub(crate) fn prompt_helper_remove(
+        app_state: Entity<AppState>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let app_state = app_state.clone();
+            alert
+                .title(s().dialogs.helper_remove_title)
+                .description(s().dialogs.helper_remove_body)
+                .confirm()
+                .ok_text(s().settings.remove_helper)
+                .on_ok(move |_, _, cx| {
+                    app_state.update(cx, |state, cx| state.remove_helper(cx));
                     true
                 })
         });
