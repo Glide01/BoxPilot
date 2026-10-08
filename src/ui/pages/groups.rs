@@ -1,4 +1,4 @@
-//! Groups page: header (title, search box, Sort Default / Delay, Test all),
+//! Groups page: toolbar (search box, Sort Default / Delay, Test all),
 //! then every group as a card — title line (chevron + name + node count +
 //! current node + test icon button) over a grid of node cards (name + delay
 //! badge / protocol type).
@@ -27,8 +27,8 @@ use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::locale;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, page_header, segmented, small_input,
-    text_centered, IconLabel, Segment,
+    connect_button, empty_state, full_text_tooltip, segmented, small_input, text_centered,
+    IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -618,15 +618,15 @@ impl Render for GroupsPage {
         let theme = cx.theme();
         let t = &s().groups;
 
-        let mut header = div()
-            .h_flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .w_full()
-            .child(div().mr_2().child(page_header(theme, t.title)));
+        // The toolbar, while there are groups to search, sort and test.
+        let mut header = None;
         if has_groups {
-            header = header
+            let mut toolbar = div()
+                .h_flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .w_full()
                 .child(
                     div().flex_1().min_w(px(200.)).child(
                         small_input(&self.search).cleanable(true).prefix(
@@ -645,7 +645,7 @@ impl Render for GroupsPage {
                 );
             const SORTS: [NodeSort; 2] = [NodeSort::Default, NodeSort::Delay];
             let page = weak_page.clone();
-            header = header.child(segmented(
+            toolbar = toolbar.child(segmented(
                 theme,
                 "groups-sort",
                 vec![Segment::new(t.sort_default), Segment::new(t.sort_delay)],
@@ -656,7 +656,7 @@ impl Render for GroupsPage {
                 },
             ));
             let proxy_groups = self.proxy_groups.clone();
-            header = header.child(
+            toolbar = toolbar.child(
                 Button::new("groups-test-all")
                     .outline()
                     .small()
@@ -673,6 +673,7 @@ impl Render for GroupsPage {
                         proxy_groups.update(cx, |state, cx| state.test_all(cx));
                     }),
             );
+            header = Some(toolbar);
         }
 
         let body = if !has_groups {
@@ -725,6 +726,11 @@ impl Render for GroupsPage {
                 .into_any_element()
         };
 
-        div().v_flex().size_full().gap_4().child(header).child(body)
+        div()
+            .v_flex()
+            .size_full()
+            .gap_4()
+            .children(header)
+            .child(body)
     }
 }

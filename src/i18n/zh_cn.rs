@@ -79,7 +79,6 @@ pub static ZH_CN: Strings = Strings {
         tun_unavailable: "macOS 暂不支持 TUN。",
     },
     profiles: Profiles {
-        title: "配置",
         add: "添加",
         add_title: "添加配置",
         edit_title: "编辑配置",
@@ -140,7 +139,6 @@ pub static ZH_CN: Strings = Strings {
         as_of: |when| format!("{when}获取的用量"),
     },
     groups: Groups {
-        title: "分组",
         search_placeholder: "搜索节点或协议…",
         sort: "排序",
         sort_default: "默认",
@@ -156,7 +154,6 @@ pub static ZH_CN: Strings = Strings {
         no_match_hint: "换个关键词试试。",
     },
     connections: Connections {
-        title: "连接",
         filter_placeholder: "按主机、规则、出站链、进程筛选…",
         open_count: |n| format!("{n} 个活动"),
         total: "累计",
@@ -213,7 +210,6 @@ pub static ZH_CN: Strings = Strings {
         duration: "持续时长",
     },
     logs: Logs {
-        title: "日志",
         count_of: |visible, total| format!("{visible} / {total}"),
         configured_level: "sing-box 配置中的日志级别",
         clear: "清空",
@@ -221,7 +217,6 @@ pub static ZH_CN: Strings = Strings {
         empty_hint: "连接后这里会实时显示 sing-box 的输出。",
     },
     tools: Tools {
-        title: "工具",
         not_running_title: "sing-box 未运行",
         not_running_hint: "连接后即可测试网络质量和 NAT 类型。",
         outbound: "出站",
@@ -279,7 +274,6 @@ pub static ZH_CN: Strings = Strings {
         nat_dependent_hint: "不同目标的外部映射不同，P2P 通常需要中继。",
     },
     tailscale: Tailscale {
-        title: "Tailscale",
         empty_title: "没有 Tailscale 端点",
         empty_hint: "使用含 Tailscale 端点的配置连接后在这里查看。",
         log_in: "登录",
@@ -362,7 +356,6 @@ pub static ZH_CN: Strings = Strings {
         download_cancelled: "下载已取消",
     },
     vpn: Vpn {
-        title: "VPN",
         empty_title: "没有 VPN 端点",
         empty_hint: "使用含 OpenConnect、OpenVPN 或 USB/IP 的配置连接后在这里查看。",
         sign_in_title: |protocol, tag| format!("登录 {protocol}「{tag}」"),
@@ -439,7 +432,6 @@ pub static ZH_CN: Strings = Strings {
         usb_device: "USB 设备",
     },
     settings: Settings {
-        title: "设置",
         general: "常规",
         network: "网络",
         tun: "TUN",

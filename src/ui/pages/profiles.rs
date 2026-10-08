@@ -13,10 +13,10 @@ use crate::state::AppState;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    choice_select, dialog_button, empty_state, form_button, form_input, freshness_button,
-    full_text_tooltip, grouped_card, minute_ticker, page_header, profile_source_line, row_hover_bg,
-    section_heading, setting_row, usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
-    DIALOG_BODY_BOTTOM,
+    choice_select, dialog_button, empty_state, empty_state_button, form_button, form_input,
+    freshness_button, full_text_tooltip, grouped_card, minute_ticker, profile_source_line,
+    row_hover_bg, section_heading, setting_row, usage_meter, IconLabel, TextLabel,
+    CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -561,47 +561,38 @@ impl Render for ProfilesPage {
             })
             .collect();
 
+        let add = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            Self::open_profile_dialog(app_state_add.clone(), None, false, window, cx);
+        };
+        if profiles.is_empty() {
+            let empty = empty_state(
+                theme,
+                Icon::new(IconName::GalleryVerticalEnd),
+                s().profiles.empty,
+                s().home.no_subscription_hint,
+            )
+            .action(
+                empty_state_button("profile-add")
+                    .icon_label(IconName::Plus, s().profiles.add_title)
+                    .on_click(add),
+            );
+            return div().size_full().child(empty);
+        }
+
+        let list = div().v_flex().gap_2().w_full().children(rows);
         div()
             .v_flex()
             .size_full()
             .gap_4()
             .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .justify_between()
-                    .child(page_header(theme, s().profiles.title))
-                    .child(
-                        Button::new("profile-add")
-                            .primary()
-                            .small()
-                            .icon_label(IconName::Plus, s().profiles.add)
-                            .on_click(move |_, window, cx| {
-                                Self::open_profile_dialog(
-                                    app_state_add.clone(),
-                                    None,
-                                    false,
-                                    window,
-                                    cx,
-                                );
-                            }),
-                    ),
+                div().h_flex().justify_end().child(
+                    Button::new("profile-add")
+                        .primary()
+                        .small()
+                        .icon_label(IconName::Plus, s().profiles.add)
+                        .on_click(add),
+                ),
             )
-            .child(if profiles.is_empty() {
-                empty_state(
-                    theme,
-                    Icon::new(IconName::GalleryVerticalEnd),
-                    s().profiles.empty,
-                    s().home.no_subscription_hint,
-                )
-                .into_any_element()
-            } else {
-                let list = div().v_flex().gap_2().w_full().children(rows);
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(list.overflow_y_scrollbar())
-                    .into_any_element()
-            })
+            .child(div().flex_1().min_h_0().child(list.overflow_y_scrollbar()))
     }
 }

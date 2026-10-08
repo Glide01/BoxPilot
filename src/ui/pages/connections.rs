@@ -31,8 +31,8 @@ use crate::core::singbox_api::Connection;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, page_header, row_hover_bg, segmented,
-    small_input, Segment, TextLabel,
+    connect_button, empty_state, full_text_tooltip, row_hover_bg, segmented, small_input, Segment,
+    TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -477,7 +477,7 @@ impl Render for ConnectionsPage {
         // Close all stay out of the way of the empty state.
         let has_any = live && summary.open + summary.closed > 0;
 
-        // Live totals beside the title: open count, current rates, and the
+        // Live totals above the toolbar: open count, current rates, and the
         // traffic so far — three groups set apart by space. On a narrow
         // window the totals give way first, then the rates; the count
         // stays whole.
@@ -508,32 +508,25 @@ impl Render for ConnectionsPage {
                 ))
                 .flex_shrink(SHRINK_FIRST),
             );
-        let title_block = div()
-            .h_flex()
-            .items_center()
-            .gap_4()
-            .min_w_0()
-            .child(page_header(theme, t.title))
-            .when(has_any, |this| this.child(summary_items));
-        let close_all = has_any.then(|| {
+        let header = has_any.then(|| {
             let connections = connections.clone();
-            Button::new("connections-close-all")
+            let close_all = Button::new("connections-close-all")
                 .outline()
                 .small()
                 .text_label(t.close_all)
                 .disabled(summary.open == 0)
                 .on_click(move |_, _, cx| {
                     connections.update(cx, |state, cx| state.close_all(cx));
-                })
+                });
+            div()
+                .h_flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .w_full()
+                .child(summary_items)
+                .child(close_all)
         });
-        let header = div()
-            .h_flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .w_full()
-            .child(title_block)
-            .children(close_all);
 
         let page = cx.entity().downgrade();
         let mut controls = div()
@@ -688,7 +681,7 @@ impl Render for ConnectionsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .child(header)
+            .children(header)
             .when(has_any, |page| page.child(controls))
             // Before the body, so the details panel stays above it.
             .children(empty)

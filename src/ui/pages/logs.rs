@@ -4,7 +4,7 @@ use crate::core::singbox_api::LogLevel;
 use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::card_frame;
-use crate::ui::widgets::{connect_button, empty_state, page_header, segmented, Segment, TextLabel};
+use crate::ui::widgets::{connect_button, empty_state, segmented, Segment, TextLabel};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button,
@@ -260,17 +260,12 @@ impl Render for LogsPage {
         let default_threshold = logs.default_threshold();
         let count_label = log_count_label(logs.visible_count(), total);
 
-        let title_block = div()
-            .h_flex()
-            .items_center()
-            .gap_2()
-            .child(page_header(theme, s().logs.title))
-            .children(count_label.map(|count| {
-                div()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child(count)
-            }));
+        let count = count_label.map(|count| {
+            div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(count)
+        });
 
         // The level sing-box's config asks for says so in its tooltip.
         let levels = LEVEL_CHOICES
@@ -311,16 +306,18 @@ impl Render for LogsPage {
                     }),
             );
 
-        let header = div()
-            .h_flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .w_full()
-            .child(title_block)
-            // No lines yet: nothing to filter or clear.
-            .when(total > 0, |header| header.child(controls));
+        // No lines yet: nothing to filter or clear.
+        let header = (total > 0).then(|| {
+            div()
+                .h_flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .w_full()
+                .child(controls)
+                .children(count)
+        });
 
         let body = if total == 0 {
             empty_state(
@@ -346,6 +343,11 @@ impl Render for LogsPage {
                 .into_any_element()
         };
 
-        div().v_flex().size_full().gap_4().child(header).child(body)
+        div()
+            .v_flex()
+            .size_full()
+            .gap_4()
+            .children(header)
+            .child(body)
     }
 }

@@ -21,9 +21,7 @@ use crate::state::tailscale::{CertificateFetched, PingSession, TailscaleAction};
 use crate::state::{AppState, TailscaleState};
 use crate::ui::card_frame;
 use crate::ui::toast;
-use crate::ui::widgets::{
-    dialog_button, empty_state, meta_row, page_header, status_label, TextLabel,
-};
+use crate::ui::widgets::{dialog_button, empty_state, meta_row, status_label, TextLabel};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -122,12 +120,7 @@ impl Render for TailscalePage {
                 .into_any_element()
         };
 
-        div()
-            .v_flex()
-            .size_full()
-            .gap_4()
-            .child(page_header(theme, s().tailscale.title))
-            .child(body)
+        div().v_flex().size_full().child(body)
     }
 }
 

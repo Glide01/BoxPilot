@@ -1,4 +1,4 @@
-//! Shared chrome builders beside `card_frame`: page titles, empty states,
+//! Shared chrome builders beside `card_frame`: empty states,
 //! labeled setting rows, grouped lists, segmented controls, setting
 //! dropdowns, quiet status labels, the subscription usage meter and a
 //! profile's update button and source line (Home and Profiles). Element
@@ -261,8 +261,8 @@ impl IconLabel for Button {
 }
 
 /// A form page's column (Settings, Tools): the panel's full width up to
-/// [`FORM_MAX_WIDTH`], centred in it past that. The page wraps its title
-/// and its scrolled content each in one, so they share the column's edges.
+/// [`FORM_MAX_WIDTH`], centred in it past that, inside the page's scrolled
+/// area.
 pub fn form_column(content: impl IntoElement) -> Div {
     div()
         .w_full()
@@ -270,16 +270,6 @@ pub fn form_column(content: impl IntoElement) -> Div {
         .flex_row()
         .justify_center()
         .child(div().w_full().max_w(px(FORM_MAX_WIDTH)).child(content))
-}
-
-/// Page title ("Groups", "Logs", …). Pages compose it into their own header
-/// row (some add counts or buttons beside it).
-pub fn page_header(theme: &Theme, title: &'static str) -> Div {
-    div()
-        .text_xl()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.foreground)
-        .child(title)
 }
 
 /// Small heading above a group of cards or rows ("General", "Network").
@@ -297,9 +287,9 @@ pub fn section_heading(theme: &Theme, title: &'static str) -> Div {
 /// an empty page needs no box around its emptiness.
 ///
 /// It covers its parent, which must be the page's root: centred on the
-/// whole page rather than on the room under the page's title, it sits at
-/// the same height on every page, whatever the header above it holds, and
-/// on Home, which has none. Only the icon, title and hint are centred; the
+/// whole page rather than on the room under a toolbar, it sits at the same
+/// height on every page, whatever sits above it. Only the icon, title and
+/// hint are centred; the
 /// action hangs under them, so a page with one puts its message where a
 /// page without one does.
 pub fn empty_state(

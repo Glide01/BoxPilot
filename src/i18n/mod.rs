@@ -240,7 +240,6 @@ pub struct Home {
 }
 
 pub struct Profiles {
-    pub title: &'static str,
     pub add: &'static str,
     pub add_title: &'static str,
     pub edit_title: &'static str,
@@ -324,7 +323,6 @@ pub struct Usage {
 }
 
 pub struct Groups {
-    pub title: &'static str,
     pub search_placeholder: &'static str,
     pub sort: &'static str,
     pub sort_default: &'static str,
@@ -343,7 +341,6 @@ pub struct Groups {
 }
 
 pub struct Connections {
-    pub title: &'static str,
     pub filter_placeholder: &'static str,
     /// "3 open" — the rest of the summary line is rates and totals.
     pub open_count: FmtN,
@@ -411,7 +408,6 @@ pub struct ConnectionDetails {
 }
 
 pub struct Logs {
-    pub title: &'static str,
     /// "3 of 10" while a level filter hides some lines.
     pub count_of: fn(usize, usize) -> String,
     pub configured_level: &'static str,
@@ -421,7 +417,6 @@ pub struct Logs {
 }
 
 pub struct Tools {
-    pub title: &'static str,
     pub not_running_title: &'static str,
     pub not_running_hint: &'static str,
     pub outbound: &'static str,
@@ -480,7 +475,6 @@ pub struct Tools {
 }
 
 pub struct Tailscale {
-    pub title: &'static str,
     pub empty_title: &'static str,
     pub empty_hint: &'static str,
     pub log_in: &'static str,
@@ -564,7 +558,6 @@ pub struct Tailscale {
 }
 
 pub struct Vpn {
-    pub title: &'static str,
     pub empty_title: &'static str,
     pub empty_hint: &'static str,
     /// "Sign in to OpenVPN "office"".
@@ -633,7 +626,6 @@ pub struct Vpn {
 }
 
 pub struct Settings {
-    pub title: &'static str,
     pub general: &'static str,
     pub network: &'static str,
     pub tun: &'static str,

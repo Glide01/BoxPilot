@@ -26,8 +26,8 @@ use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    dialog_button, empty_state, form_input, meta_row, page_header, select_widths, IconLabel,
-    TextLabel, DIALOG_BODY_BOTTOM,
+    dialog_button, empty_state, form_input, meta_row, select_widths, IconLabel, TextLabel,
+    DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -878,13 +878,10 @@ impl Render for VpnPage {
         let theme = cx.theme().clone();
         let theme = &theme;
 
-        let title = page_header(theme, s().vpn.title);
         if presence.is_empty() {
             return div()
                 .v_flex()
                 .size_full()
-                .gap_4()
-                .child(title)
                 .child(empty_state(
                     theme,
                     IconName::Globe,
@@ -1023,8 +1020,6 @@ impl Render for VpnPage {
         div()
             .v_flex()
             .size_full()
-            .gap_4()
-            .child(title)
             .child(
                 div().flex_1().min_h_0().child(
                     div()

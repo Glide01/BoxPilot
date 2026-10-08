@@ -83,7 +83,6 @@ pub static EN: Strings = Strings {
         tun_unavailable: "TUN isn't available on macOS yet.",
     },
     profiles: Profiles {
-        title: "Profiles",
         add: "Add",
         add_title: "Add Profile",
         edit_title: "Edit Profile",
@@ -156,7 +155,6 @@ pub static EN: Strings = Strings {
         as_of: |when| format!("Usage as of {when}"),
     },
     groups: Groups {
-        title: "Groups",
         search_placeholder: "Search nodes or protocols…",
         sort: "Sort",
         sort_default: "Default",
@@ -172,7 +170,6 @@ pub static EN: Strings = Strings {
         no_match_hint: "Try a different search.",
     },
     connections: Connections {
-        title: "Connections",
         filter_placeholder: "Filter by host, rule, chain, process…",
         open_count: |n| format!("{n} open"),
         total: "total",
@@ -229,7 +226,6 @@ pub static EN: Strings = Strings {
         duration: "Duration",
     },
     logs: Logs {
-        title: "Logs",
         count_of: |visible, total| format!("{visible} of {total}"),
         configured_level: "sing-box's configured log level",
         clear: "Clear",
@@ -237,7 +233,6 @@ pub static EN: Strings = Strings {
         empty_hint: "Connect to start streaming sing-box output.",
     },
     tools: Tools {
-        title: "Tools",
         not_running_title: "sing-box is not running",
         not_running_hint: "Connect to test network quality and NAT type.",
         outbound: "Outbound",
@@ -295,7 +290,6 @@ pub static EN: Strings = Strings {
         nat_dependent_hint: "Mappings change per destination: P2P usually needs a relay.",
     },
     tailscale: Tailscale {
-        title: "Tailscale",
         empty_title: "No Tailscale endpoints",
         empty_hint: "Connect with a profile that has a Tailscale endpoint.",
         log_in: "Log in",
@@ -381,7 +375,6 @@ pub static EN: Strings = Strings {
         download_cancelled: "Download cancelled",
     },
     vpn: Vpn {
-        title: "VPN",
         empty_title: "No VPN endpoints",
         empty_hint:
             "Connect with a profile that has OpenConnect, OpenVPN or USB/IP to see them here.",
@@ -474,7 +467,6 @@ pub static EN: Strings = Strings {
         usb_device: "USB device",
     },
     settings: Settings {
-        title: "Settings",
         general: "General",
         network: "Network",
         tun: "TUN",
