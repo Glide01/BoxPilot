@@ -676,12 +676,18 @@ fn the_budget_bounds_what_all_connections_hold() {
     first.hello();
     second.hello();
     first.send_bytes(&partial_start(1024 * 1024, 10));
+    // The reader may see the bytes in pieces: while the JSON header is
+    // still arriving, the budget holds what the decoder has of it. Wait for
+    // the blob's reservation, the state this test is about.
     let deadline = Instant::now() + PATIENCE;
-    while harness.budget.used() == 0 {
-        assert!(Instant::now() < deadline);
+    while harness.budget.used() != 64 * 1024 {
+        assert!(
+            Instant::now() < deadline,
+            "the budget holds {} bytes",
+            harness.budget.used()
+        );
         thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(harness.budget.used(), 64 * 1024);
     second.send_bytes(&partial_start(1024 * 1024, 10));
     assert_eq!(error_code(second.reply()), ErrorCode::Busy);
     assert_eq!(second.recv(), None);
