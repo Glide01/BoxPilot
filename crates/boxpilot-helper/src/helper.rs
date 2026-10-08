@@ -314,11 +314,17 @@ impl<S: Supervisor> HelperCore<S> {
         checked: runcfg::CheckedStart,
         outbox: &Arc<Outbox>,
     ) -> Result<Started, HelperError> {
-        let (run_dir, placement) = self.supervisor.prepare_run(user)?;
+        let (mut run_dir, placement) = self.supervisor.prepare_run(user)?;
         let secret = runcfg::fresh_secret()
             .map_err(|error| HelperError::new(format!("the OS RNG failed: {error}")))?;
-        let prepared = runcfg::build(checked, &placement, runcfg::free_loopback_port, &secret)
-            .map_err(|error| HelperError::new(error.to_string()))?;
+        let prepared = runcfg::build(
+            checked,
+            &placement,
+            runcfg::SYSTEM_PROXY,
+            runcfg::free_loopback_port,
+            &secret,
+        )
+        .map_err(|error| HelperError::new(error.to_string()))?;
         run_dir.write(&prepared).map_err(|error| {
             HelperError::new(format!("the run directory could not be written: {error}"))
         })?;

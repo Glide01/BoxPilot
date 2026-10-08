@@ -24,11 +24,20 @@
 //! nothing under `C:\Program Files`. The state directory is the helper
 //! directory's sibling, never inside it, so nothing written as state can
 //! land among the binaries.
+//!
+//! **macOS** ([`Layout::installed_macos`], `endpoint::macos`) has the same
+//! two trees, side by side in `/Library/Application Support/BoxPilot
+//! Helper`, root:wheel and verified root-only before use: `bin` (sing-box
+//! and the manifest; the helper itself is in `/Library/PrivilegedHelperTools`)
+//! and `state` (0700), which also holds the [`OWNER_FILE`] the install
+//! wrote and the [`RUN_MARKER`]. Accounts are named by their uid there
+//! (`users/501`) rather than by a SID.
 
 #![forbid(unsafe_code)]
 
 use crate::manifest::MANIFEST_FILE;
 use boxpilot_policy::Placement;
+use boxpilot_protocol::endpoint::macos;
 use std::fmt;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
@@ -56,6 +65,14 @@ pub const LOG_FILE: &str = "helper.log";
 pub const CACHE_FILE: &str = "cache.db";
 /// The Tailscale endpoints' state, in a caller's state directory.
 pub const TAILSCALE_DIR: &str = "tailscale";
+/// macOS: the owner record the install writes in the state directory
+/// (`endpoint::macos::OWNER_FILE`).
+pub const OWNER_FILE: &str = "owner";
+/// macOS: written in the state directory while a sing-box runs, saying
+/// what it may leave behind if it can't undo it itself (`cleanup`), and
+/// removed once it has exited and been cleaned up after. Found when the
+/// helper starts, it means the helper died with a run.
+pub const RUN_MARKER: &str = "running";
 
 /// The longest SID string Windows writes: `S-1-`, a 48-bit authority (15
 /// digits) and 15 sub-authorities of up to 10 digits, with their dashes.
@@ -82,6 +99,15 @@ impl Layout {
     pub fn installed(program_files: &Path) -> Self {
         let product = program_files.join(PRODUCT_DIR);
         Self::new(product.join(HELPER_DIR), product.join(STATE_DIR))
+    }
+
+    /// The macOS install's trees: `endpoint::macos::BIN_DIR` and, beside
+    /// it, `endpoint::macos::STATE_DIR`.
+    pub fn installed_macos() -> Self {
+        Self::new(
+            PathBuf::from(macos::BIN_DIR),
+            PathBuf::from(macos::STATE_DIR),
+        )
     }
 
     pub fn helper_dir(&self) -> &Path {
@@ -117,16 +143,37 @@ impl Layout {
         self.state_dir.join(USERS_DIR)
     }
 
-    /// The state directory of the account `sid`, or `None` when `sid` isn't
-    /// a SID string ([`is_sid`]): a name from the OS, but checked anyway
-    /// before it becomes a path.
-    pub fn user_dir(&self, sid: &str) -> Option<PathBuf> {
-        is_sid(sid).then(|| self.users_dir().join(sid))
+    /// The state directory of `account`, or `None` when `account` is neither
+    /// a SID string ([`is_sid`], Windows) nor a uid ([`is_uid`], macOS): a
+    /// name from the OS, but checked anyway before it becomes a path.
+    pub fn user_dir(&self, account: &str) -> Option<PathBuf> {
+        (is_sid(account) || is_uid(account)).then(|| self.users_dir().join(account))
     }
 
     pub fn log_file(&self) -> PathBuf {
         self.state_dir.join(LOG_FILE)
     }
+
+    /// macOS: the owner record, in the state directory.
+    pub fn owner_file(&self) -> PathBuf {
+        self.state_dir.join(OWNER_FILE)
+    }
+
+    /// macOS: the marker of a running sing-box, in the state directory.
+    pub fn run_marker(&self) -> PathBuf {
+        self.state_dir.join(RUN_MARKER)
+    }
+}
+
+/// Whether `text` is a uid as the helper writes one: decimal, 1 to 10
+/// digits, no leading zero (but `0` itself), and below `u32::MAX`, which is
+/// `(uid_t)-1`, no account. Only ASCII digits, so it is a safe directory
+/// name.
+pub fn is_uid(text: &str) -> bool {
+    (1..=10).contains(&text.len())
+        && text.bytes().all(|b| b.is_ascii_digit())
+        && (text == "0" || !text.starts_with('0'))
+        && text.parse::<u32>().is_ok_and(|uid| uid != u32::MAX)
 }
 
 /// Whether `text` is a SID string as Windows writes it: `S-1-`, a decimal
@@ -230,6 +277,55 @@ mod tests {
             assert!(place.starts_with(layout.state_dir()), "{place:?}");
             assert!(!place.starts_with(layout.helper_dir()), "{place:?}");
         }
+    }
+
+    #[test]
+    fn uids_are_checked_before_they_become_paths() {
+        for uid in ["0", "501", "4294967294"] {
+            assert!(is_uid(uid), "{uid}");
+        }
+        for not_uid in [
+            "",
+            "0501",
+            "00",
+            "+501",
+            "-1",
+            "501 ",
+            "5_01",
+            "4294967295",
+            "4294967296",
+            "99999999999",
+            "../501",
+            "٥٠١",
+        ] {
+            assert!(!is_uid(not_uid), "{not_uid}");
+        }
+        let layout = Layout::new(PathBuf::from("/h"), PathBuf::from("/s"));
+        assert_eq!(layout.user_dir("501"), Some(PathBuf::from("/s/users/501")));
+        assert_eq!(layout.user_dir("0501"), None);
+    }
+
+    /// Side by side under `/Library/Application Support/BoxPilot Helper`,
+    /// as `endpoint::macos` names them for the scripts and the GUI.
+    #[test]
+    fn the_macos_trees_are_the_endpoints() {
+        let layout = Layout::installed_macos();
+        assert_eq!(layout.helper_dir(), Path::new(macos::BIN_DIR));
+        assert_eq!(layout.state_dir(), Path::new(macos::STATE_DIR));
+        assert_eq!(layout.manifest_file(), Path::new(macos::MANIFEST_PATH));
+        assert_eq!(
+            layout.helper_file("sing-box"),
+            Path::new(macos::SING_BOX_PATH)
+        );
+        assert_eq!(layout.owner_file(), Path::new(macos::OWNER_FILE));
+        assert_eq!(layout.log_file(), Path::new(macos::LOG_FILE));
+        assert_eq!(layout.helper_dir().parent(), layout.state_dir().parent());
+        assert_eq!(
+            layout.state_dir().parent(),
+            Some(Path::new(macos::SUPPORT_DIR))
+        );
+        assert!(!layout.state_dir().starts_with(layout.helper_dir()));
+        assert!(layout.run_marker().starts_with(layout.state_dir()));
     }
 
     #[test]

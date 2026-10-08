@@ -850,15 +850,21 @@ removing would cut its tunnels.";
                 fs::remove_dir_all(&path).map_err(|error| fail("an old run directory", &error))?;
             }
             fs::create_dir(&path).map_err(|error| fail("the run directory", &error))?;
-            let run = RunDir::adopt(path);
+            let mut run = RunDir::adopt(path);
             let placement =
                 paths::placement(run.path(), &users).map_err(|error| fail("placement", &error))?;
             let checked = runcfg::check(start_request(free_port()?)?).map_err(|refusals| {
                 format!("the policy refuses the probe profile: {refusals:?}")
             })?;
             let secret = runcfg::fresh_secret().map_err(|error| fail("the OS RNG", &error))?;
-            let prepared = runcfg::build(checked, &placement, runcfg::free_loopback_port, &secret)
-                .map_err(|error| fail("the run config", &error))?;
+            let prepared = runcfg::build(
+                checked,
+                &placement,
+                runcfg::SYSTEM_PROXY,
+                runcfg::free_loopback_port,
+                &secret,
+            )
+            .map_err(|error| fail("the run config", &error))?;
             run.write(&prepared)
                 .map_err(|error| fail("writing the run config", &error))?;
             let temp = run

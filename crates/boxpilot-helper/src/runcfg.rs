@@ -35,11 +35,29 @@ pub const SECRET_LEN: usize = 32;
 /// The config's file name in the run directory.
 pub const CONFIG_FILE: &str = "config.json";
 
-/// Whether sing-box may write the OS proxy setting through the helper:
-/// never. A SYSTEM sing-box would write SYSTEM's proxy, not the user's; the
-/// GUI sets the user's itself, as the user (ADR 0006, "System proxy").
-/// The request's `system_proxy` is therefore ignored here.
-pub const FORBID_SYSTEM_PROXY: bool = true;
+/// Whether the helper's sing-box may write the OS proxy setting when a
+/// `start` asks for it (ADR 0006, "System proxy").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemProxy {
+    /// Never: the request's `system_proxy` is ignored.
+    Forbidden,
+    /// As the request's `system_proxy` says.
+    AsRequested,
+}
+
+/// This platform's [`SystemProxy`]:
+///
+/// - **Windows: forbidden.** A SYSTEM sing-box would write SYSTEM's proxy,
+///   not the user's; the GUI sets the user's itself, as the user.
+/// - **macOS: as requested.** The proxy is a machine-wide setting of each
+///   network service there, which a root sing-box's `networksetup` can
+///   write on a standard account too (closing a gap ADR 0005 notes). If
+///   sing-box can't undo it, the helper resets it (`cleanup`).
+pub const SYSTEM_PROXY: SystemProxy = if cfg!(target_os = "macos") {
+    SystemProxy::AsRequested
+} else {
+    SystemProxy::Forbidden
+};
 
 /// A `start` whose config passed the policy, with only the attachments it
 /// refers to.
@@ -91,6 +109,7 @@ pub struct Prepared {
     config: String,
     files: Vec<(String, Vec<u8>)>,
     api: ApiService,
+    system_proxy: Option<u16>,
 }
 
 /// Sizes only, and the secret redacted.
@@ -100,6 +119,7 @@ impl fmt::Debug for Prepared {
             .field("config_len", &self.config.len())
             .field("files", &self.files.len())
             .field("api", &self.api)
+            .field("system_proxy", &self.system_proxy)
             .finish()
     }
 }
@@ -118,6 +138,14 @@ impl Prepared {
 
     pub fn api(&self) -> &ApiService {
         &self.api
+    }
+
+    /// The port sing-box points the OS proxy setting at, when this config
+    /// has it set one (`set_system_proxy` on the mixed inbound): always
+    /// `127.0.0.1` and the proxy port. What the platform resets if sing-box
+    /// can't.
+    pub fn system_proxy_port(&self) -> Option<u16> {
+        self.system_proxy
     }
 
     /// The `started` reply: where the `api` service listens, and its
@@ -162,10 +190,12 @@ impl std::error::Error for BuildError {}
 /// rule that rejects loopback destinations put first in `route.rules`. The
 /// `api` service's port comes from `ports` (see `pick_port_avoiding`),
 /// avoiding the proxy port and every port the config itself listens on;
-/// its secret is `secret`.
+/// its secret is `secret`. Whether sing-box sets the OS proxy is
+/// `system_proxy`'s call: [`SYSTEM_PROXY`] on the helper's path.
 pub fn build<H>(
     start: CheckedStart,
     placement: &Placement,
+    system_proxy: SystemProxy,
     ports: impl FnMut() -> io::Result<(u16, H)>,
     secret: &[u8; SECRET_LEN],
 ) -> Result<Prepared, BuildError> {
@@ -188,12 +218,13 @@ pub fn build<H>(
     let root = config
         .as_object_mut()
         .expect("the policy checks that the config is an object");
+    let forbid_system_proxy = system_proxy == SystemProxy::Forbidden;
     boxpilot_runconfig::inject(
         root,
         &Inject {
             proxy_mode: false,
             set_system_proxy: options.system_proxy,
-            forbid_system_proxy: FORBID_SYSTEM_PROXY,
+            forbid_system_proxy,
             proxy_port: options.proxy_port,
             tun_ipv6: options.ipv6,
             allow_lan: options.allow_lan,
@@ -203,7 +234,12 @@ pub fn build<H>(
     reject_loopback(root);
     let config = serde_json::to_string_pretty(&config)
         .map_err(|error| BuildError::Serialize(error.to_string()))?;
-    Ok(Prepared { config, files, api })
+    Ok(Prepared {
+        config,
+        files,
+        api,
+        system_proxy: (options.system_proxy && !forbid_system_proxy).then_some(options.proxy_port),
+    })
 }
 
 /// The file name attachment `id` gets in the run directory: the last part of
@@ -286,7 +322,14 @@ mod tests {
 
     fn built(config: Value, attachments: &[(&str, &[u8])]) -> (Value, Prepared) {
         let checked = check(start(config, attachments)).unwrap();
-        let prepared = build(checked, &placement(), fixed_port(41234), &SECRET).unwrap();
+        let prepared = build(
+            checked,
+            &placement(),
+            SystemProxy::Forbidden,
+            fixed_port(41234),
+            &SECRET,
+        )
+        .unwrap();
         (serde_json::from_str(prepared.config()).unwrap(), prepared)
     }
 
@@ -364,12 +407,49 @@ mod tests {
         assert_eq!(config["route"]["final"], "direct");
     }
 
-    /// The request asks for the system proxy, and sing-box never gets it.
+    /// Where it is forbidden (Windows), the request asks for the system
+    /// proxy and sing-box never gets it.
     #[test]
-    fn the_system_proxy_is_never_written() {
-        let (config, _) = built(json!({}), &[]);
+    fn a_forbidden_system_proxy_is_never_written() {
+        let (config, prepared) = built(json!({}), &[]);
         assert!(config["inbounds"][1].get("set_system_proxy").is_none());
         assert!(!config.to_string().contains("set_system_proxy"));
+        assert_eq!(prepared.system_proxy_port(), None);
+    }
+
+    /// Where it is allowed (macOS), sing-box sets it as the request asks,
+    /// and the platform learns which port to look for if sing-box can't
+    /// undo it.
+    #[test]
+    fn an_allowed_system_proxy_is_set_as_requested() {
+        let build_with = |system_proxy: bool| {
+            let mut request = start(json!({}), &[]);
+            request.options.system_proxy = system_proxy;
+            build(
+                check(request).unwrap(),
+                &placement(),
+                SystemProxy::AsRequested,
+                fixed_port(41234),
+                &SECRET,
+            )
+            .unwrap()
+        };
+        let prepared = build_with(true);
+        let config: Value = serde_json::from_str(prepared.config()).unwrap();
+        assert_eq!(config["inbounds"][1]["set_system_proxy"], json!(true));
+        assert_eq!(config["inbounds"][1]["listen_port"], json!(7890));
+        assert_eq!(prepared.system_proxy_port(), Some(7890));
+        let prepared = build_with(false);
+        assert!(!prepared.config().contains("set_system_proxy"));
+        assert_eq!(prepared.system_proxy_port(), None);
+    }
+
+    #[test]
+    fn only_macos_lets_the_helpers_sing_box_set_the_system_proxy() {
+        assert_eq!(
+            SYSTEM_PROXY == SystemProxy::AsRequested,
+            cfg!(target_os = "macos")
+        );
     }
 
     #[test]
@@ -380,6 +460,7 @@ mod tests {
         let prepared = build(
             check(request).unwrap(),
             &placement(),
+            SystemProxy::Forbidden,
             fixed_port(41234),
             &SECRET,
         )
@@ -456,6 +537,7 @@ mod tests {
         let prepared = build(
             checked,
             &placement(),
+            SystemProxy::Forbidden,
             || Ok((draws.next().unwrap(), ())),
             &SECRET,
         )
@@ -463,7 +545,14 @@ mod tests {
         assert_eq!(prepared.api().port(), 41235);
 
         let checked = check(start(json!({}), &[])).unwrap();
-        let error = build(checked, &placement(), fixed_port(7890), &SECRET).unwrap_err();
+        let error = build(
+            checked,
+            &placement(),
+            SystemProxy::Forbidden,
+            fixed_port(7890),
+            &SECRET,
+        )
+        .unwrap_err();
         assert!(matches!(error, BuildError::Port(e) if e.kind() == io::ErrorKind::AddrInUse));
     }
 
@@ -490,7 +579,14 @@ mod tests {
     fn debug_shows_no_content() {
         let checked = check(start(json!({"log": {"level": "secret-ish"}}), &[])).unwrap();
         assert!(!format!("{checked:?}").contains("secret-ish"));
-        let prepared = build(checked, &placement(), fixed_port(41234), &SECRET).unwrap();
+        let prepared = build(
+            checked,
+            &placement(),
+            SystemProxy::Forbidden,
+            fixed_port(41234),
+            &SECRET,
+        )
+        .unwrap();
         let debug = format!("{prepared:?}");
         assert!(!debug.contains("secret-ish"));
         assert!(!debug.contains(&"ab".repeat(SECRET_LEN)));

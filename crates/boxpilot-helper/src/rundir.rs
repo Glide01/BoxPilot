@@ -20,13 +20,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub struct RunDir {
     path: PathBuf,
+    system_proxy: Option<u16>,
 }
 
 impl RunDir {
     /// Take charge of `path`: a directory the platform has just created,
     /// empty and private.
     pub fn adopt(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            system_proxy: None,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -38,13 +42,23 @@ impl RunDir {
         self.path.join(CONFIG_FILE)
     }
 
-    /// Write the run's config and attachments, each as a new file.
-    pub fn write(&self, prepared: &Prepared) -> io::Result<()> {
+    /// Write the run's config and attachments, each as a new file, and
+    /// remember what the config changes outside the run directory
+    /// ([`RunDir::system_proxy_port`]).
+    pub fn write(&mut self, prepared: &Prepared) -> io::Result<()> {
         self.create_file(CONFIG_FILE, prepared.config().as_bytes())?;
         for (name, content) in prepared.files() {
             self.create_file(name, content)?;
         }
+        self.system_proxy = prepared.system_proxy_port();
         Ok(())
+    }
+
+    /// The written config's `Prepared::system_proxy_port`: the OS proxy
+    /// setting this run's sing-box points at `127.0.0.1` and this port,
+    /// which the platform resets if sing-box exits without undoing it.
+    pub fn system_proxy_port(&self) -> Option<u16> {
+        self.system_proxy
     }
 
     /// Create a directory in the run directory, for sing-box's `TEMP` and
@@ -94,7 +108,7 @@ impl Drop for RunDir {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runcfg::{build, check};
+    use crate::runcfg::{build, check, SystemProxy};
     use crate::testing::TempDir;
     use boxpilot_policy::Placement;
     use boxpilot_protocol::{StartRequest, TunOptions};
@@ -102,6 +116,10 @@ mod tests {
     use std::io;
 
     fn prepared(run_dir: &Path) -> crate::runcfg::Prepared {
+        prepared_with(run_dir, false)
+    }
+
+    fn prepared_with(run_dir: &Path, system_proxy: bool) -> crate::runcfg::Prepared {
         let start = StartRequest {
             config: json!({
                 "route": {"rule_set": [{
@@ -118,7 +136,7 @@ mod tests {
                 ipv6: false,
                 proxy_port: 7890,
                 allow_lan: false,
-                system_proxy: false,
+                system_proxy,
             },
         };
         let placement = Placement {
@@ -130,6 +148,7 @@ mod tests {
         build(
             check(start).unwrap(),
             &placement,
+            SystemProxy::AsRequested,
             || Ok((41234, ())),
             &[7; 32],
         )
@@ -150,7 +169,7 @@ mod tests {
         let temp = TempDir::new("rundir");
         let path = temp.0.join("run");
         fs::create_dir(&path).unwrap();
-        let run = RunDir::adopt(path.clone());
+        let mut run = RunDir::adopt(path.clone());
         let prepared = prepared(&path);
         run.write(&prepared).unwrap();
         assert_eq!(names(&temp.0), ["run"]);
@@ -166,9 +185,23 @@ mod tests {
             config["route"]["rule_set"][0]["path"],
             json!(path.join("attachment-67656f").to_str().unwrap())
         );
+        assert_eq!(run.system_proxy_port(), None);
         drop(run);
         assert!(!path.exists(), "the run directory goes with the run");
         assert_eq!(names(&temp.0), Vec::<String>::new());
+    }
+
+    /// What the config sets outside the run directory travels with it, for
+    /// the platform to undo if sing-box can't.
+    #[test]
+    fn the_system_proxy_port_is_remembered() {
+        let temp = TempDir::new("rundir-proxy");
+        let path = temp.0.join("run");
+        fs::create_dir(&path).unwrap();
+        let mut run = RunDir::adopt(path.clone());
+        assert_eq!(run.system_proxy_port(), None);
+        run.write(&prepared_with(&path, true)).unwrap();
+        assert_eq!(run.system_proxy_port(), Some(7890));
     }
 
     #[test]
@@ -177,7 +210,7 @@ mod tests {
         let path = temp.0.join("run");
         fs::create_dir(&path).unwrap();
         fs::write(path.join("config.json"), "planted").unwrap();
-        let run = RunDir::adopt(path.clone());
+        let mut run = RunDir::adopt(path.clone());
         let error = run.write(&prepared(&path)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
@@ -194,7 +227,7 @@ mod tests {
         fs::create_dir(&path).unwrap();
         let target = temp.0.join("target");
         std::os::unix::fs::symlink(&target, path.join("config.json")).unwrap();
-        let run = RunDir::adopt(path.clone());
+        let mut run = RunDir::adopt(path.clone());
         assert_eq!(
             run.write(&prepared(&path)).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
