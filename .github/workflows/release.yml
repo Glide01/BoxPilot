@@ -157,6 +157,39 @@ jobs:
           Copy-Item $exe.FullName -Destination "release/sing-box.exe"
           Write-Host "Bundled sing-box from $($exe.FullName)"
 
+      # The privileged helper's directory (ADR 0006 rules 3 and 7), which
+      # wix/main.wxs installs into the fixed [ProgramFiles64Folder]BoxPilot\Helper:
+      # the helper (the Build step builds every default member, the helper
+      # crate included), its own copy of sing-box, the libcronet.dll the
+      # archive ships beside sing-box.exe if any, and manifest.json with
+      # their SHA-256. Staged under the target dir so the MSI's sources sit
+      # next to the others; the script empties the directory first, so a
+      # copy restored from the cache never leaks in.
+      - name: Stage the privileged helper
+        run: |
+          $ver = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
+          $exe = @(Get-ChildItem -Path "singbox-extract" -Recurse -Filter "sing-box.exe")
+          if ($exe.Count -ne 1) {
+            Write-Error "Expected one sing-box.exe in the archive, found $($exe.Count)."
+            exit 1
+          }
+          ./packaging/windows/stage-helper.ps1 `
+            -Helper target/x86_64-pc-windows-msvc/release/boxpilot-helper.exe `
+            -SingBox $exe[0].FullName `
+            -SingBoxVersion $ver `
+            -OutDir target/x86_64-pc-windows-msvc/release/helper
+
+      # The helper refuses to run on a manifest it can't parse or files
+      # that don't match it, so check them here with its own parser, and
+      # that wix/main.wxs installs exactly the staged files. No -p: the same
+      # package set as the Test step, so the same features, and the test
+      # binary it built runs without recompiling anything.
+      - name: Check the staged helper
+        run: |
+          $env:BOXPILOT_HELPER_STAGE = (Resolve-Path "target/x86_64-pc-windows-msvc/release/helper").Path
+          $env:BOXPILOT_HELPER_SINGBOX_VERSION = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
+          cargo test --target x86_64-pc-windows-msvc --test install_manifest -- --ignored
+
       - name: Install WiX Toolset
         run: choco install wixtoolset -y
 
@@ -171,13 +204,18 @@ jobs:
           Copy-Item "release/sing-box.exe" -Destination "target/x86_64-pc-windows-msvc/release/sing-box.exe"
 
       # The repository is a Cargo workspace (the GUI plus crates/), and
-      # cargo-wix refuses to guess which member to package.
+      # cargo-wix refuses to guess which member to package. HelperLibcronet
+      # tells wix/main.wxs whether the helper directory holds libcronet.dll,
+      # read from the staged directory the manifest was written from.
       - name: Build MSI installer
-        run: cargo wix --package box_pilot_gui --no-build --nocapture --target x86_64-pc-windows-msvc -o release/
+        run: |
+          $cronet = if (Test-Path -LiteralPath "target/x86_64-pc-windows-msvc/release/helper/libcronet.dll") { "yes" } else { "no" }
+          cargo wix --package box_pilot_gui --no-build --nocapture --target x86_64-pc-windows-msvc -C "-dHelperLibcronet=$cronet" -o release/
 
       # Hand the MSI to the publish job. Artifacts count against the Actions
       # storage quota (release assets don't), so keep them only as long as
-      # the hand-off needs. Both exes are bundled inside the MSI, so the MSI
+      # the hand-off needs. Everything Windows gets (BoxPilot, its sing-box
+      # and the privileged helper's directory) is inside the MSI, so the MSI
       # is the only Windows asset.
       - name: Upload MSI
         uses: actions/upload-artifact@v4
