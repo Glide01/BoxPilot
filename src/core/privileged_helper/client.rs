@@ -199,8 +199,10 @@ impl HelperConnection {
     }
 
     /// Stop sing-box and close: send `stop`, wait up to `timeout` for
-    /// `stopped` (sing-box's `exited` comes first, through the events),
-    /// then close the connection, which would stop it anyway. Blocking.
+    /// `stopped` (the helper sends it once sing-box has exited and its run
+    /// is cleaned up; sing-box's `exited` follows, through the events, and
+    /// may be cut off by the close), then close the connection, which would
+    /// stop it anyway. Blocking.
     pub fn stop(self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         if let Ok(bytes) = encode_request(&Request::Stop, &self.limits) {

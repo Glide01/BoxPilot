@@ -167,12 +167,12 @@ fn request() -> StartRequest {
 }
 
 /// The helper as it behaves: hello, start, then sing-box's lines; on stop,
-/// sing-box's exit and then `stopped`.
+/// `stopped` once sing-box is gone, and then its `exited`.
 fn well_behaved(request: &Request) -> Vec<Vec<u8>> {
     match request {
         Request::Hello { .. } => vec![hello(true, "1.14.2")],
         Request::Start(_) => vec![started(), log("INFO started"), log("INFO tun up")],
-        Request::Stop => vec![exited(0), frame(Reply::Stopped)],
+        Request::Stop => vec![frame(Reply::Stopped), exited(0)],
         Request::Status => vec![],
     }
 }
@@ -228,17 +228,17 @@ fn a_start_runs_until_it_is_stopped() {
 
     connection.stop(Duration::from_secs(5));
     assert_eq!(fake.next_request(), Request::Stop);
-    assert_eq!(
-        next_event(&mut events),
-        Some(HelperEvent::Exited(ExitInfo {
+    // `exited` follows `stopped`, so the close may beat it.
+    let mut next = next_event(&mut events);
+    if next
+        == Some(HelperEvent::Exited(ExitInfo {
             code: Some(0),
-            signal: None
+            signal: None,
         }))
-    );
-    assert!(matches!(
-        next_event(&mut events),
-        Some(HelperEvent::Closed(_))
-    ));
+    {
+        next = next_event(&mut events);
+    }
+    assert!(matches!(next, Some(HelperEvent::Closed(_))), "{next:?}");
     assert_eq!(
         next_event(&mut events),
         None,
