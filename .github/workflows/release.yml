@@ -254,8 +254,8 @@ jobs:
       # function per check. They come after "Upload MSI", so the MSI is
       # uploaded whatever they find. This is Windows Server: the client SKUs
       # and the rest of docs/helper-windows-checklist.md stay manual.
-      - name: Build the helper smoke client
-        run: cargo build --release --target x86_64-pc-windows-msvc -p boxpilot-helper --example service_smoke
+      - name: Build the helper smoke client and token probe
+        run: cargo build --release --target x86_64-pc-windows-msvc -p boxpilot-helper --example service_smoke --example token_probe
 
       - name: "Helper smoke: install the MSI"
         id: helper-install
@@ -265,6 +265,19 @@ jobs:
       - name: "Helper smoke: the installed service, files and folders"
         timeout-minutes: 5
         run: ./packaging/windows/helper-smoke.ps1 -Step inspect -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      # Which token sing-box needs for TUN, measured (ADR 0006, "Defense in
+      # depth"): crates/boxpilot-helper/examples/token_probe.rs, never
+      # shipped, runs as SYSTEM (a one-shot scheduled task) and starts the
+      # installed sing-box under one token after another, down the helper's
+      # own spawn path; then the helper's own token is tried under candidate
+      # required-privilege lists. It comes before the protocol step, so the
+      # first TUN adapter on this runner, which installs wintun's driver, is
+      # the probe's, with its smallest token. A trial that fails is data:
+      # only a broken probe fails this step.
+      - name: "Helper smoke: what sing-box's token needs (token probe)"
+        timeout-minutes: 30
+        run: ./packaging/windows/helper-smoke.ps1 -Step token-probe -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe -Probe target/x86_64-pc-windows-msvc/release/examples/token_probe.exe
 
       - name: "Helper smoke: the protocol and TUN as an administrator"
         timeout-minutes: 15
