@@ -29,14 +29,17 @@
 //!    first, keeping each drop that still works.
 //! 3. **Narrowings** on that set: the integrity level lowered from System
 //!    to High, `BUILTIN\Administrators` made deny-only, and both.
-//! 4. **Install again** with the strictest token that worked in 2 and 3:
-//!    the driver package is removed from the driver store first, so this
-//!    is a first install again. If it can't install, phase 1's privileges
-//!    are added, with and without the narrowings, then dropped one at a
-//!    time, each trial a first install again; the driver is always put
-//!    back.
-//! 5. **The shipped plan**, `tokenplan::SING_BOX_TOKEN`, as the helper
-//!    starts sing-box today.
+//! 4. **The shipped plan**, `tokenplan::SING_BOX_TOKEN`, as the helper
+//!    starts sing-box: on a first install again (the driver package
+//!    removed from the driver store first), then in steady state. This is
+//!    the regression check CI holds every sing-box upgrade to: the step
+//!    fails if the shipped plan stops working, or if TUN needed a privilege
+//!    `NEVER_FOR_SING_BOX` names.
+//! 5. **Install again** with the strictest token that worked in 2 and 3,
+//!    when it is narrower than the shipped plan (data for tightening it).
+//!    If it can't install, phase 1's privileges are added, with and
+//!    without the narrowings, then dropped one at a time, each trial a
+//!    first install again; the driver is always put back.
 //!
 //! Each trial: stale adapters removed and the DNS cache flushed; a fresh
 //! run directory with the helper's config; sing-box started; its token read
@@ -51,7 +54,8 @@
 //! It writes into `--work`: `probe.log` (everything), `summary.txt` (the
 //! table and what it found), `result.txt` (`key=value` lines for the
 //! script) and, last, `done` (`ok`, or `malfunction: <why>`). A trial that
-//! fails is data, not a failure: the exit code is 0 once every trial the
+//! fails is data, not a failure (the script judges the regression check
+//! from `result.txt`): the exit code is 0 once every trial the
 //! time budget allowed has run, 1 when the probe itself broke (not SYSTEM,
 //! sing-box missing, a run directory it couldn't write, TUN down even with
 //! every privilege), 2 for a bad command line. It is a test tool: the MSI
@@ -103,11 +107,15 @@ mod probe {
     };
 
     const USAGE: &str = "\
-usage: token_probe --work <dir> [--budget-secs <seconds>]
+usage: token_probe --work <dir> [--budget-secs <seconds>] [--keep-driver]
 
 Run as SYSTEM, on a machine you can throw away: it installs and removes
 wintun's driver and brings TUN up and down many times. --budget-secs
-(default 480) bounds the trials; the driver is put back whatever it says.";
+(default 480) bounds the trials; the driver is put back whatever it says.
+--keep-driver never removes wintun's driver package from the driver store
+(so no first install is tried after the first trial): use it where another
+program uses wintun (WireGuard, another sing-box client), whose package
+removing would cut its tunnels.";
 
     /// The probe ran; what the trials found is in its files.
     const DONE: i32 = 0;
@@ -140,7 +148,7 @@ wintun's driver and brings TUN up and down many times. --budget-secs
 
     pub fn main() -> i32 {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let (work, budget) = match parse(&args) {
+        let (work, budget, keep_driver) = match parse(&args) {
             Ok(parsed) => parsed,
             Err(message) => {
                 eprintln!("token_probe: {message}\n{USAGE}");
@@ -174,7 +182,7 @@ wintun's driver and brings TUN up and down many times. --budget-secs
             );
             std::process::exit(MALFUNCTION);
         });
-        let (code, status) = match run(&work, budget) {
+        let (code, status) = match run(&work, budget, keep_driver) {
             Ok(()) => (DONE, "ok\n".to_owned()),
             Err(message) => {
                 say(format!("MALFUNCTION: {message}"));
@@ -188,9 +196,10 @@ wintun's driver and brings TUN up and down many times. --budget-secs
         code
     }
 
-    fn parse(args: &[String]) -> Result<(PathBuf, Duration), String> {
+    fn parse(args: &[String]) -> Result<(PathBuf, Duration, bool), String> {
         let mut work = None;
         let mut budget = DEFAULT_BUDGET;
+        let mut keep_driver = false;
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             let mut value = || {
@@ -206,10 +215,11 @@ wintun's driver and brings TUN up and down many times. --budget-secs
                         .map_err(|_| "--budget-secs takes a number of seconds".to_owned())?;
                     budget = Duration::from_secs(secs);
                 }
+                "--keep-driver" => keep_driver = true,
                 other => return Err(format!("unexpected argument {other:?}")),
             }
         }
-        Ok((work.ok_or("--work is required")?, budget))
+        Ok((work.ok_or("--work is required")?, budget, keep_driver))
     }
 
     // ---- The log ----
@@ -814,6 +824,8 @@ wintun's driver and brings TUN up and down many times. --budget-secs
         system_root: String,
         /// What the probe's own token (SYSTEM's) holds.
         held: Vec<String>,
+        /// `--keep-driver`: never remove wintun's driver package.
+        keep_driver: bool,
         deadline: Instant,
         trials: Vec<Trial>,
     }
@@ -1081,7 +1093,7 @@ wintun's driver and brings TUN up and down many times. --budget-secs
 
     // ---- The run ----
 
-    fn run(work: &Path, budget: Duration) -> Result<(), String> {
+    fn run(work: &Path, budget: Duration, keep_driver: bool) -> Result<(), String> {
         let began = Instant::now();
         say!("token_probe: which token sing-box needs for TUN, measured (ADR 0006)");
         let (user, own) =
@@ -1137,6 +1149,7 @@ wintun's driver and brings TUN up and down many times. --budget-secs
             sing_box,
             system_root,
             held: held.clone(),
+            keep_driver,
             deadline: began + budget,
             trials: Vec::new(),
         };
@@ -1170,12 +1183,27 @@ wintun's driver and brings TUN up and down many times. --budget-secs
         both: Option<bool>,
         /// The strictest token that worked in steady state.
         strictest: Option<Candidate>,
-        /// Phase 4: the strictest token, and whether it installed the
+        /// Phase 4: the shipped plan installed the driver on a first install
+        /// (the adapter came up), and fully worked in steady state.
+        shipped_install: Option<bool>,
+        shipped_steady: Option<bool>,
+        /// Phase 5: the strictest token, and whether it installed the
         /// driver.
         reinstall: Option<(Candidate, bool)>,
-        /// Phase 4: the smallest token found that installs the driver.
+        /// Phase 5: the smallest token found that installs the driver.
         install_needs: Option<Candidate>,
-        shipped: Option<bool>,
+    }
+
+    impl Findings {
+        /// The regression check: the shipped plan installs the driver and
+        /// carries traffic. `None` when it wasn't (fully) tried.
+        fn shipped(&self) -> Option<bool> {
+            match (self.shipped_install, self.shipped_steady) {
+                (Some(install), Some(steady)) => Some(install && steady),
+                (Some(false), None) | (None, Some(false)) => Some(false),
+                _ => None,
+            }
+        }
     }
 
     fn phases(probe: &mut Probe, rungs: &[Candidate]) -> Result<Findings, String> {
@@ -1269,41 +1297,43 @@ wintun's driver and brings TUN up and down many times. --budget-secs
         };
         findings.strictest = Some(strictest.clone());
 
+        let full = rungs.last().unwrap_or(&install).clone();
+        let shipped = shipped_candidate(&probe.held);
+
         say!("");
         say!(
-            "######## 4. install again, with {}",
-            strictest.describe(&probe.held)
+            "######## 4. the shipped plan, tokenplan::SING_BOX_TOKEN ({}): a first install, then \
+             steady state",
+            shipped.describe(&probe.held)
         );
-        if probe.time_for(REINSTALL_RESERVE) {
-            let full = rungs.last().unwrap_or(&install).clone();
-            reinstall(probe, &mut findings, &strictest, &install, &full)?;
+        if probe.time_for(REINSTALL_RESERVE) && fresh_install(probe) {
+            let installed = probe.trial_installs("shipped", &shipped)?;
+            findings.shipped_install = Some(installed);
+            if !installed {
+                restore_driver(probe, &install, &full)?;
+            }
+        } else {
+            say!("its first install is untested: no time left, or the driver package stayed");
+        }
+        if probe.time_for(TRIAL_RESERVE) {
+            findings.shipped_steady = Some(probe.trial_twice("shipped", &shipped)?);
         } else {
             say!("skipped: not enough time left in the budget");
         }
 
         say!("");
-        say!("######## 5. the shipped plan, tokenplan::SING_BOX_TOKEN");
-        // Its integrity cap can only be High and its deny-only group only
-        // Administrators: the two narrowings the probe knows.
-        let shipped = Candidate {
-            keep: probe
-                .held
-                .iter()
-                .filter(|name| {
-                    SING_BOX_TOKEN
-                        .privileges
-                        .iter()
-                        .any(|kept| same_privilege(kept, name))
-                })
-                .cloned()
-                .collect(),
-            high: SING_BOX_TOKEN.max_integrity.is_some(),
-            deny_admins: !SING_BOX_TOKEN.deny_only.is_empty(),
-        };
-        if probe.time_for(TRIAL_RESERVE) {
-            findings.shipped = Some(probe.trial_twice("shipped", &shipped)?);
+        if strictest == shipped {
+            say!("######## 5. the strictest token that worked is the shipped plan: nothing more to install");
         } else {
-            say!("skipped: not enough time left in the budget");
+            say!(
+                "######## 5. install again, with {}",
+                strictest.describe(&probe.held)
+            );
+            if probe.time_for(REINSTALL_RESERVE) {
+                reinstall(probe, &mut findings, &strictest, &install, &full)?;
+            } else {
+                say!("skipped: not enough time left in the budget");
+            }
         }
         Ok(findings)
     }
@@ -1311,6 +1341,10 @@ wintun's driver and brings TUN up and down many times. --budget-secs
     /// Remove wintun's driver package once its driver has unloaded, so
     /// the next trial is a first install; whether it was removed.
     fn fresh_install(probe: &Probe) -> bool {
+        if probe.keep_driver {
+            say!("wintun's driver package stays (--keep-driver): no first install");
+            return false;
+        }
         let unloaded = within(Duration::from_secs(15), || driver_service() != "running");
         match remove_wintun_packages(&probe.system_root) {
             Ok(removed) => {
@@ -1337,16 +1371,14 @@ wintun's driver and brings TUN up and down many times. --budget-secs
         }
     }
 
-    /// Phase 4: a first install again with `strictest`, the strictest
-    /// token that worked in steady state (judged as phase 1 judges: the
-    /// driver installed and the adapter came up). If it can't install the
-    /// driver:
-    /// with the privileges of `install` (phase 1's) added, with and then
-    /// without the narrowings, and then which of those added privileges a
-    /// first install needs, each trial a first install again. Whatever
-    /// happens, the driver is installed again at the end (`install`, then
-    /// `full`), so the steps after the probe find the machine as phase 1
-    /// left it.
+    /// Phase 5, when a token narrower than the shipped one worked in steady
+    /// state: a first install again with `strictest`, the strictest such
+    /// token (judged as phase 1 judges: the driver installed and the
+    /// adapter came up). If it can't install the driver: with the
+    /// privileges of `install` (phase 1's) added, with and then without the
+    /// narrowings, and then which of those added privileges a first install
+    /// needs, each trial a first install again. Whatever happens, the
+    /// driver is installed again at the end.
     fn reinstall(
         probe: &mut Probe,
         findings: &mut Findings,
@@ -1415,18 +1447,51 @@ wintun's driver and brings TUN up and down many times. --budget-secs
             }
             findings.install_needs = Some(needs);
         }
-        // The driver back, whatever happened above; this runs whatever the
-        // budget says.
-        for candidate in [install, full] {
-            if installed {
-                break;
-            }
-            installed = probe.trial_installs("restore", candidate)?;
-        }
         if !installed {
-            say!("WARNING: wintun's driver could not be installed again; the next TUN start installs it");
+            restore_driver(probe, install, full)?;
         }
         Ok(())
+    }
+
+    /// Install wintun's driver again after a first install that failed:
+    /// with `install` (phase 1's token), then `full`. It runs whatever the
+    /// budget says, so the steps after the probe find the machine as phase 1
+    /// left it.
+    fn restore_driver(
+        probe: &mut Probe,
+        install: &Candidate,
+        full: &Candidate,
+    ) -> Result<(), String> {
+        for candidate in [install, full] {
+            if probe.trial_installs("restore", candidate)? {
+                return Ok(());
+            }
+        }
+        say!(
+            "WARNING: wintun's driver could not be installed again; the next TUN start installs it"
+        );
+        Ok(())
+    }
+
+    /// `tokenplan::SING_BOX_TOKEN` as a candidate: its privileges as this
+    /// token spells them. Its integrity cap can only be High and its
+    /// deny-only group only Administrators: the two narrowings the probe
+    /// knows.
+    fn shipped_candidate(held: &[String]) -> Candidate {
+        Candidate {
+            keep: held
+                .iter()
+                .filter(|name| {
+                    SING_BOX_TOKEN
+                        .privileges
+                        .iter()
+                        .any(|kept| same_privilege(kept, name))
+                })
+                .cloned()
+                .collect(),
+            high: SING_BOX_TOKEN.max_integrity == Some(integrity::HIGH),
+            deny_admins: !SING_BOX_TOKEN.deny_only.is_empty(),
+        }
     }
 
     // ---- The report ----
@@ -1545,7 +1610,12 @@ wintun's driver and brings TUN up and down many times. --budget-secs
                 found(findings.reinstall.as_ref().map(|(_, works)| *works)).to_owned(),
             ),
             ("install_needs", names(&findings.install_needs)),
-            ("shipped_plan", found(findings.shipped).to_owned()),
+            (
+                "shipped_install",
+                found(findings.shipped_install).to_owned(),
+            ),
+            ("shipped_steady", found(findings.shipped_steady).to_owned()),
+            ("shipped_plan", found(findings.shipped()).to_owned()),
             (
                 "dangerous_needed",
                 if dangerous.is_empty() {
@@ -1559,6 +1629,26 @@ wintun's driver and brings TUN up and down many times. --budget-secs
         for (key, value) in &results {
             line(format!("{key}: {value}"));
         }
+        line(match (findings.shipped(), dangerous.is_empty()) {
+            (Some(true), true) => "regression check: held. The shipped plan installs wintun's \
+                                   driver and carries traffic, and no privilege TUN needed is \
+                                   one NEVER_FOR_SING_BOX names."
+                .to_owned(),
+            (shipped, _) => format!(
+                "REGRESSION: the shipped plan {}; privileges NEVER_FOR_SING_BOX names that TUN \
+                 needed: {}.",
+                match shipped {
+                    Some(true) => "works",
+                    Some(false) => "FAILS",
+                    None => "was not fully tried",
+                },
+                if dangerous.is_empty() {
+                    "none".to_owned()
+                } else {
+                    dangerous.join(" ")
+                }
+            ),
+        });
         if !dangerous.is_empty() {
             line(format!(
                 "WARNING: TUN worked only with privileges NEVER_FOR_SING_BOX names: {}. Not \
