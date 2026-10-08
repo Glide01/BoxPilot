@@ -3,9 +3,10 @@
 **Status: proposed.** Windows (phase 1) is built: the policy, the
 protocol, the helper service, the MSI and the GUI client. It has been
 reviewed adversarially, and CI builds and unit-tests it on Windows, then
-installs the MSI on a Windows Server runner and drives the real service
-there (see "Verification before shipping"). It has **not run on Windows
-10 or 11, or under the GUI, yet**; `docs/helper-windows-checklist.md`
+installs the MSI on a Windows Server runner, drives the real service
+there, and measures the tokens sing-box and the helper run with (see
+"Verification before shipping"). It has **not run on Windows 10 or 11, or
+under the GUI, yet**; `docs/helper-windows-checklist.md`
 lists what must be verified there first. macOS (phase 2) is not started. Its
 trade-offs are settled by separation of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
@@ -356,6 +357,8 @@ the user's own privilege never meets it.
   - Add a fixture for each new field.
   - The shape rule makes a missed field fail closed. The audit keeps the
     refusal message helpful.
+  - CI's token probe measures sing-box's token again on the new version,
+    and fails the release if the shipped plan no longer runs TUN.
 - **The `api` service's RPCs are pinned too.** Every authorized caller
   gets the secret of the SYSTEM sing-box's API, so its RPCs run as
   SYSTEM. All 42 of 1.14.2's were audited: none runs or controls a
@@ -377,8 +380,9 @@ the user's own privilege never meets it.
   SYSTEM's sockets on behalf of everyone's traffic; that is what bringing
   TUN up means here, and sing-box's own Windows client does the same.
   Trusting a connection because it comes from SYSTEM is the task of the
-  loopback service that does so. The restricted token below is what
-  would narrow it further.
+  loopback service that does so. The restricted token below doesn't
+  change that: sing-box's account is still SYSTEM, and only what else it
+  may do is narrowed.
 
 **Defense in depth, under the policy.** Neither layer replaces the
 policy.
@@ -387,11 +391,61 @@ policy.
   an active-process limit of 1, so it can't start child processes, and
   with three process mitigations: no images from remote shares, no
   low-integrity images, extension points disabled.
-  - **Not yet:** sing-box still holds the helper's full SYSTEM token.
-    WireGuard's tunnel service keeps only `SeLoadDriverPrivilege`; the
-    same for sing-box (a restricted token) waits until what wintun needs
-    has been measured on Windows. A SYSTEM process with code execution
-    is not contained by a job.
+  - **sing-box's token** (`tokenplan::SING_BOX_TOKEN`) is a restricted
+    copy of the helper's own (`CreateRestrictedToken`), checked before
+    anything runs under it:
+    - **One privilege:** `SeChangeNotifyPrivilege`, which every account
+      holds. Every other privilege is deleted, not merely disabled, so
+      sing-box can't enable it again. Not even `SeLoadDriverPrivilege`,
+      which WireGuard's tunnel service keeps: wintun's driver installs and
+      loads without it.
+    - **High integrity,** not System, so sing-box can't write to anything
+      labelled System.
+    - **Administrators stays enabled.** Made deny-only, sing-box's TUN
+      start fails where `strict_route` adds its WFP sublayer
+      (`FwpmSubLayerAdd0: invalid argument`).
+    - **What that takes away** is what privileges grant beyond ACLs:
+      debugging any process, acting as the OS, impersonating or creating
+      tokens, reading or writing any file past its ACL, taking ownership,
+      loading drivers. And at High integrity, writing to what is labelled
+      System, the helper's and other services' processes among it. What
+      ACLs grant SYSTEM or Administrators (most files, users' processes),
+      sing-box can still do: it is still SYSTEM, so a sing-box with code
+      execution is still not contained. The policy stays the boundary.
+  - **The helper's own token** (`tokenplan::HELPER_TOKEN`): when the
+    service starts, before it serves anyone, it removes every privilege
+    but `SeChangeNotifyPrivilege` and `SeLoadDriverPrivilege` from its own
+    token (`AdjustTokenPrivileges` with `SE_PRIVILEGE_REMOVED`, as
+    WireGuard's `DropAllPrivileges` does), reads the token back, and
+    refuses to run if anything more is left (exit code
+    `PRIVILEGES_REFUSED`). That holds whatever the service's configuration
+    says, so it doesn't depend on the installer. The MSI declares no
+    required-privilege list: WiX 3's `ServiceConfig` writes the
+    `MsiServiceConfig` table, whose functionality, WiX's own schema notes,
+    the Windows Installer SDK documents as not working as expected, and a
+    failed install would cost more than a list the code enforces anyway.
+    `SeLoadDriverPrivilege` may be needed to remove a crashed sing-box's
+    stale adapter; CI measures whether it is.
+  - **The allowlists are compile-time constants** in `tokenplan`. Nothing
+    at run time (a setting, an environment variable, a file, the service's
+    configuration, a protocol field) can widen them. Neither may name a
+    privilege `NEVER_FOR_SING_BOX` lists (debugging, acting as the OS,
+    impersonation, token creation, backup and restore, ownership, the
+    security log, raw volumes, firmware); a unit test holds that, and
+    needing one would be a decision for this ADR.
+  - **Measured, not guessed,** on every CI run: the token probe (see
+    "Verification before shipping") first measured it on Windows Server
+    2025 (10.0.26100) with sing-box 1.14.0, where SYSTEM holds 28
+    privileges. With `SeChangeNotifyPrivilege` alone, the first TUN start
+    on a machine installed wintun's driver, later ones loaded it, and TUN
+    (`auto_route`, `strict_route`, DNS hijacking, `stack: mixed`) carried
+    traffic; at High integrity too, on a first install and after. With the
+    SCM giving the helper only its two privileges (`sc.exe privs`), it
+    served the pipe, read callers' tokens (identification-level, so no
+    `SeImpersonatePrivilege`), started sing-box with `CreateProcessAsUserW`
+    (no `SeAssignPrimaryTokenPrivilege` or `SeIncreaseQuotaPrivilege`) and
+    removed its stale adapter. Windows 10 and 11 are yet to be confirmed
+    (`docs/helper-windows-checklist.md`).
 - **macOS:** sing-box runs under a sandbox profile that denies file writes
   outside the helper's tree, and execution of anything but
   `/usr/sbin/networksetup`. The profile is measured before it is
@@ -590,7 +644,7 @@ user's sudo password for TUN until 2025.)
 
 | | Windows (phase 1) | macOS (phase 2) | Linux |
 |---|---|---|---|
-| sing-box runs as | SYSTEM, via the helper | root, via the helper | the user + `CAP_NET_ADMIN` (ADR 0003) |
+| sing-box runs as | SYSTEM, via the helper, with a restricted token (rule 2, "Defense in depth") | root, via the helper | the user + `CAP_NET_ADMIN` (ADR 0003) |
 | The GUI runs as | the user (`ensure_elevated` goes) | the user | the user |
 | Transport | named pipe under ProtectedPrefix | launchd-created Unix socket | — |
 | Caller identity | the impersonated token | `LOCAL_PEERCRED` uid | — |
@@ -665,7 +719,8 @@ Only published advisories, fixes and audits are cited here.
   → Authorization from OS groups (4). On the privileged path there is no
   GUI switch for a refused feature; if one is ever needed, it is an
   admin-only setting, as with WireGuard. Measuring what wintun needs and
-  dropping the rest is Windows-phase hardening.
+  dropping the rest: done, and narrower than WireGuard's (rule 2,
+  "Defense in depth": sing-box keeps `SeChangeNotifyPrivilege` only).
 - **Tailscale, CVE-2022-41924 and CVE-2022-41925.** Websites could reach
   its loopback HTTP API through DNS rebinding, and on Windows reconfigure
   the daemon. Its LocalAPI is now a ProtectedPrefix named pipe on
@@ -810,9 +865,22 @@ any of them.
   `packaging/windows/helper-smoke.ps1`, as an administrator and as a
   fresh standard account: descriptors, authority, connection limits and
   deadlines, real TUN starts and the loopback rule, broken installs'
-  exit codes, the uninstall. `docs/helper-windows-checklist.md` marks
-  what it covers; it doesn't replace that checklist's run on Windows 10
-  and 11 below.
+  exit codes, the uninstall, and both tokens, read from outside while TUN
+  runs. `docs/helper-windows-checklist.md` marks what it covers; it
+  doesn't replace that checklist's run on Windows 10 and 11 below.
+- **The token probe, on every CI run.** Before the smoke test's first TUN
+  start, `crates/boxpilot-helper/examples/token_probe.rs` (never shipped)
+  runs as SYSTEM and starts the installed sing-box down the helper's own
+  spawn path, on the config the helper writes, under one token after
+  another: the machine's first adapter (wintun's driver install) with the
+  smallest token, the smallest set for steady state, the narrowings, and
+  the shipped plan on a first install and after. Then the helper's own
+  token is checked under what the SCM gives it, including
+  `SeChangeNotifyPrivilege` alone (data for shrinking `HELPER_PRIVILEGES`).
+  It is the regression check every `SINGBOX_VERSION` bump passes: the step
+  fails if the shipped plans stop working or TUN needs a privilege
+  `NEVER_FOR_SING_BOX` lists; narrower tokens failing are data. It takes
+  under a minute.
 - **A release checklist on real machines.** Each of these must hold:
   - an account the administrator hasn't authorized gets no `Start`;
   - a remote client is refused, and so is an oversized frame;

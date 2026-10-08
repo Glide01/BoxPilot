@@ -89,9 +89,22 @@ a release still needs the manual run; what is unmarked is manual only.
 
 ## sing-box under the helper
 
-- `CreateProcessW` succeeds while `sing-box.exe` and `libcronet.dll` are
-  held open sharing reads only (**CI**: every TUN start); an overwrite
-  attempt during the spawn fails.
+- `CreateProcessAsUserW` succeeds while `sing-box.exe` and
+  `libcronet.dll` are held open sharing reads only (**CI**: every TUN
+  start); an overwrite attempt during the spawn fails.
+- sing-box's token (Process Explorer's Security tab, or
+  `service_smoke token --pid <sing-box> --expect sing-box` from an
+  elevated prompt): SYSTEM, `SeChangeNotifyPrivilege` and no other
+  privilege, integrity High, Administrators enabled
+  (`tokenplan::SING_BOX_TOKEN`). **CI**
+- The helper's own token (`--expect helper`): SYSTEM, only
+  `SeChangeNotifyPrivilege` and `SeLoadDriverPrivilege`, integrity System
+  (`tokenplan::HELPER_TOKEN`), also after an administrator ran
+  `sc.exe privs BoxPilotHelper` with every privilege. **CI**
+- With only those tokens, the machine's first TUN start installs wintun's
+  driver, and later ones work (**CI**, on Windows Server 2025, by the
+  token probe and every TUN run). Confirm it on Windows 10 and 11 with the
+  token probe, below.
 - Process Explorer: sing-box inherits only its two output pipes, has the
   minimal environment, and the three mitigations (no remote images, no
   low-label images, extension points disabled). Windows 10 releases older
@@ -116,6 +129,49 @@ a release still needs the manual run; what is unmarked is manual only.
   `localhost` are rejected; normal browsing is not affected (**CI**: the
   proxy and TUN reach the internet by address and by name).
 - Taildrop names `..\x`, `C:x`, `a:b` and `NUL` are refused by sing-box.
+
+### The token probe, by hand
+
+The probe CI runs (`crates/boxpilot-helper/examples/token_probe.rs`)
+measures which token sing-box needs on the machine it runs on, and checks
+the shipped plans. On a clean Windows 10 or 11 machine with BoxPilot's MSI
+installed, from an elevated PowerShell in the repository (Rust with the
+MSVC toolchain):
+
+    cargo build --release -p boxpilot-helper --example token_probe --example service_smoke
+    packaging/windows/helper-smoke.ps1 -Step token-probe `
+        -Smoke target/release/examples/service_smoke.exe `
+        -Probe target/release/examples/token_probe.exe
+
+It runs the probe as SYSTEM through a one-shot scheduled task from a
+folder only SYSTEM and Administrators may write, prints its trials and
+summary (also in `C:\boxpilot-token-probe\summary.txt`), then checks the
+helper's own token. It holds when its summary says "regression check:
+held" and the step ends without an error. Do this before anything else on
+the machine brings TUN up, so its first trial is the machine's first
+wintun install; note the Windows build in the result. It leaves
+`BoxPilotHelper` requiring every privilege SYSTEM holds (`sc.exe qprivs`),
+which gives it what no list gives.
+
+It removes wintun's driver package from the driver store and installs it
+again. On a machine where another program uses wintun (WireGuard, another
+sing-box client), whose package that would be too, run the probe alone
+with `--keep-driver` instead, as SYSTEM, and read its summary:
+
+    New-Item -ItemType Directory C:\boxpilot-token-probe
+    icacls C:\boxpilot-token-probe /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+    Copy-Item target\release\examples\token_probe.exe C:\boxpilot-token-probe
+    schtasks /create /tn BoxPilotTokenProbe /ru SYSTEM /sc once /st 00:00 /f `
+        /tr "C:\boxpilot-token-probe\token_probe.exe --work C:\boxpilot-token-probe --keep-driver"
+    schtasks /run /tn BoxPilotTokenProbe
+    # when C:\boxpilot-token-probe\done exists:
+    Get-Content C:\boxpilot-token-probe\summary.txt
+    schtasks /delete /tn BoxPilotTokenProbe /f
+
+The folder must stay private: the task runs what is in it as SYSTEM, and
+a folder made under `C:\` otherwise lets users write in it. With
+`--keep-driver` no first install is tried after the first trial, so the
+summary says the shipped plan's first install is untested.
 
 ## Connections, deadlines, cleanup
 
