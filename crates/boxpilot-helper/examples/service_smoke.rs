@@ -16,7 +16,9 @@
 //! identification-only QoS, the service started on demand, requests built
 //! with the protocol crate's public API, and a start checked first with the
 //! policy the GUI runs. Never through the helper's own modules: they are what
-//! is under test.
+//! is under test. (The `token` command compares sing-box's token with
+//! `spawnplan::SING_BOX_TOKEN`, the constant that says what it may hold: the
+//! specification, read from outside, not the code that applies it.)
 //!
 //! One synchronous pipe handle, polled with `PeekNamedPipe`, so every wait
 //! has a deadline without the GUI's overlapped I/O. Only the network probes
@@ -24,7 +26,8 @@
 //!
 //! Each command checks one set of expectations. The exit code is 0 when they
 //! held, 1 when one didn't (and what was seen is printed), 2 for a bad
-//! command line.
+//! command line, 3 when `token` could not read the token at all (a finding
+//! about what an administrator may see, not about the helper).
 
 #[cfg(not(windows))]
 fn main() {
@@ -39,6 +42,7 @@ fn main() {
 
 #[cfg(windows)]
 mod smoke {
+    use boxpilot_helper::spawnplan::{integrity, SING_BOX_TOKEN};
     use boxpilot_protocol::endpoint::{PIPE_NAME, SERVICE_NAME};
     use boxpilot_protocol::{
         decode_to_client, encode_request, ErrorCode, Event, ExitInfo, FrameDecoder, HelloReply,
@@ -46,6 +50,7 @@ mod smoke {
         WireRefusal, PROTOCOL_VERSION,
     };
     use serde_json::json;
+    use std::collections::BTreeSet;
     use std::fmt;
     use std::fs::{self, File};
     use std::io::{self, Read, Write};
@@ -59,11 +64,19 @@ mod smoke {
     use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, Instant};
-    use windows::core::PCWSTR;
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_NO_DATA,
-        ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED, ERROR_SERVICE_ALREADY_RUNNING,
-        ERROR_SERVICE_SPECIFIC_ERROR, GENERIC_READ, GENERIC_WRITE, HANDLE, WIN32_ERROR,
+        LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED,
+        ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_SPECIFIC_ERROR, GENERIC_READ, GENERIC_WRITE,
+        HANDLE, HLOCAL, LUID, WIN32_ERROR,
+    };
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeNameW, LookupPrivilegeValueW,
+        TokenGroups, TokenIntegrityLevel, TokenPrivileges, TokenUser, LUID_AND_ATTRIBUTES, PSID,
+        SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ADJUST_PRIVILEGES, TOKEN_GROUPS,
+        TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_NONE, FILE_WRITE_DATA,
@@ -79,6 +92,9 @@ mod smoke {
         SC_HANDLE, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS, SERVICE_START, SERVICE_STATUS,
         SERVICE_STOPPED,
     };
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     const USAGE: &str = "\
 usage: service_smoke <command> [options]
@@ -93,6 +109,11 @@ as an administrator (the runner):
                    a real TUN start: up, (probed,) then down with its connection
   squat --hold --ready-file <file> --release-file <file>
                    hold the service's pipe name, so the service can't start
+  token --pid <pid> --expect sing-box|privileges|print [--privileges <A,B,..>]
+                   read a process's token from outside and print it;
+                   sing-box: exactly the privileges, integrity level and
+                   Administrators group spawnplan::SING_BOX_TOKEN plans;
+                   privileges: exactly the privileges --privileges lists
 
 as a standard account:
   hello --expect readonly
@@ -115,6 +136,8 @@ as a standard account:
     const FAILED: i32 = 1;
     /// A bad command line.
     const USAGE_ERROR: i32 = 2;
+    /// `token` could not read the token: a finding, not a failure.
+    const UNREADABLE: i32 = 3;
 
     /// How long the pipe may take to appear. The GUI allows 15 s; a runner's
     /// first start (the fresh binaries scanned as they are hashed) gets more.
@@ -197,6 +220,7 @@ as a standard account:
             "generic-write" => generic_write(&options),
             "readonly-slots" => readonly_slots(&options),
             "denied" => denied(&options),
+            "token" => token(&options),
             other => Err(Failure::Usage(format!("unknown command {other:?}"))),
         };
         match result {
@@ -207,6 +231,10 @@ as a standard account:
             Err(Failure::Usage(message)) => {
                 eprintln!("service_smoke {command}: {message}\n{USAGE}");
                 USAGE_ERROR
+            }
+            Err(Failure::Unreadable(message)) => {
+                eprintln!("service_smoke {command}: UNREADABLE: {message}");
+                UNREADABLE
             }
             Err(Failure::Check(message)) => {
                 eprintln!("service_smoke {command}: FAILED: {message}");
@@ -230,6 +258,8 @@ as a standard account:
     /// Why a command didn't hold.
     enum Failure {
         Usage(String),
+        /// The token can't be read from outside at all.
+        Unreadable(String),
         /// An expectation didn't hold, or the helper couldn't be asked.
         Check(String),
     }
@@ -252,6 +282,8 @@ as a standard account:
         release_file: Option<PathBuf>,
         dir: Option<PathBuf>,
         file: Option<PathBuf>,
+        pid: Option<u32>,
+        privileges: Option<String>,
         probes: bool,
         hold: bool,
     }
@@ -277,6 +309,14 @@ as a standard account:
                     "--file" => options.file = Some(value()?.into()),
                     "--probes" => options.probes = true,
                     "--hold" => options.hold = true,
+                    "--pid" => {
+                        options.pid = Some(
+                            value()?
+                                .parse()
+                                .map_err(|_| "--pid takes a process id".to_owned())?,
+                        )
+                    }
+                    "--privileges" => options.privileges = Some(value()?),
                     other => return Err(format!("unexpected argument {other:?}")),
                 }
             }
@@ -1945,5 +1985,378 @@ as a standard account:
             "{via} to {dest}:{port} failed ({last}): the proxy doesn't carry ordinary traffic, \
              so the refusals above prove nothing"
         ))
+    }
+
+    // ---- Tokens, read from outside ----
+
+    /// What a process's token says.
+    struct ProcessToken {
+        user: String,
+        /// Each privilege's name and attributes.
+        privileges: Vec<(String, u32)>,
+        /// The integrity level's RID.
+        integrity: u32,
+        /// Each group's SID and attributes.
+        groups: Vec<(String, u32)>,
+    }
+
+    /// `SE_GROUP_ENABLED` and `SE_GROUP_USE_FOR_DENY_ONLY`.
+    const SE_GROUP_ENABLED: u32 = 0x4;
+    const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x10;
+    const ADMINISTRATORS: &str = "S-1-5-32-544";
+    const SYSTEM: &str = "S-1-5-18";
+
+    /// `--pid`'s token, read as this account: `--expect sing-box` checks it
+    /// against `spawnplan::SING_BOX_TOKEN`, `--expect privileges` against
+    /// `--privileges`, `--expect print` only prints it.
+    fn token(options: &Options) -> Outcome {
+        let expect = options.expect(&["sing-box", "privileges", "print"])?;
+        let Some(pid) = options.pid else {
+            return Err(Failure::Usage("token needs --pid".into()));
+        };
+        let wanted: Option<Vec<String>> = match (expect, &options.privileges) {
+            ("privileges", Some(list)) => Some(
+                list.split(',')
+                    .map(|name| name.trim().to_owned())
+                    .filter(|name| !name.is_empty())
+                    .collect(),
+            ),
+            ("privileges", None) => {
+                return Err(Failure::Usage(
+                    "--expect privileges needs --privileges".into(),
+                ))
+            }
+            _ => None,
+        };
+        let token = read_process_token(pid).map_err(Failure::Unreadable)?;
+        print_process_token(pid, &token);
+        match expect {
+            "sing-box" => expect_sing_box_token(&token)?,
+            "privileges" => {
+                let wanted = wanted.unwrap_or_default();
+                expect_privileges(&token, &wanted)?;
+                println!("ok: pid {pid} holds exactly {}", wanted.join(", "));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn print_process_token(pid: u32, token: &ProcessToken) {
+        println!(
+            "pid {pid}: user {}, integrity 0x{:x}, {} privileges, {} groups",
+            token.user,
+            token.integrity,
+            token.privileges.len(),
+            token.groups.len()
+        );
+        for (name, attributes) in &token.privileges {
+            println!("  privilege {name:<44} 0x{attributes:x}");
+        }
+        for (group, attributes) in &token.groups {
+            println!("  group     {group:<60} 0x{attributes:08x}");
+        }
+    }
+
+    fn privilege_set(names: impl IntoIterator<Item = impl AsRef<str>>) -> BTreeSet<String> {
+        names
+            .into_iter()
+            .map(|name| name.as_ref().to_ascii_lowercase())
+            .collect()
+    }
+
+    /// The token holds exactly `wanted`, compared as Windows compares
+    /// privilege names.
+    fn expect_privileges(token: &ProcessToken, wanted: &[impl AsRef<str>]) -> Result<(), String> {
+        let have = privilege_set(token.privileges.iter().map(|(name, _)| name));
+        let want = privilege_set(wanted);
+        if have != want {
+            return Err(format!(
+                "the token holds privileges {:?} it shouldn't and lacks {:?}",
+                have.difference(&want).collect::<Vec<_>>(),
+                want.difference(&have).collect::<Vec<_>>()
+            ));
+        }
+        Ok(())
+    }
+
+    /// sing-box's token is the helper's as `spawnplan::SING_BOX_TOKEN`
+    /// restricts it: SYSTEM's, exactly the planned privileges (SYSTEM holds
+    /// them all, so none is missing either), the planned integrity level
+    /// (the cap, or the helper's System), and Administrators deny-only
+    /// exactly when the plan says.
+    fn expect_sing_box_token(token: &ProcessToken) -> Result<(), String> {
+        let plan = SING_BOX_TOKEN;
+        if token.user != SYSTEM {
+            return Err(format!("sing-box runs as {}, not SYSTEM", token.user));
+        }
+        expect_privileges(token, plan.privileges)
+            .map_err(|error| format!("sing-box's token: {error}"))?;
+        let level = plan.max_integrity.unwrap_or(integrity::SYSTEM);
+        if token.integrity != level {
+            return Err(format!(
+                "sing-box runs at integrity level 0x{:x}, its plan says 0x{level:x}",
+                token.integrity
+            ));
+        }
+        let deny_only = plan
+            .deny_only
+            .iter()
+            .any(|group| group.eq_ignore_ascii_case(ADMINISTRATORS));
+        let administrators = token
+            .groups
+            .iter()
+            .find(|(group, _)| group.eq_ignore_ascii_case(ADMINISTRATORS))
+            .map(|(_, attributes)| *attributes)
+            .ok_or("sing-box's token has no Administrators group")?;
+        let is_deny_only = administrators & SE_GROUP_USE_FOR_DENY_ONLY != 0
+            && administrators & SE_GROUP_ENABLED == 0;
+        if is_deny_only != deny_only {
+            return Err(format!(
+                "sing-box's Administrators group has attributes 0x{administrators:x}; its plan \
+                 says {}",
+                if deny_only { "deny-only" } else { "enabled" }
+            ));
+        }
+        println!(
+            "ok: sing-box holds exactly {}, at integrity 0x{level:x}, Administrators {}",
+            plan.privileges.join(", "),
+            if deny_only { "deny-only" } else { "enabled" }
+        );
+        Ok(())
+    }
+
+    /// Open `pid` for `PROCESS_QUERY_LIMITED_INFORMATION`.
+    fn open_process(pid: u32) -> Result<OwnedHandle, u32> {
+        // SAFETY: no handle is passed in; the one returned is owned below.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+            .map_err(|error| win32_code(&error))?;
+        // SAFETY: a valid handle, just opened, owned by nobody else.
+        Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
+    }
+
+    /// Enable this process's SeDebugPrivilege, which an elevated
+    /// administrator holds disabled: it opens any process, not any token.
+    fn enable_debug_privilege() -> Result<(), String> {
+        let mut own = HANDLE::default();
+        // SAFETY: the current process's pseudo-handle; `own` receives a new
+        // handle, owned below.
+        unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut own,
+            )
+        }
+        .map_err(|error| format!("this process's token: {error}"))?;
+        // SAFETY: just opened, owned by nobody else.
+        let own = unsafe { OwnedHandle::from_raw_handle(own.0) };
+        let mut luid = LUID::default();
+        let name = wide("SeDebugPrivilege");
+        // SAFETY: a NUL-terminated name and a valid out-pointer.
+        unsafe { LookupPrivilegeValueW(PCWSTR::null(), PCWSTR(name.as_ptr()), &mut luid) }
+            .map_err(|error| format!("SeDebugPrivilege: {error}"))?;
+        let privileges = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        // SAFETY: the token is open with TOKEN_ADJUST_PRIVILEGES; `privileges`
+        // is a whole TOKEN_PRIVILEGES with one entry; no previous state.
+        unsafe {
+            AdjustTokenPrivileges(
+                HANDLE(own.as_raw_handle()),
+                false,
+                Some(&privileges),
+                0,
+                None,
+                None,
+            )
+        }
+        .map_err(|error| format!("enabling SeDebugPrivilege: {error}"))?;
+        // AdjustTokenPrivileges succeeds without the privilege, saying so
+        // only in the last error.
+        if io::Error::last_os_error().raw_os_error() == Some(1300) {
+            return Err("this account doesn't hold SeDebugPrivilege".into());
+        }
+        Ok(())
+    }
+
+    /// One class of `token`'s information, 8-aligned, with its length.
+    fn token_information(
+        token: HANDLE,
+        class: TOKEN_INFORMATION_CLASS,
+    ) -> Result<(Vec<u64>, usize), String> {
+        let mut needed = 0u32;
+        // SAFETY: a size query with no buffer; it fails by design and sets
+        // `needed`.
+        let _ = unsafe { GetTokenInformation(token, class, None, 0, &mut needed) };
+        if needed == 0 {
+            return Err(format!(
+                "GetTokenInformation({}): {}",
+                class.0,
+                io::Error::last_os_error()
+            ));
+        }
+        let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
+        let capacity = (buf.len() * 8) as u32;
+        // SAFETY: `buf` holds `capacity` >= `needed` writable bytes.
+        unsafe {
+            GetTokenInformation(
+                token,
+                class,
+                Some(buf.as_mut_ptr().cast()),
+                capacity,
+                &mut needed,
+            )
+        }
+        .map_err(|error| format!("GetTokenInformation({}): {error}", class.0))?;
+        Ok((buf, needed as usize))
+    }
+
+    /// A SID's string form. `sid` must point at a valid SID.
+    fn sid_string(sid: PSID) -> Result<String, String> {
+        let mut text = PWSTR::null();
+        // SAFETY: the caller passes a valid SID; on success `text` is a
+        // LocalAlloc'd string, freed below.
+        unsafe { ConvertSidToStringSidW(sid, &mut text) }
+            .map_err(|error| format!("ConvertSidToStringSidW: {error}"))?;
+        // SAFETY: `text` is the NUL-terminated string just returned.
+        let string = unsafe { text.to_string() };
+        // SAFETY: allocated by ConvertSidToStringSidW, freed once.
+        unsafe { LocalFree(HLOCAL(text.0.cast())) };
+        string.map_err(|error| format!("a SID's text: {error}"))
+    }
+
+    /// A privilege's name, or its LUID if it has none.
+    fn privilege_name(luid: &LUID) -> String {
+        let mut buf = vec![0u16; 128];
+        let mut len = buf.len() as u32;
+        // SAFETY: `luid` is valid; `buf` holds `len` UTF-16 units.
+        match unsafe {
+            LookupPrivilegeNameW(PCWSTR::null(), luid, PWSTR(buf.as_mut_ptr()), &mut len)
+        } {
+            Ok(()) => String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())]),
+            Err(error) if WIN32_ERROR::from_error(&error) == Some(ERROR_INSUFFICIENT_BUFFER) => {
+                format!("#{:x}:{:x} (a long name)", luid.HighPart, luid.LowPart)
+            }
+            Err(_) => format!("#{:x}:{:x}", luid.HighPart, luid.LowPart),
+        }
+    }
+
+    /// The `count` entries of type `T` at `offset` in `buf` (`len` bytes
+    /// written), checked to lie within them.
+    fn entries<T>(buf: &[u64], len: usize, offset: usize, count: usize) -> Result<&[T], String> {
+        let end = count
+            .checked_mul(std::mem::size_of::<T>())
+            .and_then(|bytes| bytes.checked_add(offset));
+        if end.is_none_or(|end| end > len) {
+            return Err("token information overruns its buffer".into());
+        }
+        // SAFETY: the `count` entries lie within the `len` bytes written, as
+        // just checked, and `buf` is 8-aligned, enough for the TOKEN_*
+        // entry types.
+        Ok(unsafe {
+            std::slice::from_raw_parts((buf.as_ptr() as *const u8).add(offset) as *const T, count)
+        })
+    }
+
+    /// The token of `pid`, read as this account: the process opened for
+    /// `PROCESS_QUERY_LIMITED_INFORMATION` (with SeDebugPrivilege enabled if
+    /// that is denied), its token for `TOKEN_QUERY`.
+    fn read_process_token(pid: u32) -> Result<ProcessToken, String> {
+        let process = match open_process(pid) {
+            Ok(process) => process,
+            Err(code) if code == ERROR_ACCESS_DENIED.0 => {
+                println!(
+                    "note: OpenProcess({pid}, PROCESS_QUERY_LIMITED_INFORMATION) is denied to \
+                     this administrator; again with SeDebugPrivilege enabled"
+                );
+                enable_debug_privilege()?;
+                open_process(pid).map_err(|code| {
+                    format!(
+                        "OpenProcess({pid}) even with SeDebugPrivilege: {}",
+                        describe(code)
+                    )
+                })?
+            }
+            Err(code) => return Err(format!("OpenProcess({pid}): {}", describe(code))),
+        };
+        let mut token = HANDLE::default();
+        // SAFETY: `process` is open for the call; `token` receives a new
+        // handle, owned below.
+        unsafe { OpenProcessToken(HANDLE(process.as_raw_handle()), TOKEN_QUERY, &mut token) }
+            .map_err(|error| {
+                format!(
+                    "OpenProcessToken({pid}, TOKEN_QUERY) as this administrator: {}",
+                    describe(win32_code(&error))
+                )
+            })?;
+        // SAFETY: just opened, owned by nobody else.
+        let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
+        let token = HANDLE(token.as_raw_handle());
+
+        let (buf, len) = token_information(token, TokenUser)?;
+        if len < std::mem::size_of::<TOKEN_USER>() {
+            return Err("short TokenUser".into());
+        }
+        // SAFETY: GetTokenInformation wrote a TOKEN_USER at the start of
+        // `buf`, 8-aligned; its SID points into `buf`.
+        let user = sid_string(unsafe { (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid })?;
+
+        let (buf, len) = token_information(token, TokenPrivileges)?;
+        if len < 4 {
+            return Err("short TokenPrivileges".into());
+        }
+        // SAFETY: a TOKEN_PRIVILEGES starts `buf`; its count is within it.
+        let count = unsafe { (*(buf.as_ptr() as *const TOKEN_PRIVILEGES)).PrivilegeCount } as usize;
+        let privileges = entries::<LUID_AND_ATTRIBUTES>(
+            &buf,
+            len,
+            std::mem::offset_of!(TOKEN_PRIVILEGES, Privileges),
+            count,
+        )?
+        .iter()
+        .map(|entry| (privilege_name(&entry.Luid), entry.Attributes.0))
+        .collect();
+
+        let (buf, len) = token_information(token, TokenIntegrityLevel)?;
+        if len < std::mem::size_of::<TOKEN_MANDATORY_LABEL>() {
+            return Err("short TokenIntegrityLevel".into());
+        }
+        // SAFETY: a TOKEN_MANDATORY_LABEL starts `buf`; its SID points into
+        // `buf`.
+        let label =
+            sid_string(unsafe { (*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL)).Label.Sid })?;
+        let integrity = label
+            .rsplit('-')
+            .next()
+            .and_then(|rid| rid.parse().ok())
+            .ok_or_else(|| format!("an integrity label {label}"))?;
+
+        let (buf, len) = token_information(token, TokenGroups)?;
+        if len < 4 {
+            return Err("short TokenGroups".into());
+        }
+        // SAFETY: a TOKEN_GROUPS starts `buf`; its count is within it.
+        let count = unsafe { (*(buf.as_ptr() as *const TOKEN_GROUPS)).GroupCount } as usize;
+        let groups = entries::<SID_AND_ATTRIBUTES>(
+            &buf,
+            len,
+            std::mem::offset_of!(TOKEN_GROUPS, Groups),
+            count,
+        )?
+        .iter()
+        .map(|entry| Ok((sid_string(entry.Sid)?, entry.Attributes)))
+        .collect::<Result<Vec<_>, String>>()?;
+
+        Ok(ProcessToken {
+            user,
+            privileges,
+            integrity,
+            groups,
+        })
     }
 }
