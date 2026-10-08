@@ -881,6 +881,7 @@ pub struct Helper {
     pub exit_pipe_squatted: &'static str,
     pub exit_pipe_failed: &'static str,
     pub exit_console_elevated: &'static str,
+    pub exit_privileges: &'static str,
     pub exit_internal: &'static str,
     /// An exit code this build doesn't know.
     pub exit_unknown: Fmt1,

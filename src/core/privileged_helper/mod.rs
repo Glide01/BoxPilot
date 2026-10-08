@@ -702,6 +702,7 @@ pub fn exit_code_message(code: i32) -> String {
         exit::PIPE_SQUATTED => h.exit_pipe_squatted.to_string(),
         exit::PIPE_FAILED => h.exit_pipe_failed.to_string(),
         exit::CONSOLE_ELEVATED => h.exit_console_elevated.to_string(),
+        exit::PRIVILEGES_REFUSED => h.exit_privileges.to_string(),
         exit::INTERNAL => h.exit_internal.to_string(),
         other => (h.exit_unknown)(&other.to_string()),
     };

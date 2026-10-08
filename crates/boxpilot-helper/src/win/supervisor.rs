@@ -7,6 +7,7 @@ use super::folders;
 use super::security::{create_dir, SecurityDescriptor};
 use super::spawn::{self, Job, Launch};
 use super::sys::wait_handle;
+use super::token::Token;
 use super::verify::{self, Refused, Why};
 use crate::acl::{Role, Trusted};
 use crate::exit;
@@ -18,6 +19,7 @@ use crate::manifest::{self, Manifest, MAX_MANIFEST_BYTES};
 use crate::paths::{self, Layout};
 use crate::rundir::RunDir;
 use crate::spawnplan;
+use crate::tokenplan;
 use boxpilot_policy::Placement;
 use boxpilot_protocol::ExitInfo;
 use std::fs::{self, File};
@@ -104,10 +106,11 @@ impl WinSupervisor {
             remove_sing_tun_adapters();
         }
         helper_log!(
-            "helper {} started: sing-box {} ({})",
+            "helper {} started: sing-box {} ({}); it holds {}",
             env!("CARGO_PKG_VERSION"),
             supervisor.installed.sing_box_version,
-            supervisor.installed.sing_box_sha256
+            supervisor.installed.sing_box_sha256,
+            own_privileges_text()
         );
         Ok(supervisor)
     }
@@ -179,6 +182,19 @@ impl WinSupervisor {
     fn path_text(path: &Path) -> Result<&str, HelperError> {
         path.to_str()
             .ok_or_else(|| HelperError::new(format!("{} is not valid Unicode", path.display())))
+    }
+}
+
+/// The privileges the helper's own token holds, for its log: what
+/// `own_privileges` left it.
+fn own_privileges_text() -> String {
+    match Token::of_process().and_then(|token| token.privileges()) {
+        Ok(privileges) => privileges
+            .into_iter()
+            .map(|privilege| privilege.name)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(error) => format!("privileges it can't read ({error})"),
     }
 }
 
@@ -274,7 +290,7 @@ impl Supervisor for WinSupervisor {
                 Self::path_text(&profile)?,
             ),
             // The compile-time plan, always: nothing at run time widens it.
-            token: &spawnplan::SING_BOX_TOKEN,
+            token: &tokenplan::SING_BOX_TOKEN,
         };
         let child =
             spawn::spawn(&launch).map_err(|error| io_error("sing-box did not start", error))?;

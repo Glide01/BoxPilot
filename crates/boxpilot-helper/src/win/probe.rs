@@ -6,7 +6,7 @@
 //! the probe chooses, and read tokens and adapters back.
 //!
 //! The helper never calls them: it starts sing-box with
-//! `spawnplan::SING_BOX_TOKEN` alone, a constant, and nothing that reaches
+//! `tokenplan::SING_BOX_TOKEN` alone, a constant, and nothing that reaches
 //! the helper (its pipe, its files, its environment) reaches these. They
 //! are public only because an example can't see the crate's private items.
 
@@ -15,7 +15,7 @@ use super::folders;
 use super::spawn::{self, Job, Launch};
 use super::sys::{raw, wait_handle};
 use super::token::Token;
-use crate::spawnplan::{ObservedToken, TokenPlan};
+use crate::tokenplan::{ObservedToken, TokenPlan};
 use std::fs::File;
 use std::io;
 use std::os::windows::io::OwnedHandle;

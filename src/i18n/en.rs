@@ -719,6 +719,7 @@ pub static EN: Strings = Strings {
         exit_pipe_squatted: "another program holds the name it listens on",
         exit_pipe_failed: "it couldn't open its connection",
         exit_console_elevated: "its test mode was run as administrator",
+        exit_privileges: "it couldn't give up the system privileges it doesn't need",
         exit_internal: "it hit an internal error",
         exit_unknown: |code| format!("exit code {code}"),
         not_allowed: "This Windows account may not start TUN mode. An administrator can add \

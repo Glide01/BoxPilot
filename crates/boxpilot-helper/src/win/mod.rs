@@ -1,6 +1,7 @@
 //! The Windows platform layer (ADR 0006, phase 1): the service, the pipe,
-//! the caller's token, the trees' ACLs, and sing-box's spawn under its
-//! restricted token (`probe` exposes that spawn to the CI token probe).
+//! the caller's token, the trees' ACLs, the helper's own privileges
+//! (dropped when it starts), and sing-box's spawn under its restricted
+//! token (`probe` exposes that spawn to the CI token probe).
 //!
 //! This is the only part of the helper with `unsafe` code: Win32 calls,
 //! each in a small wrapper with a `SAFETY` comment saying what holds. The
@@ -11,6 +12,7 @@
 
 mod adapters;
 mod folders;
+mod own_privileges;
 mod pipe;
 pub mod probe;
 mod restrict;
@@ -61,6 +63,11 @@ pub fn main() -> i32 {
 /// elevated: it refuses to.
 fn console(root: PathBuf, pipe_name: &str) -> i32 {
     crate::log::echo_to_stderr();
+    // As the service does; a standard user loses nothing that matters.
+    if let Err(error) = own_privileges::keep_only(&crate::tokenplan::HELPER_TOKEN) {
+        eprintln!("boxpilot-helper: dropping its own privileges: {error}");
+        return exit::PRIVILEGES_REFUSED;
+    }
     let token = match token::Token::of_process() {
         Ok(token) => token,
         Err(error) => {

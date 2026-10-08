@@ -22,7 +22,8 @@
 //! The judgements the Windows layer makes are pure functions here too, so
 //! they are tested on every OS: [`acl`] (who may write where the helper
 //! reads from), [`authority`] (who may start), [`spawnplan`] (sing-box's
-//! command line and environment) and [`tun`] (which adapters to remove).
+//! command line and environment), [`tokenplan`] (what sing-box's token and
+//! the helper's own keep) and [`tun`] (which adapters to remove).
 //!
 //! The platform layer lives in `win`, under `cfg(windows)`: the service,
 //! the pipe, the caller's token, directory ACLs, and the spawn. It is the
@@ -47,6 +48,7 @@ pub mod paths;
 pub mod runcfg;
 pub mod rundir;
 pub mod spawnplan;
+pub mod tokenplan;
 pub mod transport;
 pub mod tun;
 

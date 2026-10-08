@@ -667,6 +667,7 @@ pub static ZH_CN: Strings = Strings {
         exit_pipe_squatted: "另一个程序占用了它监听的名称",
         exit_pipe_failed: "无法建立连接",
         exit_console_elevated: "测试模式以管理员身份运行",
+        exit_privileges: "无法放弃它不需要的系统特权",
         exit_internal: "发生内部错误",
         exit_unknown: |code| format!("退出码 {code}"),
         not_allowed: "此 Windows 账户无权启动 TUN 模式。管理员可以把它加入 Administrators 或 \

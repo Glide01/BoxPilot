@@ -17,8 +17,9 @@
 //! with the protocol crate's public API, and a start checked first with the
 //! policy the GUI runs. Never through the helper's own modules: they are what
 //! is under test. (The `token` command compares sing-box's token with
-//! `spawnplan::SING_BOX_TOKEN`, the constant that says what it may hold: the
-//! specification, read from outside, not the code that applies it.)
+//! `tokenplan::SING_BOX_TOKEN` and the helper's with
+//! `tokenplan::HELPER_TOKEN`, the constants that say what they may hold:
+//! the specification, read from outside, not the code that applies it.)
 //!
 //! One synchronous pipe handle, polled with `PeekNamedPipe`, so every wait
 //! has a deadline without the GUI's overlapped I/O. Only the network probes
@@ -42,7 +43,7 @@ fn main() {
 
 #[cfg(windows)]
 mod smoke {
-    use boxpilot_helper::spawnplan::{integrity, SING_BOX_TOKEN};
+    use boxpilot_helper::tokenplan::{integrity, HELPER_TOKEN, SING_BOX_TOKEN};
     use boxpilot_protocol::endpoint::{PIPE_NAME, SERVICE_NAME};
     use boxpilot_protocol::{
         decode_to_client, encode_request, ErrorCode, Event, ExitInfo, FrameDecoder, HelloReply,
@@ -109,10 +110,13 @@ as an administrator (the runner):
                    a real TUN start: up, (probed,) then down with its connection
   squat --hold --ready-file <file> --release-file <file>
                    hold the service's pipe name, so the service can't start
-  token --pid <pid> --expect sing-box|privileges|print [--privileges <A,B,..>]
+  token --pid <pid> --expect sing-box|helper|privileges|print
+        [--privileges <A,B,..>]
                    read a process's token from outside and print it;
                    sing-box: exactly the privileges, integrity level and
-                   Administrators group spawnplan::SING_BOX_TOKEN plans;
+                   Administrators group tokenplan::SING_BOX_TOKEN plans;
+                   helper: SYSTEM's, at System integrity, with exactly the
+                   privileges tokenplan::HELPER_TOKEN keeps;
                    privileges: exactly the privileges --privileges lists
 
 as a standard account:
@@ -2007,10 +2011,11 @@ as a standard account:
     const SYSTEM: &str = "S-1-5-18";
 
     /// `--pid`'s token, read as this account: `--expect sing-box` checks it
-    /// against `spawnplan::SING_BOX_TOKEN`, `--expect privileges` against
+    /// against `tokenplan::SING_BOX_TOKEN`, `--expect helper` against
+    /// `tokenplan::HELPER_TOKEN`, `--expect privileges` against
     /// `--privileges`, `--expect print` only prints it.
     fn token(options: &Options) -> Outcome {
-        let expect = options.expect(&["sing-box", "privileges", "print"])?;
+        let expect = options.expect(&["sing-box", "helper", "privileges", "print"])?;
         let Some(pid) = options.pid else {
             return Err(Failure::Usage("token needs --pid".into()));
         };
@@ -2032,6 +2037,7 @@ as a standard account:
         print_process_token(pid, &token);
         match expect {
             "sing-box" => expect_sing_box_token(&token)?,
+            "helper" => expect_helper_token(&token)?,
             "privileges" => {
                 let wanted = wanted.unwrap_or_default();
                 expect_privileges(&token, &wanted)?;
@@ -2080,11 +2086,34 @@ as a standard account:
         Ok(())
     }
 
-    /// sing-box's token is the helper's as `spawnplan::SING_BOX_TOKEN`
-    /// restricts it: SYSTEM's, exactly the planned privileges (SYSTEM holds
-    /// them all, so none is missing either), the planned integrity level
-    /// (the cap, or the helper's System), and Administrators deny-only
-    /// exactly when the plan says.
+    /// The helper's own token once it has dropped what it doesn't need:
+    /// SYSTEM's, at System integrity, with exactly
+    /// `tokenplan::HELPER_TOKEN`'s privileges (the SCM gave it all of them,
+    /// so none is missing either), whatever the SCM gave it besides.
+    fn expect_helper_token(token: &ProcessToken) -> Result<(), String> {
+        if token.user != SYSTEM {
+            return Err(format!("the helper runs as {}, not SYSTEM", token.user));
+        }
+        expect_privileges(token, HELPER_TOKEN.privileges)
+            .map_err(|error| format!("the helper's own token: {error}"))?;
+        if token.integrity != integrity::SYSTEM {
+            return Err(format!(
+                "the helper runs at integrity level 0x{:x}, not System",
+                token.integrity
+            ));
+        }
+        println!(
+            "ok: the helper holds exactly {}, at System integrity",
+            HELPER_TOKEN.privileges.join(", ")
+        );
+        Ok(())
+    }
+
+    /// sing-box's token is the helper's as `tokenplan::SING_BOX_TOKEN`
+    /// restricts it: SYSTEM's, exactly the planned privileges (the helper
+    /// holds them all, so none is missing either), the planned integrity
+    /// level (the cap, or the helper's System), and Administrators
+    /// deny-only exactly when the plan says.
     fn expect_sing_box_token(token: &ProcessToken) -> Result<(), String> {
         let plan = SING_BOX_TOKEN;
         if token.user != SYSTEM {

@@ -3,7 +3,7 @@
 //!
 //! - `CreateProcessAsUserW` with a restricted copy of the helper's own
 //!   token (`restrict`, as `Launch::token` plans it: the helper always
-//!   passes `spawnplan::SING_BOX_TOKEN`), the full application path, so
+//!   passes `tokenplan::SING_BOX_TOKEN`), the full application path, so
 //!   nothing is searched for, and sing-box's command line and environment
 //!   from `spawnplan`, built from nothing rather than inherited;
 //! - `CREATE_SUSPENDED`, so it runs no instruction before it is in its job;
@@ -22,7 +22,8 @@
 
 use super::restrict::restricted_token;
 use super::sys::{io_error, own, pcwstr, raw, wide};
-use crate::spawnplan::{self, TokenPlan};
+use crate::spawnplan;
+use crate::tokenplan::TokenPlan;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
@@ -60,7 +61,7 @@ pub(crate) struct Launch<'a> {
     pub(crate) cwd: &'a Path,
     /// Its whole environment (`spawnplan::environment`).
     pub(crate) environment: Vec<(String, String)>,
-    /// What its token keeps of the helper's: `spawnplan::SING_BOX_TOKEN`,
+    /// What its token keeps of the helper's: `tokenplan::SING_BOX_TOKEN`,
     /// and only the token probe (`win::probe`) ever passes another.
     pub(crate) token: &'a TokenPlan<'a>,
 }

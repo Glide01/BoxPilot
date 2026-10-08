@@ -535,6 +535,7 @@ fn every_exit_code_reads() {
         exit::PIPE_SQUATTED,
         exit::PIPE_FAILED,
         exit::CONSOLE_ELEVATED,
+        exit::PRIVILEGES_REFUSED,
         exit::INTERNAL,
     ];
     let messages: Vec<String> = known.iter().map(|code| exit_code_message(*code)).collect();

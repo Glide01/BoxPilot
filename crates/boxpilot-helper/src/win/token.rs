@@ -7,7 +7,7 @@ use super::security::sid_within;
 use super::sys::{io_error, is_win32, own, raw};
 use crate::authority::{self, TokenFacts};
 use crate::helper::Caller;
-use crate::spawnplan::ObservedToken;
+use crate::tokenplan::ObservedToken;
 use std::ffi::c_void;
 use std::io;
 use std::mem::{offset_of, size_of};
@@ -18,8 +18,8 @@ use windows::Win32::Security::{
     GetTokenInformation, LookupPrivilegeNameW, RevertToSelf, TokenElevation, TokenGroups,
     TokenIntegrityLevel, TokenIsAppContainer, TokenPrivileges, TokenRestrictedSids, TokenUser,
     LUID_AND_ATTRIBUTES, SID_AND_ATTRIBUTES, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT,
-    TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
-    TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS,
+    TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::System::Pipes::ImpersonateNamedPipeClient;
 use windows::Win32::System::Threading::{
@@ -104,6 +104,12 @@ impl Token {
         )
     }
 
+    /// The helper's own primary token, opened to remove privileges from it
+    /// (`own_privileges`) and read it back.
+    pub(crate) fn of_process_to_adjust() -> io::Result<Self> {
+        Self::open_process(current_process(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES)
+    }
+
     /// The primary token of `process`, a process handle with at least
     /// `PROCESS_QUERY_LIMITED_INFORMATION`, for reading.
     pub(crate) fn of_process_handle(process: HANDLE) -> io::Result<Self> {
@@ -175,7 +181,7 @@ impl Token {
             .collect())
     }
 
-    /// Privileges, integrity level and groups, as `spawnplan` judges them.
+    /// Privileges, integrity level and groups, as `tokenplan` judges them.
     /// Any of them unreadable is an error: a token that can't be read back
     /// is never one sing-box starts under.
     pub(crate) fn observed(&self) -> io::Result<ObservedToken> {

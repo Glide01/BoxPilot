@@ -46,6 +46,11 @@ pub mod exit {
     /// `--console` was run elevated or as SYSTEM: the test seam trusts the
     /// invoking user's files, which is safe only without privilege.
     pub const CONSOLE_ELEVATED: i32 = 15;
+    /// The helper could not give up the privileges it doesn't need: when it
+    /// starts, before serving anyone, it removes from its own token every
+    /// privilege but the few it keeps (ADR 0006, "Defense in depth"), and
+    /// it refuses to run if one remains or its token can't be read back.
+    pub const PRIVILEGES_REFUSED: i32 = 16;
     /// Anything else the helper could not do on its own side.
     pub const INTERNAL: i32 = 20;
 }

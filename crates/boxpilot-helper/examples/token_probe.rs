@@ -35,7 +35,7 @@
 //!    are added, with and without the narrowings, then dropped one at a
 //!    time, each trial a first install again; the driver is always put
 //!    back.
-//! 5. **The shipped plan**, `spawnplan::SING_BOX_TOKEN`, as the helper
+//! 5. **The shipped plan**, `tokenplan::SING_BOX_TOKEN`, as the helper
 //!    starts sing-box today.
 //!
 //! Each trial: stale adapters removed and the DNS cache flushed; a fresh
@@ -75,9 +75,9 @@ mod probe {
     use boxpilot_helper::paths::{self, Layout};
     use boxpilot_helper::runcfg;
     use boxpilot_helper::rundir::RunDir;
-    use boxpilot_helper::spawnplan::{
-        self, integrity, same_privilege, ObservedToken, TokenPlan, NEVER_FOR_SING_BOX,
-        SING_BOX_TOKEN,
+    use boxpilot_helper::spawnplan;
+    use boxpilot_helper::tokenplan::{
+        integrity, same_privilege, ObservedToken, TokenPlan, NEVER_FOR_SING_BOX, SING_BOX_TOKEN,
     };
     use boxpilot_helper::win::probe as hooks;
     use boxpilot_protocol::{StartRequest, TunOptions};
@@ -1282,7 +1282,7 @@ wintun's driver and brings TUN up and down many times. --budget-secs
         }
 
         say!("");
-        say!("######## 5. the shipped plan, spawnplan::SING_BOX_TOKEN");
+        say!("######## 5. the shipped plan, tokenplan::SING_BOX_TOKEN");
         // Its integrity cap can only be High and its deny-only group only
         // Administrators: the two narrowings the probe knows.
         let shipped = Candidate {

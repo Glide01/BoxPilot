@@ -8,6 +8,7 @@
 //! is more to review than they are.
 
 use super::folders;
+use super::own_privileges;
 use super::pipe::PIPE_SDDL;
 use super::security::protected_dir_sddl;
 use super::server;
@@ -18,6 +19,7 @@ use crate::cli::{SERVICE_NAME, SERVICE_PIPE, USAGE};
 use crate::exit;
 use crate::helper_log;
 use crate::paths::Layout;
+use crate::tokenplan;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
@@ -97,6 +99,12 @@ fn serve() -> i32 {
     };
     STATUS.store(status.0 as usize, Ordering::SeqCst);
     report(SERVICE_START_PENDING, exit::OK);
+    // Before anything else, whatever the SCM gave it: every privilege but
+    // the few it needs, gone for good (ADR 0006, "Defense in depth").
+    if let Err(error) = own_privileges::keep_only(&tokenplan::HELPER_TOKEN) {
+        helper_log!("refusing to run: dropping its own privileges: {error}");
+        return exit::PRIVILEGES_REFUSED;
+    }
     let setup = match setup() {
         Ok(setup) => setup,
         Err((code, message)) => {

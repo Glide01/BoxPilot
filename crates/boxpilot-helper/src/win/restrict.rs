@@ -1,6 +1,6 @@
 //! sing-box's token (ADR 0006, "Defense in depth"): a restricted copy of
 //! the helper's own primary token, made by `CreateRestrictedToken` as
-//! `spawnplan::TokenPlan` says, and checked before anything runs under it.
+//! `tokenplan::TokenPlan` says, and checked before anything runs under it.
 //!
 //! - Built from the helper's *process* token, never a thread's: a thread
 //!   that impersonates a pipe client holds the client's token, and the
@@ -15,13 +15,13 @@
 //! - A restricted copy of the caller's own primary token is assignable to
 //!   a child without `SeAssignPrimaryTokenPrivilege`, so the same path works
 //!   for the service (SYSTEM) and for the console seam (a standard user).
-//! - The copy is read back and judged by `spawnplan::excess`. If it holds
+//! - The copy is read back and judged by `tokenplan::excess`. If it holds
 //!   anything beyond the plan, or can't be read, sing-box doesn't start.
 
 use super::security::OwnedSid;
 use super::sys::{io_error, own};
 use super::token::Token;
-use crate::spawnplan::{self, integrity, TokenPlan, SE_GROUP_INTEGRITY};
+use crate::tokenplan::{self, integrity, TokenPlan, SE_GROUP_INTEGRITY};
 use std::ffi::c_void;
 use std::io;
 use std::mem::size_of;
@@ -44,7 +44,7 @@ pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
         .iter()
         .map(|privilege| privilege.name.clone())
         .collect();
-    let to_delete = spawnplan::privileges_to_delete(&names, plan.privileges);
+    let to_delete = tokenplan::privileges_to_delete(&names, plan.privileges);
     let delete: Vec<LUID_AND_ATTRIBUTES> = held
         .iter()
         .filter(|privilege| to_delete.contains(&privilege.name.as_str()))
@@ -62,7 +62,7 @@ pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
             .groups()
             .map_err(context("the helper's own groups"))?
     };
-    let disable_sids = spawnplan::sids_to_disable(&groups, plan.deny_only)
+    let disable_sids = tokenplan::sids_to_disable(&groups, plan.deny_only)
         .into_iter()
         .map(OwnedSid::from_string)
         .collect::<io::Result<Vec<_>>>()?;
@@ -99,7 +99,7 @@ pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
         let own_level = own_token
             .integrity()
             .map_err(context("the helper's own integrity level"))?;
-        if let Some(level) = spawnplan::integrity_to_set(own_level, plan.max_integrity) {
+        if let Some(level) = tokenplan::integrity_to_set(own_level, plan.max_integrity) {
             set_integrity(&token, level).map_err(context("lowering the integrity level"))?;
         }
     }
@@ -107,7 +107,7 @@ pub(crate) fn restricted_token(plan: &TokenPlan<'_>) -> io::Result<Token> {
     let observed = token
         .observed()
         .map_err(context("reading the restricted token back"))?;
-    let excess = spawnplan::excess(&observed, plan);
+    let excess = tokenplan::excess(&observed, plan);
     if !excess.is_empty() {
         return Err(io::Error::other(format!(
             "sing-box's restricted token still holds {}",
