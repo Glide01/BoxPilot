@@ -41,15 +41,15 @@ pub fn options() -> TunOptions {
     }
 }
 
-/// A `start`'s JSON, attachments declared as `(id, len)`.
-pub fn start_json(config: &str, attachments: &[(&str, u64)]) -> String {
+/// A `start` header, the attachments declared as `(id, len)`.
+pub fn start_json(config_len: u64, attachments: &[(&str, u64)]) -> String {
     let attachments: Vec<_> = attachments
         .iter()
         .map(|(id, len)| serde_json::json!({"id": id, "len": len}))
         .collect();
     serde_json::json!({
         "type": "start",
-        "config": config,
+        "config_len": config_len,
         "attachments": attachments,
         "options": {"ipv6": true, "proxy_port": 7890, "allow_lan": false, "system_proxy": true}
     })

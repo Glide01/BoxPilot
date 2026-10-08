@@ -67,14 +67,16 @@ impl Request {
     }
 }
 
-/// A `start` with its attachments. Out of the helper's session, the ids are
-/// valid, unique and within the limits, each attachment holds exactly the
-/// bytes its header declared, and `options.proxy_port` isn't 0. The config
-/// is not checked yet: that is the policy's job (`boxpilot_policy::check`,
-/// with [`StartRequest::attachment_ids`]).
+/// A `start` with its attachments. Out of the helper's session, the config
+/// is non-empty UTF-8, the ids are valid, unique and within the limits, the
+/// config and each attachment hold exactly the bytes the header declared,
+/// and `options.proxy_port` isn't 0. The config is not checked yet: that is
+/// the policy's job (`boxpilot_policy::check`, with
+/// [`StartRequest::attachment_ids`]).
 #[derive(Clone, PartialEq, Eq)]
 pub struct StartRequest {
-    /// The profile's canonical config, as JSON text.
+    /// The profile's canonical config, as JSON text. It travels as the
+    /// first blob after the header, raw.
     pub config: String,
     /// `(id, content)` per attachment, in the order sent.
     pub attachments: Vec<(String, Vec<u8>)>,
@@ -123,8 +125,9 @@ pub struct TunOptions {
     pub system_proxy: bool,
 }
 
-/// A request as JSON. The config and ids borrow when encoding, so a large
-/// config isn't copied before it is serialized.
+/// A request as JSON. A `start` here is only its header: the config and
+/// the attachments follow as blobs, so nothing large is ever parsed as
+/// JSON. Ids borrow when encoding.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum WireRequest<'a> {
@@ -132,7 +135,7 @@ pub(crate) enum WireRequest<'a> {
         protocol_version: u32,
     },
     Start {
-        config: Cow<'a, str>,
+        config_len: u64,
         #[serde(deserialize_with = "seq_of_maps")]
         attachments: Vec<AttachmentHeader<'a>>,
         #[serde(deserialize_with = "map_only")]
@@ -151,10 +154,10 @@ pub(crate) struct AttachmentHeader<'a> {
 }
 
 /// The frames that carry `request` to the helper: one JSON frame, then, for
-/// a `start`, one blob frame per attachment in order. A request the helper's
-/// session would refuse (a bad id, too many attachments, too many bytes, a
-/// zero proxy port) is refused here with the same error, before anything is
-/// sent.
+/// a `start`, the config as a blob and one blob per attachment, in order. A
+/// request the helper's session would refuse (an empty config, a bad id, too
+/// many attachments, too many bytes, a zero proxy port) is refused here with
+/// the same error, before anything is sent.
 pub fn encode_request(request: &Request, limits: &Limits) -> Result<Vec<u8>, ProtocolError> {
     let control = FrameCaps {
         max_json: Some(limits.max_control_json),
@@ -180,14 +183,16 @@ fn encode_start(start: &StartRequest, limits: &Limits) -> Result<Vec<u8>, Protoc
             len: data.len() as u64,
         })
         .collect();
-    check_start(start.config.len(), &headers, &start.options, limits)?;
+    let config_len = start.config.len() as u64;
+    check_start(config_len, &headers, &start.options, limits)?;
     let caps = limits.to_helper_caps();
     let wire = WireRequest::Start {
-        config: Cow::Borrowed(&start.config),
+        config_len,
         attachments: headers,
         options: start.options,
     };
     let mut out = encode_json(&wire, &caps)?;
+    append_frame(&mut out, FrameType::Blob, start.config.as_bytes(), &caps)?;
     for (_, data) in &start.attachments {
         append_frame(&mut out, FrameType::Blob, data, &caps)?;
     }

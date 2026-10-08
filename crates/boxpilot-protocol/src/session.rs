@@ -39,13 +39,18 @@ impl Authority {
 ///   [`replied`](Self::replied) for the one before;
 /// - a [`Authority::ReadOnly`] caller gets [`ProtocolError::Unauthorized`]
 ///   for `start` and `stop`;
-/// - a `start`'s attachment list is checked whole when its JSON arrives,
-///   before any blob is taken: at most [`Limits::max_attachments`], each id
-///   valid ([`is_attachment_id`]) and unique, each length within
-///   [`Limits::max_blob`], config and lengths together within
+/// - JSON frames are small: a `start` header within
+///   [`Limits::max_start_json`], anything else within
+///   [`Limits::max_control_json`], both checked before parsing as far as
+///   the frame's length tells;
+/// - a `start` header is checked whole when it arrives, before any blob is
+///   taken: at most [`Limits::max_attachments`], a non-zero `config_len`,
+///   each id valid ([`is_attachment_id`]) and unique, each length within
+///   [`Limits::max_blob`], config and attachments together within
 ///   [`Limits::max_start_total`], and `proxy_port` not 0;
-/// - exactly the declared blobs follow, in order, each of its declared
-///   length, and nothing else until they have.
+/// - exactly the declared blobs follow, in order: the config, of exactly
+///   `config_len` bytes and UTF-8, then each attachment of exactly its
+///   length; nothing else until they have.
 ///
 /// After any error the session is finished, and refuses every later frame
 /// with that same error.
@@ -66,11 +71,23 @@ enum State {
 }
 
 struct PendingStart {
-    config: String,
     options: TunOptions,
+    config_len: u64,
+    /// `None` until the config's blob, the first one owed, has arrived.
+    config: Option<String>,
     /// `(id, declared length)` of each attachment still owed, in order.
     owed: VecDeque<(String, u64)>,
     received: Vec<(String, Vec<u8>)>,
+}
+
+impl PendingStart {
+    /// The declared length of the next blob owed, if any.
+    fn next_len(&self) -> Option<u64> {
+        match self.config {
+            None => Some(self.config_len),
+            Some(_) => self.owed.front().map(|(_, len)| *len),
+        }
+    }
 }
 
 impl ServerSession {
@@ -120,7 +137,7 @@ impl ServerSession {
     /// - before `hello`, and always for a read-only caller: JSON of at most
     ///   [`Limits::max_control_json`];
     /// - after `hello`, for a caller that may start: JSON of up to
-    ///   [`Limits::max_request_json`];
+    ///   [`Limits::max_start_json`];
     /// - while a `start` owes blobs: only a blob, no longer than the next one
     ///   owed;
     /// - after an error: nothing.
@@ -139,7 +156,7 @@ impl ServerSession {
             State::AwaitHello => control,
             State::Idle | State::Outstanding => match self.authority {
                 Authority::MayStart => FrameCaps {
-                    max_json: Some(self.limits.max_request_json),
+                    max_json: Some(self.limits.max_start_json()),
                     max_blob: None,
                 },
                 Authority::ReadOnly => control,
@@ -147,9 +164,8 @@ impl ServerSession {
             State::Blobs(pending) => FrameCaps {
                 max_json: None,
                 max_blob: pending
-                    .owed
-                    .front()
-                    .map(|(_, len)| usize::try_from(*len).unwrap_or(usize::MAX)),
+                    .next_len()
+                    .map(|len| usize::try_from(len).unwrap_or(usize::MAX)),
             },
             State::Failed(_) => FrameCaps {
                 max_json: None,
@@ -170,8 +186,23 @@ impl ServerSession {
             (State::Outstanding, Frame::Json(_)) => return Err(ProtocolError::RequestOutstanding),
             (State::AwaitHello | State::Idle, Frame::Json(text)) => text,
         };
+        // Held to the caps whether or not the decoder was: nothing larger
+        // reaches serde_json.
+        let too_large = |limit| ProtocolError::FrameTooLarge {
+            frame_type: FrameType::Json,
+            len: text.len(),
+            limit,
+        };
+        let cap = self.frame_caps().max_json.unwrap_or(0);
+        if text.len() > cap {
+            return Err(too_large(cap));
+        }
         let MapOnly(request) = serde_json::from_str::<MapOnly<WireRequest>>(&text)
             .map_err(ProtocolError::invalid_message)?;
+        let control = self.limits.max_control_json;
+        if text.len() > control && !matches!(request, WireRequest::Start { .. }) {
+            return Err(too_large(control));
+        }
         if let State::AwaitHello = self.state {
             return match request {
                 WireRequest::Hello { protocol_version } => self.hello(protocol_version),
@@ -186,23 +217,17 @@ impl ServerSession {
                 self.yield_request(Request::Stop)
             }
             WireRequest::Start {
-                config,
+                config_len,
                 attachments,
                 options,
             } => {
                 self.authorize()?;
-                check_start(config.len(), &attachments, &options, &self.limits)?;
-                let config = config.into_owned();
-                if attachments.is_empty() {
-                    return self.yield_request(Request::Start(StartRequest {
-                        config,
-                        attachments: Vec::new(),
-                        options,
-                    }));
-                }
+                check_start(config_len, &attachments, &options, &self.limits)?;
+                // `config_len` isn't 0, so a blob is always owed.
                 self.state = State::Blobs(PendingStart {
-                    config,
                     options,
+                    config_len,
+                    config: None,
                     received: Vec::with_capacity(attachments.len()),
                     owed: attachments
                         .into_iter()
@@ -231,34 +256,54 @@ impl ServerSession {
         }
     }
 
-    /// The next owed blob. The pending start moves out of the state and back
-    /// in while blobs are still owed; on an error `accept` replaces it.
+    /// The next owed blob: the config, then each attachment. The pending
+    /// start moves out of the state and back in while blobs are still owed;
+    /// on an error `accept` replaces it.
     fn blob(&mut self, data: Vec<u8>) -> Result<Option<Request>, ProtocolError> {
         let unexpected = ProtocolError::UnexpectedFrame(FrameType::Blob);
         let State::Blobs(mut pending) = mem::replace(&mut self.state, State::Outstanding) else {
             return Err(unexpected);
         };
-        let index = pending.received.len();
-        let Some((id, declared)) = pending.owed.pop_front() else {
-            return Err(unexpected);
-        };
-        if data.len() as u64 != declared {
-            return Err(ProtocolError::BlobLength {
-                index,
-                declared,
-                received: data.len(),
-            });
+        if pending.config.is_none() {
+            if data.len() as u64 != pending.config_len {
+                return Err(ProtocolError::ConfigLength {
+                    declared: pending.config_len,
+                    received: data.len(),
+                });
+            }
+            let config = String::from_utf8(data).map_err(|_| ProtocolError::ConfigNotUtf8)?;
+            pending.config = Some(config);
+        } else {
+            let index = pending.received.len();
+            let Some((id, declared)) = pending.owed.pop_front() else {
+                return Err(unexpected);
+            };
+            if data.len() as u64 != declared {
+                return Err(ProtocolError::BlobLength {
+                    index,
+                    declared,
+                    received: data.len(),
+                });
+            }
+            pending.received.push((id, data));
         }
-        pending.received.push((id, data));
-        if !pending.owed.is_empty() {
-            self.state = State::Blobs(pending);
-            return Ok(None);
+        match pending {
+            PendingStart {
+                config: Some(config),
+                options,
+                received,
+                owed,
+                ..
+            } if owed.is_empty() => Ok(Some(Request::Start(StartRequest {
+                config,
+                attachments: received,
+                options,
+            }))),
+            pending => {
+                self.state = State::Blobs(pending);
+                Ok(None)
+            }
         }
-        Ok(Some(Request::Start(StartRequest {
-            config: pending.config,
-            attachments: pending.received,
-            options: pending.options,
-        })))
     }
 
     fn yield_request(&mut self, request: Request) -> Result<Option<Request>, ProtocolError> {
@@ -274,7 +319,10 @@ impl fmt::Debug for ServerSession {
             State::AwaitHello => "await_hello".to_owned(),
             State::Idle => "idle".to_owned(),
             State::Outstanding => "outstanding".to_owned(),
-            State::Blobs(pending) => format!("blobs ({} owed)", pending.owed.len()),
+            State::Blobs(pending) => format!(
+                "blobs ({} owed)",
+                pending.owed.len() + usize::from(pending.config.is_none())
+            ),
             State::Failed(error) => format!("failed ({error})"),
         };
         f.debug_struct("ServerSession")
@@ -284,11 +332,11 @@ impl fmt::Debug for ServerSession {
     }
 }
 
-/// The rules a `start`'s JSON must meet before any of its blobs is taken.
+/// The rules a `start` header must meet before any of its blobs is taken.
 /// The GUI's encoder runs them too, so it never sends what the helper would
 /// refuse for them.
 pub(crate) fn check_start(
-    config_len: usize,
+    config_len: u64,
     attachments: &[AttachmentHeader],
     options: &TunOptions,
     limits: &Limits,
@@ -299,8 +347,11 @@ pub(crate) fn check_start(
             limit: limits.max_attachments,
         });
     }
+    if config_len == 0 {
+        return Err(ProtocolError::EmptyConfig);
+    }
     let mut seen = BTreeSet::new();
-    let mut total = config_len as u64;
+    let mut total = config_len;
     for (index, attachment) in attachments.iter().enumerate() {
         if !is_attachment_id(&attachment.id) {
             return Err(ProtocolError::InvalidAttachmentId { index });

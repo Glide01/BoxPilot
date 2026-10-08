@@ -41,6 +41,22 @@ fn refuses(session: &mut ServerSession, frame: Frame, error: ProtocolError, code
     assert!(session.is_finished());
 }
 
+/// A `start` header declaring `config` and `attachments`, then the config's
+/// blob: what the config blob gave.
+fn begin(
+    session: &mut ServerSession,
+    config: &str,
+    attachments: &[(&str, u64)],
+) -> Result<Option<Request>, ProtocolError> {
+    let header = start_json(config.len() as u64, attachments);
+    assert_eq!(
+        session.accept(json(&header)),
+        Ok(None),
+        "the config is owed"
+    );
+    session.accept(blob(config.as_bytes()))
+}
+
 fn start(config: &str, attachments: &[(&str, &[u8])]) -> Request {
     Request::Start(StartRequest {
         config: config.into(),
@@ -71,10 +87,7 @@ fn a_whole_conversation() {
         Ok(Some(Request::Status))
     );
     session.replied();
-    assert_eq!(
-        session.accept(json(&start_json("{}", &[]))),
-        Ok(Some(start("{}", &[])))
-    );
+    assert_eq!(begin(&mut session, "{}", &[]), Ok(Some(start("{}", &[]))));
     session.replied();
     assert_eq!(
         session.accept(json(r#"{"type":"stop"}"#)),
@@ -89,7 +102,7 @@ fn hello_must_come_first() {
     for first in [
         r#"{"type":"status"}"#.to_owned(),
         r#"{"type":"stop"}"#.to_owned(),
-        start_json("{}", &[]),
+        start_json(2, &[]),
     ] {
         refuses(
             &mut session(Authority::MayStart),
@@ -157,10 +170,7 @@ fn a_request_before_the_reply_is_refused() {
     );
 
     let mut session = greeted(Authority::MayStart);
-    assert!(session
-        .accept(json(&start_json("{}", &[("a", 1)])))
-        .unwrap()
-        .is_none());
+    assert_eq!(begin(&mut session, "{}", &[("a", 1)]), Ok(None));
     assert!(session.accept(blob(b"x")).unwrap().is_some());
     refuses(
         &mut session,
@@ -219,8 +229,8 @@ fn read_only_may_say_hello_and_ask_status() {
 fn read_only_may_not_start_or_stop() {
     for request in [
         r#"{"type":"stop"}"#.to_owned(),
-        start_json("{}", &[]),
-        start_json("{}", &[("ca", 3)]),
+        start_json(2, &[]),
+        start_json(2, &[("ca", 3)]),
     ] {
         refuses(
             &mut greeted(Authority::ReadOnly),
@@ -231,11 +241,11 @@ fn read_only_may_not_start_or_stop() {
     }
 }
 
-/// Authority is checked before the attachment list: a read-only caller
-/// learns nothing about which lists would pass.
+/// Authority is checked before the header's rules: a read-only caller
+/// learns nothing about which headers would pass.
 #[test]
-fn authority_comes_before_the_attachment_rules() {
-    let bad = start_json("{}", &[("../etc/passwd", 3), ("a", u64::MAX)]);
+fn authority_comes_before_the_start_rules() {
+    let bad = start_json(0, &[("../etc/passwd", 3), ("a", u64::MAX)]);
     refuses(
         &mut greeted(Authority::ReadOnly),
         json(&bad),
@@ -254,25 +264,135 @@ fn unauthorized_is_answered_with_its_code() {
     assert!(message.contains("only `hello` and `status`"), "{message}");
 }
 
-// ---- start ----
+// ---- start: the config ----
 
+/// The config always travels as the first blob, so even a `start` without
+/// attachments owes one.
 #[test]
-fn start_without_attachments_is_whole_at_once() {
+fn start_without_attachments_owes_the_config() {
     let mut session = greeted(Authority::MayStart);
     let config = r#"{"outbounds":[{"type":"direct","tag":"direct"}]}"#;
     assert_eq!(
-        session.accept(json(&start_json(config, &[]))),
+        session.accept(json(&start_json(config.len() as u64, &[]))),
+        Ok(None)
+    );
+    assert_eq!(
+        session.frame_caps(),
+        FrameCaps {
+            max_json: None,
+            max_blob: Some(config.len())
+        }
+    );
+    assert_eq!(
+        session.accept(blob(config.as_bytes())),
         Ok(Some(start(config, &[])))
     );
 }
 
 #[test]
+fn an_empty_config_is_refused() {
+    refuses(
+        &mut greeted(Authority::MayStart),
+        json(&start_json(0, &[("a", 1)])),
+        ProtocolError::EmptyConfig,
+        ErrorCode::BadRequest,
+    );
+}
+
+#[test]
+fn a_short_config_blob_is_refused() {
+    let mut session = greeted(Authority::MayStart);
+    assert_eq!(session.accept(json(&start_json(10, &[]))), Ok(None));
+    refuses(
+        &mut session,
+        blob(b"{}"),
+        ProtocolError::ConfigLength {
+            declared: 10,
+            received: 2,
+        },
+        ErrorCode::BadRequest,
+    );
+}
+
+#[test]
+fn a_long_config_blob_is_refused() {
+    let mut session = greeted(Authority::MayStart);
+    assert_eq!(session.accept(json(&start_json(2, &[("a", 3)]))), Ok(None));
+    refuses(
+        &mut session,
+        blob(b"{} "),
+        ProtocolError::ConfigLength {
+            declared: 2,
+            received: 3,
+        },
+        ErrorCode::BadRequest,
+    );
+}
+
+/// The config must be UTF-8, and it is checked as soon as it arrives,
+/// before any attachment is taken.
+#[test]
+fn a_config_that_isnt_utf8_is_refused() {
+    let cases: [&[u8]; 4] = [
+        b"{\xff}",
+        b"{\"a\":\"\xc3\"}",
+        b"\"\xed\xa0\x80\"",
+        b"{\"a\":1}\x80",
+    ];
+    for config in cases {
+        let mut session = greeted(Authority::MayStart);
+        let header = start_json(config.len() as u64, &[("a", 1)]);
+        assert_eq!(session.accept(json(&header)), Ok(None));
+        refuses(
+            &mut session,
+            blob(config),
+            ProtocolError::ConfigNotUtf8,
+            ErrorCode::BadRequest,
+        );
+    }
+}
+
+/// The 32 MiB budget is exact: the config travels raw, so a config of
+/// exactly 32 MiB passes, and one byte more is refused from the header.
+#[test]
+fn a_32_mib_config_passes_and_one_byte_more_is_refused_from_the_header() {
+    let limits = Limits::default();
+    assert_eq!(limits.max_start_total, 32 * MIB);
+    let config = format!("{{}}{}", " ".repeat(32 * MIB - 2));
+    let request = start(&config, &[]);
+
+    let mut bytes = encode_request(&Request::hello(), &limits).unwrap();
+    bytes.extend(encode_request(&request, &limits).unwrap());
+    for mut connection in [
+        Connection::new(Authority::MayStart, limits),
+        Connection::wide(Authority::MayStart, limits),
+    ] {
+        assert_eq!(
+            connection.feed(&bytes),
+            [Ok(Request::hello()), Ok(request.clone())]
+        );
+    }
+
+    let over = ProtocolError::StartTooLarge {
+        bytes: 32 * MIB as u64 + 1,
+        limit: 32 * MIB,
+    };
+    refuses(
+        &mut greeted(Authority::MayStart),
+        json(&start_json(32 * MIB as u64 + 1, &[])),
+        over.clone(),
+        ErrorCode::BadRequest,
+    );
+    let config = format!("{config} ");
+    assert_eq!(encode_request(&start(&config, &[]), &limits), Err(over));
+}
+
+// ---- start: the attachments ----
+
+#[test]
 fn start_with_one_attachment() {
     let mut session = greeted(Authority::MayStart);
-    assert_eq!(
-        session.accept(json(&start_json("{}", &[("ca", 5)]))),
-        Ok(None)
-    );
+    assert_eq!(begin(&mut session, "{}", &[("ca", 5)]), Ok(None));
     assert_eq!(
         session.accept(blob(b"-----")),
         Ok(Some(start("{}", &[("ca", b"-----")])))
@@ -283,7 +403,7 @@ fn start_with_one_attachment() {
 fn start_with_several_attachments_keeps_their_order() {
     let mut session = greeted(Authority::MayStart);
     let declared = [("geoip-cn", 4), ("client_key", 0), ("Root-CA", 3)];
-    assert_eq!(session.accept(json(&start_json("{}", &declared))), Ok(None));
+    assert_eq!(begin(&mut session, "{}", &declared), Ok(None));
     assert_eq!(session.accept(blob(b"\0\x01\x02\xff")), Ok(None));
     assert_eq!(session.accept(blob(b"")), Ok(None));
     let request = session.accept(blob(b"pem")).unwrap().unwrap();
@@ -335,7 +455,7 @@ fn attachment_ids_follow_the_policy_rule() {
             ids[index].0 = candidate.to_owned();
             let declared: Vec<(&str, u64)> = ids.iter().map(|(id, n)| (id.as_str(), *n)).collect();
             let mut session = greeted(Authority::MayStart);
-            let result = session.accept(json(&start_json("{}", &declared)));
+            let result = session.accept(json(&start_json(2, &declared)));
             if is_attachment_id(candidate) {
                 assert_eq!(result, Ok(None), "{candidate:?}");
                 passed += 1;
@@ -363,7 +483,7 @@ fn attachment_ids_follow_the_policy_rule() {
 fn duplicate_ids_are_refused() {
     refuses(
         &mut greeted(Authority::MayStart),
-        json(&start_json("{}", &[("a", 1), ("b", 1), ("a", 1)])),
+        json(&start_json(2, &[("a", 1), ("b", 1), ("a", 1)])),
         ProtocolError::DuplicateAttachmentId { index: 2 },
         ErrorCode::BadRequest,
     );
@@ -375,7 +495,7 @@ fn duplicate_ids_are_refused() {
 fn ids_are_case_sensitive() {
     let mut session = greeted(Authority::MayStart);
     assert_eq!(
-        session.accept(json(&start_json("{}", &[("a", 1), ("A", 1)]))),
+        session.accept(json(&start_json(2, &[("a", 1), ("A", 1)]))),
         Ok(None)
     );
 }
@@ -387,13 +507,13 @@ fn at_most_64_attachments() {
 
     let mut session = greeted(Authority::MayStart);
     assert_eq!(
-        session.accept(json(&start_json("{}", &declared[..64]))),
+        session.accept(json(&start_json(2, &declared[..64]))),
         Ok(None)
     );
 
     refuses(
         &mut greeted(Authority::MayStart),
-        json(&start_json("{}", &declared)),
+        json(&start_json(2, &declared)),
         ProtocolError::TooManyAttachments {
             count: 65,
             limit: 64,
@@ -402,13 +522,13 @@ fn at_most_64_attachments() {
     );
 }
 
-/// The total is checked from the declared lengths when the `start` arrives,
-/// before a single blob is taken.
+/// The total is checked from the declared lengths when the header
+/// arrives, before a single blob is taken.
 #[test]
 fn the_declared_total_is_checked_before_any_blob() {
     refuses(
         &mut greeted(Authority::MayStart),
-        json(&start_json("{}", &[("rules", 32 * MIB as u64)])),
+        json(&start_json(2, &[("rules", 32 * MIB as u64)])),
         ProtocolError::StartTooLarge {
             bytes: 32 * MIB as u64 + 2,
             limit: 32 * MIB,
@@ -418,7 +538,7 @@ fn the_declared_total_is_checked_before_any_blob() {
     refuses(
         &mut greeted(Authority::MayStart),
         json(&start_json(
-            "{}",
+            2,
             &[("a", 16 * MIB as u64), ("b", 16 * MIB as u64)],
         )),
         ProtocolError::StartTooLarge {
@@ -439,27 +559,28 @@ fn small_limits() -> Limits {
 
 #[test]
 fn the_total_counts_the_config_and_is_inclusive() {
-    let config = "[".repeat(40);
     // 40 + 60 = 100: at the limit.
     let mut session = greeted_with(Authority::MayStart, small_limits());
     assert_eq!(
-        session.accept(json(&start_json(&config, &[("a", 60)]))),
+        session.accept(json(&start_json(40, &[("a", 60)]))),
         Ok(None)
     );
     // 40 + 30 + 31 = 101.
     refuses(
         &mut greeted_with(Authority::MayStart, small_limits()),
-        json(&start_json(&config, &[("a", 30), ("b", 31)])),
+        json(&start_json(40, &[("a", 30), ("b", 31)])),
         ProtocolError::StartTooLarge {
             bytes: 101,
             limit: 100,
         },
         ErrorCode::BadRequest,
     );
-    // The config alone.
+    // The config alone: it may use the whole budget, past `max_blob`.
+    let mut session = greeted_with(Authority::MayStart, small_limits());
+    assert_eq!(session.accept(json(&start_json(100, &[]))), Ok(None));
     refuses(
         &mut greeted_with(Authority::MayStart, small_limits()),
-        json(&start_json(&"[".repeat(101), &[])),
+        json(&start_json(101, &[])),
         ProtocolError::StartTooLarge {
             bytes: 101,
             limit: 100,
@@ -472,7 +593,7 @@ fn the_total_counts_the_config_and_is_inclusive() {
 fn one_attachment_over_the_blob_cap_is_refused() {
     refuses(
         &mut greeted_with(Authority::MayStart, small_limits()),
-        json(&start_json("{}", &[("a", 1), ("b", 61)])),
+        json(&start_json(2, &[("a", 1), ("b", 61)])),
         ProtocolError::AttachmentTooLarge {
             index: 1,
             len: 61,
@@ -482,7 +603,7 @@ fn one_attachment_over_the_blob_cap_is_refused() {
     );
     refuses(
         &mut greeted(Authority::MayStart),
-        json(&start_json("{}", &[("a", u64::MAX)])),
+        json(&start_json(2, &[("a", u64::MAX)])),
         ProtocolError::AttachmentTooLarge {
             index: 0,
             len: u64::MAX,
@@ -502,7 +623,7 @@ fn huge_declared_lengths_do_not_overflow() {
     };
     refuses(
         &mut greeted_with(Authority::MayStart, limits),
-        json(&start_json("{}", &[("a", u64::MAX), ("b", u64::MAX)])),
+        json(&start_json(u64::MAX, &[("a", u64::MAX), ("b", u64::MAX)])),
         ProtocolError::StartTooLarge {
             bytes: u64::MAX,
             limit: 100,
@@ -514,10 +635,7 @@ fn huge_declared_lengths_do_not_overflow() {
 #[test]
 fn a_short_blob_is_refused() {
     let mut session = greeted(Authority::MayStart);
-    assert_eq!(
-        session.accept(json(&start_json("{}", &[("a", 2), ("b", 4)]))),
-        Ok(None)
-    );
+    assert_eq!(begin(&mut session, "{}", &[("a", 2), ("b", 4)]), Ok(None));
     assert_eq!(session.accept(blob(b"ok")), Ok(None));
     refuses(
         &mut session,
@@ -534,10 +652,7 @@ fn a_short_blob_is_refused() {
 #[test]
 fn a_long_blob_is_refused() {
     let mut session = greeted(Authority::MayStart);
-    assert_eq!(
-        session.accept(json(&start_json("{}", &[("a", 2)]))),
-        Ok(None)
-    );
+    assert_eq!(begin(&mut session, "{}", &[("a", 2)]), Ok(None));
     refuses(
         &mut session,
         blob(b"abc"),
@@ -560,10 +675,7 @@ fn a_blob_nobody_declared_is_refused() {
     );
     // One more than the start declared.
     let mut session = greeted(Authority::MayStart);
-    assert_eq!(
-        session.accept(json(&start_json("{}", &[("a", 1)]))),
-        Ok(None)
-    );
+    assert_eq!(begin(&mut session, "{}", &[("a", 1)]), Ok(None));
     assert!(session.accept(blob(b"x")).unwrap().is_some());
     session.replied();
     refuses(
@@ -576,11 +688,18 @@ fn a_blob_nobody_declared_is_refused() {
 
 #[test]
 fn json_while_blobs_are_owed_is_refused() {
+    // The config owed.
     let mut session = greeted(Authority::MayStart);
-    assert_eq!(
-        session.accept(json(&start_json("{}", &[("a", 1), ("b", 1)]))),
-        Ok(None)
+    assert_eq!(session.accept(json(&start_json(2, &[]))), Ok(None));
+    refuses(
+        &mut session,
+        json(r#"{"type":"stop"}"#),
+        ProtocolError::UnexpectedFrame(FrameType::Json),
+        ErrorCode::BadRequest,
     );
+    // An attachment owed.
+    let mut session = greeted(Authority::MayStart);
+    assert_eq!(begin(&mut session, "{}", &[("a", 1), ("b", 1)]), Ok(None));
     assert_eq!(session.accept(blob(b"x")), Ok(None));
     refuses(
         &mut session,
@@ -592,11 +711,112 @@ fn json_while_blobs_are_owed_is_refused() {
 
 #[test]
 fn proxy_port_zero_is_refused() {
-    let start = start_json("{}", &[]).replace("7890", "0");
+    let start = start_json(2, &[]).replace("7890", "0");
     refuses(
         &mut greeted(Authority::MayStart),
         json(&start),
         ProtocolError::ZeroProxyPort,
+        ErrorCode::BadRequest,
+    );
+}
+
+// ---- JSON frame sizes ----
+
+/// The largest header this crate's encoder can write: 64 attachments, each
+/// a 64-byte id and a 20-digit length, and a 20-digit `config_len`. It
+/// fits `max_start_json` (6,614 bytes), so a header is refused for what it
+/// says, never for its size.
+#[test]
+fn the_largest_start_header_fits_its_cap() {
+    let limits = Limits::default();
+    assert_eq!(limits.max_start_json(), 6614);
+    let ids: Vec<String> = (0..64).map(|i| format!("{i:0>64}")).collect();
+    let declared: Vec<(&str, u64)> = ids.iter().map(|id| (id.as_str(), u64::MAX)).collect();
+    let header = start_json(u64::MAX, &declared).replace(
+        r#"{"ipv6":true,"proxy_port":7890,"allow_lan":false,"system_proxy":true}"#,
+        r#"{"ipv6":false,"proxy_port":65535,"allow_lan":false,"system_proxy":false}"#,
+    );
+    assert_eq!(header.len(), 6614 - 1, "no comma after the last entry");
+    // Past the size check, refused for what it says.
+    refuses(
+        &mut greeted(Authority::MayStart),
+        json(&header),
+        ProtocolError::AttachmentTooLarge {
+            index: 0,
+            len: u64::MAX,
+            limit: 32 * MIB,
+        },
+        ErrorCode::BadRequest,
+    );
+    // The largest one that passes.
+    let declared: Vec<(&str, u64)> = ids.iter().map(|id| (id.as_str(), 500_000)).collect();
+    let mut session = greeted(Authority::MayStart);
+    assert_eq!(
+        session.accept(json(&start_json(1_000_000, &declared))),
+        Ok(None)
+    );
+}
+
+#[test]
+fn the_start_header_cap_follows_max_attachments() {
+    let entry = 101;
+    for (attachments, cap) in [(0, 4096), (40, 150 + 40 * entry), (64, 6614), (100, 10_250)] {
+        let limits = Limits {
+            max_attachments: attachments,
+            ..Limits::default()
+        };
+        assert_eq!(limits.max_start_json(), cap, "{attachments}");
+    }
+}
+
+/// The session holds JSON to the caps itself, before parsing, whether or
+/// not the decoder did: a `start` header to `max_start_json`, anything else
+/// to `max_control_json`.
+#[test]
+fn json_frames_are_held_to_their_caps_before_parsing() {
+    let too_large = |len, limit| ProtocolError::FrameTooLarge {
+        frame_type: FrameType::Json,
+        len,
+        limit,
+    };
+    // A header past its cap, padded.
+    let header = format!("{}{}", " ".repeat(6615), start_json(2, &[]));
+    refuses(
+        &mut greeted(Authority::MayStart),
+        json(&header),
+        too_large(header.len(), 6614),
+        ErrorCode::BadRequest,
+    );
+    // Anything else past 4 KiB, though under the header's cap.
+    let status = format!("{}{}", " ".repeat(5000), r#"{"type":"status"}"#);
+    refuses(
+        &mut greeted(Authority::MayStart),
+        json(&status),
+        too_large(status.len(), 4096),
+        ErrorCode::BadRequest,
+    );
+    // A header past 4 KiB from a read-only caller, or before hello.
+    let header = format!("{}{}", " ".repeat(5000), start_json(2, &[]));
+    refuses(
+        &mut greeted(Authority::ReadOnly),
+        json(&header),
+        too_large(header.len(), 4096),
+        ErrorCode::BadRequest,
+    );
+    let hello = format!("{}{HELLO}", " ".repeat(5000));
+    refuses(
+        &mut session(Authority::MayStart),
+        json(&hello),
+        too_large(hello.len(), 4096),
+        ErrorCode::BadRequest,
+    );
+    // A megabyte is refused by its size, not parsed.
+    let tag = "x".repeat(MIB);
+    let text = format!(r#"{{"type":"{tag}"}}"#);
+    refuses(
+        &mut greeted(Authority::MayStart),
+        json(&text),
+        too_large(text.len(), 6614),
         ErrorCode::BadRequest,
     );
 }
@@ -639,13 +859,14 @@ fn malformed_messages_are_refused() {
         assert_eq!(result.unwrap_err().code(), ErrorCode::BadRequest);
     }
 
-    let good_start = start_json("{}", &[("a", 1)]);
+    let good_start = start_json(2, &[("a", 1)]);
     let after_hello = [
         r#"{"type":"logs"}"#.to_owned(),
         r#"{"type":"status","verbose":true}"#.to_owned(),
         r#"{"type":"stop","force":true}"#.to_owned(),
         r#"{"type":"stop","type":"status"}"#.to_owned(),
         good_start.replace(r#""options""#, r#""binary_path":"/bin/sh","options""#),
+        good_start.replace(r#""config_len":2"#, r#""config":"{}","config_len":2"#),
         good_start.replace(
             r#""system_proxy":true"#,
             r#""system_proxy":true,"tun_name":"x""#,
@@ -656,9 +877,11 @@ fn malformed_messages_are_refused() {
         good_start.replace(r#""len":1"#, r#""len":1.5"#),
         good_start.replace(r#""len":1"#, r#""len":18446744073709551616"#),
         good_start.replace("7890", "65536"),
-        good_start.replace(r#""config":"{}""#, r#""config":null"#),
-        good_start.replace(r#""config":"{}""#, r#""config":{}"#),
-        good_start.replace(r#""config":"{}","#, ""),
+        good_start.replace(r#""config_len":2"#, r#""config_len":null"#),
+        good_start.replace(r#""config_len":2"#, r#""config_len":"2""#),
+        good_start.replace(r#""config_len":2"#, r#""config_len":-2"#),
+        good_start.replace(r#""config_len":2"#, r#""config_len":2.0"#),
+        good_start.replace(r#""config_len":2,"#, ""),
         good_start.replace(r#""ipv6":true"#, r#""ipv6":"true""#),
         good_start.replace(r#""ipv6":true"#, r#""ipv6":true,"ipv6":true"#),
         r#"["stop"]"#.to_owned(),
@@ -681,23 +904,23 @@ fn malformed_messages_are_refused() {
 }
 
 /// serde_json quotes what it couldn't take; the error keeps only so much of
-/// it, so a frame-sized tag doesn't come back frame-sized.
+/// it.
 #[test]
 fn an_error_quotes_little_of_what_was_sent() {
-    let tag = "x".repeat(1024 * 1024);
+    let tag = "x".repeat(6000);
     let mut session = greeted(Authority::MayStart);
     let Err(error) = session.accept(json(&format!(r#"{{"type":"{tag}"}}"#))) else {
         panic!("accepted");
     };
     assert!(
-        error.to_string().len() <= 4096 + 64,
-        "{}",
-        error.to_string().len()
+        matches!(error, ProtocolError::InvalidMessage(_)),
+        "{error:?}"
     );
     let Reply::Error { message, .. } = error.reply() else {
         unreachable!()
     };
-    assert!(message.len() <= 4096);
+    assert!(message.len() <= 4096, "{}", message.len());
+    assert!(message.ends_with('…'));
 }
 
 // ---- After an error ----
@@ -711,7 +934,7 @@ fn after_an_error_everything_is_refused_with_that_error() {
     for frame in [
         json(HELLO),
         json(r#"{"type":"status"}"#),
-        json(&start_json("{}", &[])),
+        json(&start_json(2, &[])),
         blob(b""),
     ] {
         assert_eq!(session.accept(frame), Err(error.clone()));
@@ -734,8 +957,12 @@ fn frame_caps_follow_the_state() {
         max_blob: None,
     };
     let wide = FrameCaps {
-        max_json: Some(33 * MIB),
+        max_json: Some(6614),
         max_blob: None,
+    };
+    let blob_of = |len| FrameCaps {
+        max_json: None,
+        max_blob: Some(len),
     };
 
     let mut session = session(Authority::MayStart);
@@ -745,23 +972,13 @@ fn frame_caps_follow_the_state() {
     session.replied();
     assert_eq!(session.frame_caps(), wide, "idle");
     session
-        .accept(json(&start_json("{}", &[("a", 3), ("b", 0)])))
+        .accept(json(&start_json(2, &[("a", 3), ("b", 0)])))
         .unwrap();
-    assert_eq!(
-        session.frame_caps(),
-        FrameCaps {
-            max_json: None,
-            max_blob: Some(3)
-        }
-    );
+    assert_eq!(session.frame_caps(), blob_of(2), "the config owed");
+    session.accept(blob(b"{}")).unwrap();
+    assert_eq!(session.frame_caps(), blob_of(3));
     session.accept(blob(b"abc")).unwrap();
-    assert_eq!(
-        session.frame_caps(),
-        FrameCaps {
-            max_json: None,
-            max_blob: Some(0)
-        }
-    );
+    assert_eq!(session.frame_caps(), blob_of(0));
     session.accept(blob(b"")).unwrap();
     assert_eq!(session.frame_caps(), wide, "start outstanding");
 
@@ -782,7 +999,8 @@ fn replied_never_changes_the_caps() {
         let frames = [
             json(HELLO),
             json(r#"{"type":"status"}"#),
-            json(&start_json("{}", &[("a", 1)])),
+            json(&start_json(2, &[("a", 1)])),
+            blob(b"{}"),
             blob(b"x"),
         ];
         for frame in frames {
@@ -799,24 +1017,15 @@ fn replied_never_changes_the_caps() {
     }
 }
 
-/// A large `start` right after `hello` passes the narrowed decoder: the
-/// caps set after `hello` already allow it.
-#[test]
-fn a_large_start_right_after_hello_passes_narrowed_caps() {
-    let limits = Limits::default();
-    let request = start(&format!("{{\"x\":\"{}\"}}", "y".repeat(100_000)), &[]);
-    let mut bytes = encode_request(&Request::hello(), &limits).unwrap();
-    bytes.extend(encode_request(&request, &limits).unwrap());
-    let mut connection = Connection::new(Authority::MayStart, limits);
-    assert_eq!(connection.feed(&bytes), [Ok(Request::hello()), Ok(request)]);
-}
-
 // ---- Through the decoder ----
 
 #[test]
 fn a_start_through_the_decoder() {
     let limits = Limits::default();
-    let request = start("{\"log\":{}}", &[("ca", b"pem"), ("rules", &[0; 70_000])]);
+    let request = start(
+        &format!("{{\"x\":\"{}\"}}", "y".repeat(100_000)),
+        &[("ca", b"pem"), ("rules", &[0; 70_000])],
+    );
     let mut bytes = encode_request(&Request::hello(), &limits).unwrap();
     bytes.extend(encode_request(&request, &limits).unwrap());
     bytes.extend(encode_request(&Request::Stop, &limits).unwrap());
@@ -835,7 +1044,7 @@ fn a_start_through_the_decoder() {
 /// caller before `hello`, could otherwise make the helper hold.
 #[test]
 fn narrowed_caps_hold_untrusted_callers_to_4_kib() {
-    let big = json_bytes(&start_json(&" ".repeat(5000), &[]));
+    let big = json_bytes(&format!("{}{}", " ".repeat(5000), start_json(2, &[])));
     let too_large = ProtocolError::FrameTooLarge {
         frame_type: FrameType::Json,
         len: big.len() - 5,
@@ -846,28 +1055,29 @@ fn narrowed_caps_hold_untrusted_callers_to_4_kib() {
     assert_eq!(connection.feed(&big), [Err(too_large.clone())]);
     assert_eq!(connection.decoder.reserved(), 0);
 
-    let mut connection = Connection::new(Authority::ReadOnly, Limits::default());
     let mut bytes = json_bytes(HELLO);
     bytes.extend(&big);
+    let mut connection = Connection::new(Authority::ReadOnly, Limits::default());
+    assert_eq!(
+        connection.feed(&bytes),
+        [Ok(Request::hello()), Err(too_large.clone())]
+    );
+
+    // Without narrowing, the session holds the line itself.
+    let mut connection = Connection::wide(Authority::ReadOnly, Limits::default());
     assert_eq!(
         connection.feed(&bytes),
         [Ok(Request::hello()), Err(too_large)]
     );
-
-    // Without narrowing, the same read-only start is parsed, then refused.
-    let mut connection = Connection::wide(Authority::ReadOnly, Limits::default());
-    assert_eq!(
-        connection.feed(&bytes),
-        [Ok(Request::hello()), Err(ProtocolError::Unauthorized)]
-    );
 }
 
 /// While blobs are owed the decoder takes only a blob of at most the owed
-/// length; a longer one is refused from its header.
+/// length; a longer one is refused from its header. The config is owed
+/// first.
 #[test]
 fn narrowed_caps_refuse_a_long_blob_from_its_header() {
     let mut bytes = json_bytes(HELLO);
-    bytes.extend(json_bytes(&start_json("{}", &[("a", 3)])));
+    bytes.extend(json_bytes(&start_json(2, &[("a", 3)])));
     bytes.extend(blob_bytes(&[0; 100_000]));
     let mut connection = Connection::new(Authority::MayStart, Limits::default());
     assert_eq!(
@@ -877,7 +1087,7 @@ fn narrowed_caps_refuse_a_long_blob_from_its_header() {
             Err(ProtocolError::FrameTooLarge {
                 frame_type: FrameType::Blob,
                 len: 100_000,
-                limit: 3
+                limit: 2
             })
         ]
     );
@@ -895,9 +1105,9 @@ fn debug_shows_no_config_or_attachment() {
     assert!(shown.contains("\"key\": 11"), "{shown}");
 
     let mut session = greeted(Authority::MayStart);
-    session
-        .accept(json(&start_json(r#"{"password":"hunter2"}"#, &[("a", 1)])))
-        .unwrap();
+    session.accept(json(&start_json(22, &[("a", 1)]))).unwrap();
+    assert!(format!("{session:?}").contains("blobs (2 owed)"));
+    session.accept(blob(br#"{"password":"hunter2"}"#)).unwrap();
     let shown = format!("{session:?}");
     assert!(!shown.contains("hunter2"), "{shown}");
     assert!(shown.contains("blobs (1 owed)"), "{shown}");

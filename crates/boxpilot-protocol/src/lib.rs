@@ -13,8 +13,9 @@
 //!   anything is allocated.
 //! - **Messages**: a [`Request`] goes to the helper; a [`ToClient`] comes
 //!   back, either a [`Reply`] to the one outstanding request or an [`Event`]
-//!   of the sing-box the connection started. A `start` is a JSON frame
-//!   followed by one blob frame per attachment.
+//!   of the sing-box the connection started. A `start` is a small JSON
+//!   header, then the config as a blob, then one blob per attachment: bulk
+//!   data never goes through the JSON parser.
 //! - **The helper's side** ([`ServerSession`], [`encode_to_client`]): the
 //!   per-connection state machine that turns frames into validated requests,
 //!   or into the error to answer before closing.
@@ -104,18 +105,17 @@ const MIB: usize = 1024 * KIB;
 /// it limits are read into memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// To the helper: the largest JSON frame, which only a caller that may
-    /// start can send, and only between requests (see `max_control_json`).
-    pub max_request_json: usize,
-    /// To the helper: the largest JSON frame before `hello`, from a caller
-    /// that may not start, or while a request is outstanding.
+    /// To the helper: the largest JSON frame other than a `start`'s header,
+    /// and the largest of any kind before `hello` or from a caller that may
+    /// not start.
     pub max_control_json: usize,
-    /// To the helper: the largest blob frame (one attachment).
+    /// To the helper: the largest attachment blob.
     pub max_blob: usize,
-    /// To the helper: a whole `start`, its config text and the declared
-    /// lengths of all its attachments together.
+    /// To the helper: a whole `start`, its config and all its attachments
+    /// together, as declared in its header.
     pub max_start_total: usize,
-    /// To the helper: the most attachments one `start` may declare.
+    /// To the helper: the most attachments one `start` may declare. It also
+    /// sizes the `start` header's cap ([`Limits::max_start_json`]).
     pub max_attachments: usize,
     /// To the GUI: the largest JSON frame, replies and events alike.
     pub max_reply_json: usize,
@@ -127,21 +127,9 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         // 32 MiB, the policy's own cap on config text, which ADR 0006 rule 1
-        // sizes for real profiles and rule sets. It bounds what one `start`
-        // makes the helper hold, config and attachments together, so a
-        // config the policy would take is never refused here for its size
-        // alone, short of its JSON escaping (below).
+        // sizes for real profiles and rule sets.
         let start = boxpilot_policy::Limits::default().max_bytes;
         Self {
-            // A `start` carries its config as a JSON string, so its frame
-            // holds a config of up to `start` bytes, the attachment list (at
-            // most 64 entries of an id of at most 64 bytes and a length:
-            // under 8 KiB) and the envelope; the extra 1 MiB covers those
-            // and the escaping of a typical profile. Escaping can double the
-            // worst case (every `"` and `\` takes two bytes), so a config
-            // near 32 MiB may not fit: the GUI's encoder then refuses it as
-            // too large before sending. Real profiles are a few MiB.
-            max_request_json: start + MIB,
             // Every request but `start` is under 100 bytes; 4 KiB leaves
             // room for whitespace. A process that may not start can't make
             // the root helper hold more than this for it (rule 4).
@@ -149,12 +137,16 @@ impl Default for Limits {
             // One attachment may use the whole `start` budget: a large local
             // `.srs` rule set.
             max_blob: start,
+            // What one `start` makes the helper hold, config and attachments
+            // together. The config travels raw, as a blob, so this is exact:
+            // a config the policy would take for its size alone is never
+            // refused here, and no escaping eats into it.
             max_start_total: start,
             // A profile reads a handful of files: a CA, a client certificate
             // and key per outbound, a few local rule sets. The policy's
             // fixture that fills every file-read field it knows reads about
-            // twenty. 64 leaves room and keeps the id list, checked before
-            // any blob is read, small.
+            // twenty. 64 leaves room and keeps the header, checked before
+            // any blob is read, under 7 KiB.
             max_attachments: 64,
             // A log line of 64 KiB grows to at most 384 KiB when every byte
             // is a control character (`\u0001`, six bytes each), and a
@@ -171,13 +163,52 @@ impl Default for Limits {
     }
 }
 
+/// The digits of the largest u64, the longest number a `start` header
+/// holds (`config_len`, each `len`).
+const U64_DIGITS: usize = 20;
+
+/// The longest attachment entry of a `start` header, its comma included:
+/// 17 bytes of punctuation and keys, a 64-byte id (whose characters JSON
+/// never escapes) and a 20-digit length. 101 bytes.
+const START_ENTRY: usize =
+    r#"{"id":"","len":},"#.len() + boxpilot_policy::MAX_ATTACHMENT_ID_LEN + U64_DIGITS;
+
+/// A `start` header without its entries: 130 bytes of tag, keys,
+/// punctuation and the longest options, plus a 20-digit `config_len`.
+/// 150 bytes.
+const START_ENVELOPE: usize = concat!(
+    r#"{"type":"start","config_len":,"attachments":[],"options":"#,
+    r#"{"ipv6":false,"proxy_port":65535,"allow_lan":false,"system_proxy":false}}"#
+)
+.len()
+    + U64_DIGITS;
+
 impl Limits {
+    /// The largest `start` header: the envelope (150 bytes) and
+    /// `max_attachments` of the longest entry (101 bytes each), so 6,614
+    /// bytes for 64 attachments, as this crate's encoder writes it (no
+    /// whitespace, no escapes). Never less than `max_control_json`. Nothing
+    /// in it is bulk data: the config and the attachments follow as blobs,
+    /// so no large input ever goes through serde_json.
+    pub fn max_start_json(&self) -> usize {
+        START_ENTRY
+            .saturating_mul(self.max_attachments)
+            .saturating_add(START_ENVELOPE)
+            .max(self.max_control_json)
+    }
+
+    /// The largest blob: an attachment, or a `start`'s config, which may
+    /// use the whole `max_start_total`.
+    pub fn max_any_blob(&self) -> usize {
+        self.max_blob.max(self.max_start_total)
+    }
+
     /// The widest caps the helper reads with, for a decoder that doesn't
     /// narrow them per state with [`ServerSession::frame_caps`].
     pub fn to_helper_caps(&self) -> FrameCaps {
         FrameCaps {
-            max_json: Some(self.max_request_json),
-            max_blob: Some(self.max_blob),
+            max_json: Some(self.max_start_json()),
+            max_blob: Some(self.max_any_blob()),
         }
     }
 

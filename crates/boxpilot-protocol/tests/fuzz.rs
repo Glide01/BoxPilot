@@ -19,7 +19,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Small enough that random input reaches every limit.
 fn small_limits() -> Limits {
     Limits {
-        max_request_json: 2048,
         max_control_json: 256,
         max_blob: 50,
         max_start_total: 120,
@@ -114,7 +113,7 @@ fn run(
         hello: false,
         outstanding: false,
     };
-    let widest = limits.max_request_json.max(limits.max_blob);
+    let widest = limits.max_start_json().max(limits.max_any_blob());
     for mut piece in rng.splits(input) {
         loop {
             piece = &piece[decoder.feed(piece)..];
@@ -191,7 +190,7 @@ fn random_config(rng: &mut Rng) -> String {
         r#"{"outbounds":[{"type":"direct","tag":"d"}]}"#,
         "\"\\u0000\"",
         "日本 \" \\ \n",
-        "",
+        " ",
     ];
     SNIPPETS[rng.below(SNIPPETS.len())].to_owned()
 }
@@ -312,13 +311,29 @@ fn structured(rng: &mut Rng) -> Vec<u8> {
                     .iter()
                     .map(|(id, len)| serde_json::json!({"id": id, "len": len}))
                     .collect();
+                let config = match rng.below(20) {
+                    0 => Vec::new(),
+                    1 => b"{\xff}".to_vec(),
+                    2 => b"{\"a\":\"\xc3\"}".to_vec(),
+                    _ => random_config(rng).into_bytes(),
+                };
+                let config_len = match rng.below(20) {
+                    0 => config.len() as u64 + 1,
+                    1 => (config.len() as u64).saturating_sub(1),
+                    2 => 121,
+                    3 => u64::MAX,
+                    _ => config.len() as u64,
+                };
                 let start = serde_json::json!({
                     "type": "start",
-                    "config": random_config(rng),
+                    "config_len": config_len,
                     "attachments": attachments,
                     "options": {"ipv6": false, "proxy_port": port, "allow_lan": true, "system_proxy": false},
                 });
                 out.extend(json_bytes(&start.to_string()));
+                if rng.chance(95) {
+                    out.extend(blob_bytes(&config));
+                }
                 let blobs = if rng.chance(85) {
                     declared.len()
                 } else {
@@ -345,7 +360,7 @@ fn structured(rng: &mut Rng) -> Vec<u8> {
                     r#"{"type":"status","x":1}"#,
                     r#"{"type":"logs"}"#,
                     r#"{"type":"stop","type":"stop"}"#,
-                    r#"{"type":"start","config":"{}","attachments":[],"options":[true,1,true,true]}"#,
+                    r#"{"type":"start","config_len":2,"attachments":[],"options":[true,1,true,true]}"#,
                     "null",
                 ];
                 out.extend(json_bytes(GARBAGE[rng.below(GARBAGE.len())]));
@@ -426,6 +441,9 @@ fn fuzz_the_helper_side() {
         "RequestOutstanding",
         "Unauthorized",
         "ZeroProxyPort",
+        "EmptyConfig",
+        "ConfigLength",
+        "ConfigNotUtf8",
         "TooManyAttachments",
         "InvalidAttachmentId",
         "DuplicateAttachmentId",

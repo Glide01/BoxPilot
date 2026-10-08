@@ -116,7 +116,8 @@ fn requests_on_the_wire() {
     assert_eq!(
         one(&start(r#"{"log":{}}"#, &[("ca", b"pem"), ("rules", b"")])),
         [
-            r#"{"type":"start","config":"{\"log\":{}}","attachments":[{"id":"ca","len":3},{"id":"rules","len":0}],"options":{"ipv6":true,"proxy_port":7890,"allow_lan":false,"system_proxy":true}}"#,
+            r#"{"type":"start","config_len":10,"attachments":[{"id":"ca","len":3},{"id":"rules","len":0}],"options":{"ipv6":true,"proxy_port":7890,"allow_lan":false,"system_proxy":true}}"#,
+            "<blob 10>",
             "<blob 3>",
             "<blob 0>",
         ]
@@ -148,6 +149,7 @@ fn the_encoder_refuses_what_the_session_would() {
             }),
             ProtocolError::ZeroProxyPort,
         ),
+        (start("", &[("a", b"1")]), ProtocolError::EmptyConfig),
     ];
     for (request, error) in cases {
         assert_eq!(encode_request(&request, &limits), Err(error));
@@ -176,30 +178,25 @@ fn the_encoder_refuses_what_the_session_would() {
     );
 }
 
-/// A config within the Start budget whose escaping takes the frame over its
-/// cap is refused before it is sent, never cut.
+/// The config travels raw, as its own blob: the frame after the header
+/// is exactly its bytes, whatever JSON escaping would have made of them,
+/// and the header stays small however large the config.
 #[test]
-fn a_config_that_escapes_past_the_frame_cap_is_refused() {
+fn the_config_travels_raw() {
     let limits = Limits {
-        max_request_json: 200,
-        max_start_total: 1000,
+        max_start_total: 150,
         ..Limits::default()
     };
-    let config = "\"".repeat(150);
-    let Err(error) = encode_request(&start(&config, &[]), &limits) else {
-        panic!("encoded");
-    };
-    assert!(
-        matches!(
-            error,
-            ProtocolError::FrameTooLarge {
-                frame_type: FrameType::Json,
-                limit: 200,
-                ..
-            }
-        ),
-        "{error:?}"
-    );
+    let config = "\"\\\n".repeat(50);
+    assert_eq!(config.len(), 150);
+    let bytes = encode_request(&start(&config, &[]), &limits).unwrap();
+    let frames = payloads(&bytes, &limits);
+    assert_eq!(frames.len(), 2);
+    assert!(frames[0].contains(r#""config_len":150"#), "{}", frames[0]);
+    assert!(frames[0].len() < 200, "{}", frames[0]);
+    let blob = &bytes[5 + frames[0].len()..];
+    assert_eq!(blob[..5], [0, 0, 0, 150, 0x02]);
+    assert_eq!(&blob[5..], config.as_bytes());
 }
 
 // ---- To the GUI ----

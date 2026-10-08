@@ -22,7 +22,8 @@ pub enum ProtocolError {
     /// blob no `start` declared, or JSON while a `start` still owes blobs.
     UnexpectedFrame(FrameType),
     /// A declared payload length over the cap for its frame type, refused
-    /// from the header alone.
+    /// from the header alone; or a JSON request other than `start` larger
+    /// than [`crate::Limits::max_control_json`].
     FrameTooLarge {
         frame_type: FrameType,
         len: usize,
@@ -35,8 +36,9 @@ pub enum ProtocolError {
 
     // ---- Messages ----
     /// JSON that isn't one of the protocol's messages: a syntax error, an
-    /// unknown `type`, an unknown or missing field, a value out of range.
-    /// serde_json's message, cut to [`MAX_ERROR_MESSAGE`].
+    /// unknown `type`, an unknown or missing field, a value out of range, an
+    /// array where an object belongs. serde_json's message, cut to
+    /// [`MAX_ERROR_MESSAGE`].
     InvalidMessage(String),
 
     // ---- The helper's session ----
@@ -53,6 +55,8 @@ pub enum ProtocolError {
     Unauthorized,
     /// A `start` whose `options.proxy_port` is 0.
     ZeroProxyPort,
+    /// A `start` whose `config_len` is 0: the policy needs a JSON object.
+    EmptyConfig,
     /// A `start` declaring more attachments than [`crate::Limits`] allows.
     TooManyAttachments { count: usize, limit: usize },
     /// The attachment at `index` has an id that isn't 1 to 64 of
@@ -66,9 +70,13 @@ pub enum ProtocolError {
         len: u64,
         limit: usize,
     },
-    /// The config and the declared attachment lengths add up to more than
-    /// one `start` may carry.
+    /// The declared config and attachment lengths add up to more than one
+    /// `start` may carry.
     StartTooLarge { bytes: u64, limit: usize },
+    /// The config blob isn't the length the header declared.
+    ConfigLength { declared: u64, received: usize },
+    /// The config blob isn't UTF-8.
+    ConfigNotUtf8,
     /// The blob for the attachment at `index` isn't the length its header
     /// declared.
     BlobLength {
@@ -136,6 +144,12 @@ impl fmt::Display for ProtocolError {
                  only `hello` and `status` are open to it",
             ),
             ProtocolError::ZeroProxyPort => f.write_str("`options.proxy_port` is 0"),
+            ProtocolError::EmptyConfig => f.write_str("`config_len` is 0"),
+            ProtocolError::ConfigLength { declared, received } => write!(
+                f,
+                "the config declared {declared} bytes, but its blob has {received}"
+            ),
+            ProtocolError::ConfigNotUtf8 => f.write_str("the config is not UTF-8"),
             ProtocolError::TooManyAttachments { count, limit } => write!(
                 f,
                 "{count} attachments are declared, over the limit of {limit}"

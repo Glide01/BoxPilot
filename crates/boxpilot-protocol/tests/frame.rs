@@ -142,7 +142,8 @@ fn four_gib_declared_is_refused_from_the_header_alone() {
         assert_eq!(decoder.feed(&header[4..]), 1);
         let frame_type = FrameType::from_byte(type_byte).unwrap();
         let limit = match frame_type {
-            FrameType::Json => 33 * MIB,
+            // The largest `start` header; nothing bulk travels as JSON.
+            FrameType::Json => 6614,
             FrameType::Blob => 32 * MIB,
         };
         let error = ProtocolError::FrameTooLarge {
