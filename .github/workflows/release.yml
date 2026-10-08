@@ -190,6 +190,24 @@ jobs:
           $env:BOXPILOT_HELPER_SINGBOX_VERSION = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
           cargo test --target x86_64-pc-windows-msvc --test install_manifest -- --ignored
 
+      # The helper's sing-box runs as SYSTEM, and the GUI that starts it gets
+      # its `api` service's secret, so every RPC of that service runs as
+      # SYSTEM for the GUI. A new one must be audited before it does (ADR
+      # 0006, "Audited at every SINGBOX_VERSION bump"):
+      # crates/boxpilot-helper/tests/api_rpcs.rs lists the audited RPCs, and
+      # this fails the release when the bundled version's
+      # daemon/started_service.proto declares any other set. $ver was
+      # validated by the download step.
+      - name: Check sing-box's API RPCs against the audited list
+        run: |
+          $ver = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
+          $proto = Join-Path $env:RUNNER_TEMP "started_service.proto"
+          $url = "https://raw.githubusercontent.com/SagerNet/sing-box/v$ver/daemon/started_service.proto"
+          Write-Host "Fetching $url"
+          Invoke-WebRequest -Uri $url -OutFile $proto
+          $env:BOXPILOT_SINGBOX_PROTO = $proto
+          cargo test --target x86_64-pc-windows-msvc --test api_rpcs -- --ignored
+
       - name: Install WiX Toolset
         run: choco install wixtoolset -y
 
