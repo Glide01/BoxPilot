@@ -28,7 +28,7 @@ administrator, one step per CI step:
                    (one with probes and checks from outside while it runs)
   idle-exit        the service stops by itself a minute after the last
                    connection, with exit code 0
-  standard-user    the smoke client, sc.exe and cmd.exe as a new standard
+  standard-user    the smoke client and sc.exe as a new standard
                    account: read-only, and kept out of everything else
   broken-install   a tampered sing-box.exe, a Users ACE on Helper, on
                    HelperState and on sing-box.exe, a squatted pipe name: each
@@ -77,7 +77,6 @@ $HelperDir = Join-Path $ProductDir 'Helper'
 $StateDir = Join-Path $ProductDir 'HelperState'
 $HelperLog = Join-Path $StateDir 'helper.log'
 $ScExe = Join-Path $env:SystemRoot 'System32\sc.exe'
-$CmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
 # Somewhere a standard account can run the smoke client from and write to.
 $WorkDir = Join-Path $env:PUBLIC 'boxpilot-smoke'
 $SmokeUser = 'bpsmoke'
@@ -624,7 +623,7 @@ function Assert-HelperFiles {
         }
     }
     Write-Host "ok: $HelperDir holds exactly $($actual -join ', '), as the manifest hashes them"
-    foreach ($path in @($env:SystemDrive + '\', $env:ProgramFiles, $ProductDir, $HelperDir)) {
+    foreach ($path in @(($env:SystemDrive + '\'), $env:ProgramFiles, $ProductDir, $HelperDir)) {
         Write-Host "---- icacls $path"
         & icacls.exe $path | ForEach-Object { Write-Host $_ }
     }
@@ -815,13 +814,7 @@ function Assert-UserServiceRights($Credential) {
 
 # HelperState and the helper's log can't even be listed or read.
 function Assert-UserStateAccess($Credential) {
-    foreach ($check in @(@{ Name = 'dir-state'; Command = "dir `"$StateDir`"" }, @{ Name = 'type-log'; Command = "type `"$HelperLog`"" })) {
-        $result = Invoke-AsUser $check.Name $CmdExe "/c $($check.Command)" $Credential
-        if ($result.ExitCode -eq 0 -or $result.Output -notmatch 'denied') {
-            throw "as ${SmokeUser}, $($check.Command) exited with $($result.ExitCode) and didn't say access is denied"
-        }
-        Write-Host "ok: as a standard account, $($check.Command) is denied"
-    }
+    Invoke-SmokeAsUser 'denied' "denied --dir `"$StateDir`" --file `"$HelperLog`"" $Credential
 }
 
 # Four read-only connections held by the standard account, a fifth closed,

@@ -103,6 +103,8 @@ as a standard account:
                    this account can't open the pipe for GENERIC_WRITE
   readonly-slots [--ready-file <file> --release-file <file>]
                    4 read-only connections are served, a 5th is closed
+  denied --dir <dir> --file <file>
+                   this account can neither list <dir> nor open <file>
 
 --ready-file: written (key=value lines) once the expectations so far held;
 --release-file: then wait for it to appear (at most 3 minutes) before ending.";
@@ -194,6 +196,7 @@ as a standard account:
             "unauthorized" => unauthorized(),
             "generic-write" => generic_write(&options),
             "readonly-slots" => readonly_slots(&options),
+            "denied" => denied(&options),
             other => Err(Failure::Usage(format!("unknown command {other:?}"))),
         };
         match result {
@@ -247,6 +250,8 @@ as a standard account:
         end: Option<String>,
         ready_file: Option<PathBuf>,
         release_file: Option<PathBuf>,
+        dir: Option<PathBuf>,
+        file: Option<PathBuf>,
         probes: bool,
         hold: bool,
     }
@@ -268,6 +273,8 @@ as a standard account:
                     "--end" => options.end = Some(value()?),
                     "--ready-file" => options.ready_file = Some(value()?.into()),
                     "--release-file" => options.release_file = Some(value()?.into()),
+                    "--dir" => options.dir = Some(value()?.into()),
+                    "--file" => options.file = Some(value()?.into()),
                     "--probes" => options.probes = true,
                     "--hold" => options.hold = true,
                     other => return Err(format!("unexpected argument {other:?}")),
@@ -1198,6 +1205,31 @@ as a standard account:
             began.elapsed().as_secs()
         );
         Ok(())
+    }
+
+    // ---- HelperState ----
+
+    /// This account can't list `--dir` (HelperState) or open `--file` (the
+    /// helper's log in it). Read from the error itself: `cmd /c dir` says
+    /// "File Not Found" for a directory it may not list.
+    fn denied(options: &Options) -> Outcome {
+        let (Some(dir), Some(file)) = (&options.dir, &options.file) else {
+            return Err(Failure::Usage("denied needs --dir and --file".into()));
+        };
+        expect_denied(&format!("listing {}", dir.display()), fs::read_dir(dir))?;
+        expect_denied(&format!("opening {}", file.display()), File::open(file))?;
+        Ok(())
+    }
+
+    fn expect_denied<T>(what: &str, result: io::Result<T>) -> Outcome {
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                println!("ok: {what} is denied");
+                Ok(())
+            }
+            Err(error) => Err(format!("{what} failed, but not as denied: {error}").into()),
+            Ok(_) => Err(format!("{what} succeeded").into()),
+        }
     }
 
     // ---- The pipe name ----

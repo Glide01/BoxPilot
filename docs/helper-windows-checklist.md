@@ -28,8 +28,8 @@ a release still needs the manual run; what is unmarked is manual only.
 - `icacls "C:\Program Files\BoxPilot\HelperState"`: owner SYSTEM,
   protected, SYSTEM and Administrators only (**CI**, right after the
   install and again, for everything in it, once the helper has used it);
-  Users can't even list it (**CI**: `dir` and `type helper.log` as the
-  standard account are denied).
+  Users can't even list it (**CI**: listing it and opening `helper.log`
+  as the standard account fail as access denied).
 - `C:\Program Files\BoxPilot\Helper` holds exactly `boxpilot-helper.exe`,
   `sing-box.exe`, `libcronet.dll`, `manifest.json` (**CI**, with the
   manifest's hashes), and passes the helper's own check (**CI**: the
