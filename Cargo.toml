@@ -18,8 +18,8 @@ product-icon = "assets/app.ico"
 # gpui (ADR 0006). They are default members too, so the plain `cargo test`
 # CI runs at the root covers their tests as well.
 [workspace]
-members = [".", "crates/boxpilot-policy"]
-default-members = [".", "crates/boxpilot-policy"]
+members = [".", "crates/boxpilot-policy", "crates/boxpilot-protocol"]
+default-members = [".", "crates/boxpilot-policy", "crates/boxpilot-protocol"]
 
 [profile.release]
 panic = "abort"
