@@ -250,7 +250,7 @@ pub fn sandbox_exec_args(params: &Params, sing_box_args: &[String]) -> Vec<Strin
 mod tests {
     use super::*;
     use crate::paths::run_name;
-    use crate::spawnplan::{sing_box_args, POSIX_PATH};
+    use crate::spawnplan::POSIX_PATH;
     use boxpilot_protocol::endpoint::macos;
     use std::path::PathBuf;
 
@@ -326,7 +326,9 @@ mod tests {
     }
 
     /// The installed daemon's parameters are `endpoint::macos`'s paths and
-    /// the run plan's, and nothing else.
+    /// the run plan's, and nothing else. POSIX only: on Windows `Layout`
+    /// joins the macOS paths with `\`, which no profile is given.
+    #[cfg(unix)]
     #[test]
     fn the_installed_parameters_come_from_the_endpoint_and_the_run() {
         let (layout, sing_box, run, user) = installed();
@@ -351,13 +353,16 @@ mod tests {
     }
 
     /// sandbox-exec gets the constant profile, the four parameters, `--`,
-    /// then exactly the verified sing-box and its arguments.
+    /// then exactly the verified sing-box and its arguments. POSIX only, as
+    /// above.
+    #[cfg(unix)]
     #[test]
     fn the_command_applies_the_profile_then_runs_exactly_sing_box() {
         let (layout, sing_box, run, user) = installed();
         let params = Params::for_run(&layout, &sing_box, &run, &user).unwrap();
         let run_text = run.to_str().unwrap();
-        let sing_box_args = sing_box_args(run_text, &format!("{run_text}/config.json"));
+        let sing_box_args =
+            crate::spawnplan::sing_box_args(run_text, &format!("{run_text}/config.json"));
         let args = sandbox_exec_args(&params, &sing_box_args);
         let mut expected = vec![
             "-p".to_owned(),
