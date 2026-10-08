@@ -200,10 +200,11 @@ fn open(cx: &mut App) {
         return;
     };
     let app_state = main.app_state.clone();
-    // Sizes are of the client area. On Windows and macOS that now includes
-    // our own title bar, which used to sit outside it: add it so the window
-    // opens with as much room for the page as before.
-    let bar_height = if cfg!(any(target_os = "windows", target_os = "macos")) {
+    // Sizes are of the client area. On Windows that now includes our own
+    // title bar, which used to sit outside it: add it so the window opens
+    // with as much room for the page as before. (macOS's content runs
+    // under its transparent title bar too, but without a strip of ours.)
+    let bar_height = if cfg!(target_os = "windows") {
         title_bar::TITLE_BAR_HEIGHT
     } else {
         px(0.)
@@ -223,10 +224,11 @@ fn open(cx: &mut App) {
             // Wayland only raises a window that has an app id, and the
             // `.desktop` file is matched by it. Ignored elsewhere.
             app_id: Some("boxpilot".into()),
-            // Windows, macOS: no native title bar, `RootView` draws its own
-            // (`ui::title_bar`; macOS keeps the traffic lights). Linux keeps
-            // asking for server-side decorations (gpui's default) and draws
-            // its own only where the compositor has none.
+            // Windows: no native title bar, `RootView` draws its own
+            // (`ui::title_bar`); macOS keeps only the traffic lights, over
+            // the sidebar. Linux keeps asking for server-side decorations
+            // (gpui's default) and draws its own only where the compositor
+            // has none.
             titlebar: Some(title_bar::titlebar_options()),
             app_owns_titlebar_drag: title_bar::APP_OWNS_TITLEBAR_DRAG,
             ..Default::default()

@@ -1,5 +1,5 @@
-//! Left navigation column: the app's icon and name (unless the title bar
-//! shows them), the page items, and a status tile at the bottom (dot +
+//! Left navigation column: a header with the app's icon and name (unless
+//! BoxPilot's title bar shows them), the page items, and a status tile at the bottom (dot +
 //! status, then the live up/down speeds while connected or the active
 //! profile's name otherwise). Pure function —
 //! `RootView` supplies the active page, status, detail line, badges, and the
@@ -12,7 +12,7 @@ use crate::ui::widgets::{lead_offset, text_centered, Lead};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    sidebar::{Sidebar, SidebarHeader, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
     Icon, IconName, StyledExt,
 };
 
@@ -66,7 +66,7 @@ pub struct Badges {
     pub settings: bool,
 }
 
-/// The app's icon and name: at the top of the sidebar, or `compact` in
+/// The app's icon and name: in the sidebar's header, or `compact` in
 /// BoxPilot's own title bar.
 pub fn brand(compact: bool) -> Div {
     let (icon, name) = if compact {
@@ -84,7 +84,7 @@ pub fn brand(compact: bool) -> Div {
 
 #[allow(clippy::too_many_arguments)]
 pub fn sidebar(
-    show_brand: bool,
+    header: Option<AnyElement>,
     active: ActivePage,
     dot_color: Hsla,
     status_label: &'static str,
@@ -126,9 +126,7 @@ pub fn sidebar(
         .collapsible(false)
         .w(px(208.))
         // With BoxPilot's own title bar the name is up there instead.
-        .when(show_brand, |sidebar| {
-            sidebar.header(SidebarHeader::new().child(brand(false).px_1().py_1()))
-        })
+        .when_some(header, |sidebar, header| sidebar.header(header))
         .child(SidebarMenu::new().children(items.map(|(page, label, icon)| {
             let on_nav = on_nav.clone();
             let badge = match page {

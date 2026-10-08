@@ -401,12 +401,24 @@ impl Render for RootView {
             ActivePage::Settings => self.settings.clone().into(),
         };
 
-        // Our own title bar (Windows, macOS; Linux without server-side
+        // Our own title bar (Windows; Linux without server-side
         // decorations): the chrome runs up to the window's top edge, the
         // name moves from the sidebar into the bar, and the panel starts
-        // below it.
-        let client_drawn = title_bar::is_client_drawn(window);
-        let title_bar = client_drawn.then(|| title_bar::title_bar(brand(true), window, cx));
+        // below it. Elsewhere the name heads the sidebar — on macOS under
+        // the traffic lights, beside a panel that runs up to the top.
+        let strip = title_bar::draws_strip(window);
+        let title_bar = strip.then(|| title_bar::title_bar(brand(true), window, cx));
+        let header = (!strip).then(|| {
+            // The padding `SidebarHeader` gave it, not its hover: the name
+            // isn't clickable.
+            let name = div().p_2().child(brand(false).px_1().py_1());
+            if cfg!(target_os = "macos") {
+                title_bar::sidebar_top(name, window, cx).into_any_element()
+            } else {
+                name.into_any_element()
+            }
+        });
+        let top_edge = title_bar::top_edge(px(PANEL_INSET), window, cx);
 
         // 注意:不要用 gpui-component 的 `.h_flex()` —— 它附带
         // `items_center`,会把整列内容垂直居中而不是拉伸到全高。
@@ -417,7 +429,7 @@ impl Render for RootView {
             .min_h_0()
             .w_full()
             .child(sidebar(
-                !client_drawn,
+                header,
                 self.active_page,
                 dot_color,
                 status_label,
@@ -442,8 +454,8 @@ impl Render for RootView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .when(client_drawn, |panel| panel.mt_1().mb(px(PANEL_INSET)))
-                    .when(!client_drawn, |panel| panel.my(px(PANEL_INSET)))
+                    .when(strip, |panel| panel.mt_1().mb(px(PANEL_INSET)))
+                    .when(!strip, |panel| panel.my(px(PANEL_INSET)))
                     .mr(px(PANEL_INSET))
                     .v_flex()
                     .rounded(px(PANEL_RADIUS))
@@ -459,7 +471,9 @@ impl Render for RootView {
                     .relative()
                     .child(page.cached(StyleRefinement::default().size_full()))
                     .child(self.toasts.clone()),
-            );
+            )
+            .relative()
+            .children(top_edge);
 
         let root = div()
             .key_context(KEY_CONTEXT)
