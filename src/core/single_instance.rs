@@ -8,10 +8,9 @@
 //! forwards those itself), so only a second process started from a terminal
 //! (or `open -n`) goes through here. So:
 //!
-//! 1. Every fresh process first calls [`try_forward`] **before** the
-//!    elevation check in `main`: if a primary instance is already listening,
-//!    the URI is handed over and the new process exits — no UAC prompt at
-//!    all on the common Windows path.
+//! 1. Every fresh process first calls [`try_forward`]: if a primary
+//!    instance is already listening, the URI is handed over and the new
+//!    process exits.
 //! 2. The process that finds no listener becomes the primary: it takes the
 //!    instance lock and runs the server thread, feeding received payloads
 //!    into the UI as [`LaunchAttempt`]s via the callback (`main` wires it to
@@ -25,14 +24,18 @@
 //!
 //! **Windows** — a named pipe plus a session-local mutex.
 //!
-//! DACL note: the pipe carries an explicit SDDL security descriptor
-//! (`D:(A;;GRGW;;;WD)` + low-integrity label). The default DACL of an
-//! elevated process's token grants access to BUILTIN\Administrators and
-//! SYSTEM only — and in the browser-spawned *non-elevated* sender the
-//! Administrators group is deny-only, so with default security the forward
-//! would fail with ERROR_ACCESS_DENIED. World-writable is fine here: the
-//! pipe only carries import-link strings, and every import goes through an
-//! explicit user confirmation dialog before anything is fetched.
+//! The pipe carries an explicit DACL: read/write for the current user's own
+//! SID (from the process token) and full control for SYSTEM, nobody else.
+//! BoxPilot never elevates itself any more (ADR 0006), but the user may run
+//! it as Administrator; the token's user SID is the same either way, so a
+//! browser-spawned, non-elevated sender reaches an elevated primary too,
+//! which the default DACL of an elevated token (Administrators + SYSTEM)
+//! would refuse. No `Everyone`, no low-integrity label. The pipe also
+//! refuses remote clients (`PIPE_REJECT_REMOTE_CLIENTS`), and one client may
+//! send at most [`MAX_PAYLOAD`] bytes: more is dropped, and the attempt
+//! still surfaces the window (ADR 0001). The sender opens it with an
+//! identification-only security QoS, so whatever holds the name can learn
+//! who forwarded a link, never act as them.
 //!
 //! **Linux and macOS** — a Unix socket plus an `flock` on a lock file, both
 //! in `$XDG_RUNTIME_DIR` (falling back to `boxpilot-<uid>.*` in the temp
@@ -48,6 +51,26 @@
 //! MSVC build is the verifier.
 
 use crate::core::deeplink::LaunchAttempt;
+
+/// The most one client may send through the Windows pipe: an import link is
+/// a few hundred bytes, and a sender gets no more of this process's memory.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const MAX_PAYLOAD: usize = 64 * 1024;
+
+/// The launch attempt one Windows pipe client made. Whatever it sent, it
+/// is an attempt and surfaces the window (ADR 0001): a payload over
+/// [`MAX_PAYLOAD`] (`overflowed`) or one that isn't UTF-8 is dropped, and
+/// counts as a plain launch. Pure so it is tested on every platform.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn attempt_from_payload(data: &[u8], overflowed: bool) -> LaunchAttempt {
+    if overflowed {
+        return LaunchAttempt::Plain;
+    }
+    match std::str::from_utf8(data) {
+        Ok(text) => LaunchAttempt::from_wire(text),
+        Err(_) => LaunchAttempt::Plain,
+    }
+}
 
 #[cfg(target_os = "windows")]
 const PIPE_PATH: &str = r"\\.\pipe\BoxPilot.DeepLink";
@@ -72,10 +95,18 @@ pub enum ServerStart {
 #[cfg(target_os = "windows")]
 pub fn try_forward(uri: Option<&str>) -> bool {
     use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
 
     let payload = uri.unwrap_or("");
     for _attempt in 0..5 {
-        match std::fs::OpenOptions::new().write(true).open(PIPE_PATH) {
+        // Identification only: a process that took the pipe name can't
+        // impersonate this sender.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .security_qos_flags(SECURITY_IDENTIFICATION.0)
+            .open(PIPE_PATH)
+        {
             Ok(mut pipe) => {
                 let _ = pipe.write_all(payload.as_bytes());
                 let _ = pipe.flush();
@@ -106,7 +137,6 @@ pub fn try_forward(_uri: Option<&str>) -> bool {
 }
 
 /// Claim the single-instance mutex and start the pipe server thread.
-/// Call only after elevation (the primary must be the elevated process).
 /// `on_attempt` is invoked on the pipe thread for every received payload —
 /// it must be cheap and thread-safe (main wires it to a channel send).
 #[cfg(target_os = "windows")]
@@ -145,12 +175,67 @@ pub fn start_server(_on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerSta
     ServerStart::Primary
 }
 
+/// The pipe's SDDL: read/write for `user_sid` (the current user's SID
+/// string), full control for SYSTEM, protected from inheritance; no label.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn pipe_sddl(user_sid: &str) -> String {
+    format!("D:P(A;;GRGW;;;{user_sid})(A;;GA;;;SY)")
+}
+
+/// The current user's SID as a string (`S-1-5-21-…`), from the process
+/// token: the same user whether or not the token is elevated.
+#[cfg(target_os = "windows")]
+fn current_user_sid() -> Option<String> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo-handle of this process; `token` receives a new
+    // handle, owned right after.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.ok()?;
+    // SAFETY: a valid token handle, just opened, owned by nobody else.
+    let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
+    let token = HANDLE(token.as_raw_handle());
+    let mut size = 0u32;
+    // SAFETY: a size probe: no buffer, `size` receives what is needed.
+    let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &mut size) };
+    // u64s, so the TOKEN_USER at its start is aligned.
+    let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+    // SAFETY: `buf` holds at least `size` bytes.
+    unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            size,
+            &mut size,
+        )
+    }
+    .ok()?;
+    // SAFETY: GetTokenInformation wrote a TOKEN_USER (and the SID it points
+    // into) at the start of the aligned `buf`, which outlives this read.
+    let sid = unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut text = PWSTR::null();
+    // SAFETY: a valid SID in `buf`; `text` receives a LocalAlloc'd string,
+    // read once and freed.
+    unsafe {
+        ConvertSidToStringSidW(sid, &mut text).ok()?;
+        let sid = text.to_string().ok();
+        let _ = LocalFree(HLOCAL(text.0.cast()));
+        sid
+    }
+}
+
 /// Blocking accept loop, one client at a time. A client connects, writes
-/// one URI, closes; we read to EOF and pass the payload on. Sequential
-/// accepts are plenty — deep links are human-paced.
+/// one URI, closes; we read to EOF (at most [`MAX_PAYLOAD`]) and pass the
+/// payload on. Sequential accepts are plenty — deep links are human-paced.
 #[cfg(target_os = "windows")]
 fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
-    use windows::core::{w, HRESULT, PCWSTR};
+    use windows::core::{HRESULT, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED};
     use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
@@ -159,34 +244,44 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
     use windows::Win32::Storage::FileSystem::{ReadFile, PIPE_ACCESS_INBOUND};
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-        PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
 
     const SDDL_REVISION_1: u32 = 1;
 
-    // Allow Everyone read/write + low-integrity label, so the non-elevated
-    // browser-spawned sender can reach this elevated server (see module
-    // docs). The descriptor is intentionally never freed: it must outlive
-    // every CreateNamedPipeW call and this thread runs until process exit.
+    // The current user and SYSTEM only (see module docs). The descriptor
+    // is intentionally never freed: it must outlive every CreateNamedPipeW
+    // call and this thread runs until process exit.
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
-    let security_attributes = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            w!("D:(A;;GRGW;;;WD)S:(ML;;NW;;;LW)"),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            None,
-        )
+    let security_attributes = current_user_sid().and_then(|sid| {
+        let sddl: Vec<u16> = pipe_sddl(&sid)
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `sddl` is NUL-terminated; `descriptor` receives a
+        // LocalAlloc'd descriptor, kept for the life of the process.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR::from_raw(sddl.as_ptr()),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                None,
+            )
+        }
         .ok()
         .map(|()| SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
             bInheritHandle: false.into(),
         })
-    };
+    });
     if security_attributes.is_none() {
-        // Degraded mode: the pipe still works for elevated senders (the
-        // LostRace forward); browser-spawned imports will be refused.
-        eprintln!("Failed to build pipe security descriptor; deep links from the browser may not reach this instance.");
+        // Degraded mode: the token's default DACL. That still admits this
+        // user when BoxPilot isn't elevated; an elevated primary refuses
+        // non-elevated senders (browser-launched imports) then.
+        eprintln!(
+            "Failed to build the deep-link pipe's security descriptor; using the default one."
+        );
     }
 
     let pipe_name: Vec<u16> = PIPE_PATH.encode_utf16().chain(std::iter::once(0)).collect();
@@ -195,7 +290,7 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
             CreateNamedPipeW(
                 PCWSTR::from_raw(pipe_name.as_ptr()),
                 PIPE_ACCESS_INBOUND,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 PIPE_UNLIMITED_INSTANCES,
                 0,
                 4096,
@@ -220,19 +315,26 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
 
         if connected {
             let mut data = Vec::new();
+            let mut overflowed = false;
             let mut buf = [0u8; 4096];
             loop {
                 let mut read: u32 = 0;
                 match unsafe { ReadFile(pipe, Some(&mut buf), Some(&mut read), None) } {
-                    Ok(()) if read > 0 => data.extend_from_slice(&buf[..read as usize]),
+                    Ok(()) if read > 0 => {
+                        // Past the cap: stop reading; disconnecting drops
+                        // the rest.
+                        if data.len() + read as usize > MAX_PAYLOAD {
+                            overflowed = true;
+                            break;
+                        }
+                        data.extend_from_slice(&buf[..read as usize]);
+                    }
                     // 0-byte read or broken pipe — client is done.
                     _ => break,
                 }
             }
             let _ = unsafe { DisconnectNamedPipe(pipe) };
-            if let Ok(text) = String::from_utf8(data) {
-                on_attempt(LaunchAttempt::from_wire(&text));
-            }
+            on_attempt(attempt_from_payload(&data, overflowed));
         }
         unsafe {
             let _ = CloseHandle(pipe);
@@ -542,5 +644,40 @@ mod unix {
                 LaunchAttempt::DeepLink("boxpilot://late".to_string())
             );
         }
+    }
+}
+
+/// The Windows pipe's pure parts, tested on every platform.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pipe_payload_is_one_launch_attempt() {
+        let uri = "sing-box://import-remote-profile?url=https%3A%2F%2Fexample.com%2Fsub";
+        assert_eq!(
+            attempt_from_payload(uri.as_bytes(), false),
+            LaunchAttempt::DeepLink(uri.to_string())
+        );
+        assert_eq!(attempt_from_payload(b"", false), LaunchAttempt::Plain);
+        // What can't be a link still surfaces the window (ADR 0001).
+        assert_eq!(
+            attempt_from_payload(b"\xff\xfe", false),
+            LaunchAttempt::Plain
+        );
+        assert_eq!(
+            attempt_from_payload(uri.as_bytes(), true),
+            LaunchAttempt::Plain
+        );
+    }
+
+    /// The current user and SYSTEM, nobody else: no `Everyone`, no
+    /// low-integrity label, nothing inherited.
+    #[test]
+    fn the_pipe_admits_the_user_and_system_only() {
+        let sddl = pipe_sddl("S-1-5-21-1-2-3-1001");
+        assert_eq!(sddl, "D:P(A;;GRGW;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)");
+        assert!(!sddl.contains("WD"));
+        assert!(!sddl.contains("S:"));
     }
 }
