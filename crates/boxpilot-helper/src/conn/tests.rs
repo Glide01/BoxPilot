@@ -209,11 +209,14 @@ fn start_runs_sing_box_with_a_working_api_endpoint() {
     );
     // The fake listens where the config says: the GUI reaches it there.
     TcpStream::connect((Ipv4Addr::LOCALHOST, started.api_port)).expect("the api port answers");
-    // A SYSTEM sing-box never sets the system proxy, whatever was asked.
-    assert_eq!(
-        run.config["inbounds"][1],
-        json!({"type": "mixed", "tag": "proxy", "listen": "127.0.0.1", "listen_port": 7890})
-    );
+    // A SYSTEM sing-box never sets the system proxy, whatever was asked; a
+    // root one on macOS does as asked (`runcfg::SYSTEM_PROXY`).
+    let mut proxy =
+        json!({"type": "mixed", "tag": "proxy", "listen": "127.0.0.1", "listen_port": 7890});
+    if crate::runcfg::SYSTEM_PROXY == crate::runcfg::SystemProxy::AsRequested {
+        proxy["set_system_proxy"] = json!(true);
+    }
+    assert_eq!(run.config["inbounds"][1], proxy);
     // Attachments land only in the run directory, and only those the
     // config refers to.
     let layout = &harness.fake().layout;

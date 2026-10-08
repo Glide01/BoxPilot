@@ -51,6 +51,17 @@ fn remaining(deadline: Instant) -> io::Result<std::time::Duration> {
     Ok(left)
 }
 
+/// Set a socket timeout. macOS fails `setsockopt` with `EINVAL` once the
+/// peer has closed its end (Linux doesn't); the read or write that follows
+/// reports that itself (the end of the stream, or `EPIPE`) and can't block
+/// on a gone peer, so that error isn't one here.
+fn set_timeout(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        other => other,
+    }
+}
+
 /// A socket timeout's error: `EAGAIN` on macOS and Linux.
 fn timed_out(error: &io::Error) -> bool {
     matches!(
@@ -66,7 +77,7 @@ impl Transport for UnixTransport {
                 return Err(io::ErrorKind::ConnectionAborted.into());
             }
             let timeout = deadline.map(remaining).transpose()?;
-            self.stream.set_read_timeout(timeout)?;
+            set_timeout(self.stream.set_read_timeout(timeout))?;
             match (&self.stream).read(buf) {
                 // `close` from another thread reads as the end of the
                 // stream here; it is the end of this connection either way.
@@ -85,7 +96,7 @@ impl Transport for UnixTransport {
             if self.closed() {
                 return Err(io::ErrorKind::BrokenPipe.into());
             }
-            self.stream.set_write_timeout(Some(remaining(deadline)?))?;
+            set_timeout(self.stream.set_write_timeout(Some(remaining(deadline)?)))?;
             match (&self.stream).write(buf) {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
                 Ok(n) => buf = &buf[n..],
