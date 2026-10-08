@@ -720,6 +720,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "boxpilot-policy"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "bstr"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

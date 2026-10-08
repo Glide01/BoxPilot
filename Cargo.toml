@@ -14,6 +14,13 @@ readme = "README.md"
 product-name = "BoxPilot"
 product-icon = "assets/app.ico"
 
+# The GUI stays the root package; the crates beside it are pure and carry no
+# gpui (ADR 0006). They are default members too, so the plain `cargo test`
+# CI runs at the root covers their tests as well.
+[workspace]
+members = [".", "crates/boxpilot-policy"]
+default-members = [".", "crates/boxpilot-policy"]
+
 [profile.release]
 panic = "abort"
 strip = true
