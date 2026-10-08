@@ -54,13 +54,14 @@ pub(crate) fn nesting_exceeds(text: &str, limit: usize) -> bool {
 /// back to a case-insensitive match under Unicode simple folding, where `ſ`
 /// (U+017F) is `s` and the Kelvin sign (U+212A) is `k`: to sing-box,
 /// `Executable_Path` and `ſtate_directory` are tor's `executable_path` and
-/// Tailscale's `state_directory`. sing-box's own field names are all lower
-/// case, so a key with an upper-case ASCII letter or either of those two
-/// characters is refused instead of guessed at. No other character folds to
-/// ASCII.
+/// Tailscale's `state_directory`. sing-box's own field names are all
+/// lower-case ASCII, so a key with an upper-case ASCII letter or any
+/// non-ASCII character is refused instead of guessed at. Today only those
+/// two characters fold to ASCII; refusing all of non-ASCII keeps that true
+/// whatever a future Go version folds, and costs nothing, since no field
+/// sing-box knows is spelled that way.
 fn is_canonical(key: &str) -> bool {
-    !key.chars()
-        .any(|c| c.is_ascii_uppercase() || c == '\u{17F}' || c == '\u{212A}')
+    key.bytes().all(|b| b.is_ascii() && !b.is_ascii_uppercase())
 }
 
 /// Whether a key looks like a filesystem location (ADR 0006: deny by shape).
@@ -1012,21 +1013,22 @@ mod tests {
         assert!(nesting_exceeds("[", 0));
     }
 
-    /// The two non-ASCII characters Go folds to ASCII letters, and any
-    /// upper-case ASCII, make a key non-canonical; other Unicode doesn't.
+    /// Upper-case ASCII and every non-ASCII character make a key
+    /// non-canonical: the two Go folds to ASCII letters, and the rest too,
+    /// so the rule doesn't hang on Go's folding table.
     #[test]
-    fn canonical_keys_are_lower_case_as_go_folds_them() {
-        for key in [
-            "path",
-            "$schema",
-            "tcp_multi_path",
-            "geosite-cn",
-            "ключ",
-            "x_1",
-        ] {
+    fn canonical_keys_are_lower_case_ascii() {
+        for key in ["path", "$schema", "tcp_multi_path", "geosite-cn", "x_1"] {
             assert!(is_canonical(key), "{key}");
         }
-        for key in ["Path", "TYPE", "\u{17F}tate_directory", "\u{212A}ey_path"] {
+        for key in [
+            "Path",
+            "TYPE",
+            "\u{17F}tate_directory",
+            "\u{212A}ey_path",
+            "ключ",
+            "pat\u{0127}",
+        ] {
             assert!(!is_canonical(key), "{key}");
         }
     }
