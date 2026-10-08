@@ -318,11 +318,14 @@ fn kde_proxy_key(key: &str) -> Vec<&str> {
 /// the web, secure web and SOCKS proxy of a network service through
 /// `networksetup`; each one that is still on and points at 127.0.0.1 is
 /// turned off, in every service, so a proxy the user set themselves is left
-/// alone. A service whose state can't be read is skipped.
+/// alone. A service whose state can't be read is skipped. The rule is
+/// `boxpilot_runconfig::system_proxy`'s, which the privileged helper shares.
 #[cfg(target_os = "macos")]
 pub fn disable_system_proxy() -> Result<(), String> {
-    const NETWORKSETUP: &str = "/usr/sbin/networksetup";
-    let Some(services) = read_command(NETWORKSETUP, &["-listallnetworkservices"]) else {
+    use boxpilot_runconfig::system_proxy::{
+        macos_proxy_is_ours, parse_network_services, LIST_SERVICES, MACOS_PROXY_KINDS, NETWORKSETUP,
+    };
+    let Some(services) = read_command(NETWORKSETUP, &[LIST_SERVICES]) else {
         return Ok(());
     };
     let mut errors = Vec::new();
@@ -331,7 +334,7 @@ pub fn disable_system_proxy() -> Result<(), String> {
             let Some(state) = read_command(NETWORKSETUP, &[get, service]) else {
                 continue;
             };
-            if is_our_macos_proxy(&state) {
+            if macos_proxy_is_ours(&state, None) {
                 if let Err(e) = run_command(NETWORKSETUP, &[set_state, service, "off"]) {
                     errors.push(e);
                 }
@@ -344,14 +347,6 @@ pub fn disable_system_proxy() -> Result<(), String> {
         Err((s().errors.disable_proxy)(&errors.join("; ")))
     }
 }
-
-/// The `networksetup` getter and state setter of each proxy sing-box sets.
-#[cfg(target_os = "macos")]
-const MACOS_PROXY_KINDS: [(&str, &str); 3] = [
-    ("-getwebproxy", "-setwebproxystate"),
-    ("-getsecurewebproxy", "-setsecurewebproxystate"),
-    ("-getsocksfirewallproxy", "-setsocksfirewallproxystate"),
-];
 
 /// Stdout of a successful run, or `None` if the tool is missing or fails.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -405,34 +400,6 @@ fn is_our_gnome_proxy(mode: &str, http_host: &str) -> bool {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn is_our_kde_proxy(proxy_type: &str, http_proxy: &str) -> bool {
     proxy_type.trim() == "1" && http_proxy.contains("127.0.0.1")
-}
-
-/// The service names in `networksetup -listallnetworkservices` output: one
-/// per line after the header line, a disabled one prefixed with `*` (its
-/// proxy is reset too — it would come back with it when re-enabled). Pure
-/// so it is tested on every platform.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn parse_network_services(output: &str) -> Vec<&str> {
-    output
-        .lines()
-        .skip(1)
-        .map(|line| line.trim_start_matches('*').trim())
-        .filter(|name| !name.is_empty())
-        .collect()
-}
-
-/// A macOS proxy is ours while it is still enabled on the loopback host
-/// sing-box writes. Takes `networksetup -getwebproxy <service>` output
-/// (`Enabled: Yes` / `Server: 127.0.0.1` / `Port: …` lines).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn is_our_macos_proxy(output: &str) -> bool {
-    let field = |name: &str| {
-        output.lines().find_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            (key.trim() == name).then(|| value.trim())
-        })
-    };
-    field("Enabled") == Some("Yes") && field("Server") == Some("127.0.0.1")
 }
 
 /// The Windows proxy is ours while a manual proxy is still on and its
@@ -959,35 +926,6 @@ mod tests {
         assert!(!is_our_windows_proxy(true, "proxy.corp.example:3128"));
         assert!(!is_our_windows_proxy(true, "127.0.0.10:7788"));
         assert!(!is_our_windows_proxy(true, ""));
-    }
-
-    #[test]
-    fn network_services_skip_the_header_and_unmark_disabled_ones() {
-        let out = "An asterisk (*) denotes that a network service is disabled.\n\
-                   Wi-Fi\n\
-                   *Thunderbolt Bridge\n\
-                   USB 10/100/1000 LAN\n\
-                   \n";
-        assert_eq!(
-            parse_network_services(out),
-            vec!["Wi-Fi", "Thunderbolt Bridge", "USB 10/100/1000 LAN"]
-        );
-        assert!(parse_network_services("").is_empty());
-    }
-
-    #[test]
-    fn macos_proxy_is_ours_only_when_enabled_on_loopback() {
-        let get = |enabled: &str, server: &str| {
-            format!(
-                "Enabled: {enabled}\nServer: {server}\nPort: 7788\nAuthenticated Proxy Enabled: 0\n"
-            )
-        };
-        assert!(is_our_macos_proxy(&get("Yes", "127.0.0.1")));
-        assert!(!is_our_macos_proxy(&get("No", "127.0.0.1")));
-        assert!(!is_our_macos_proxy(&get("Yes", "proxy.corp.example")));
-        assert!(!is_our_macos_proxy(&get("Yes", "127.0.0.10")));
-        assert!(!is_our_macos_proxy(&get("No", "")));
-        assert!(!is_our_macos_proxy(""));
     }
 
     /// The native SetupAPI path uninstalls only adapters whose FriendlyName

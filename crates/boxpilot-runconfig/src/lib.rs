@@ -20,8 +20,13 @@
 //! The privileged helper adds one thing the GUI doesn't:
 //! [`reject_loopback`], a first route rule that keeps a SYSTEM sing-box
 //! from connecting to this machine's loopback on anyone's behalf.
+//!
+//! [`system_proxy`] is how both recognize, on macOS, the system proxy a
+//! sing-box with `set_system_proxy` left behind, to reset only that one.
 
 #![forbid(unsafe_code)]
+
+pub mod system_proxy;
 
 use serde_json::{Map, Value};
 use std::fmt;
