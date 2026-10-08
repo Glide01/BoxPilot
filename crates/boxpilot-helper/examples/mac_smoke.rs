@@ -1183,7 +1183,8 @@ as another account:
     }
 
     /// Once TUN is down, the machine's own route carries traffic again: a
-    /// connection out doesn't start from the TUN interface's address.
+    /// connection out doesn't start from the TUN interface's address, and
+    /// names resolve (the system's DNS was left as it was).
     fn network_after_tun() -> Result<(), String> {
         let tun = IpAddr::V4(tun_address());
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1193,7 +1194,7 @@ as another account:
                     Ok(stream) => match stream.local_addr() {
                         Ok(local) if local.ip() != tun => {
                             println!("ok: after TUN, {PUBLIC_ADDRESS} is reached from {local}");
-                            return Ok(());
+                            break;
                         }
                         Ok(local) => format!("still from the TUN address {local}"),
                         Err(error) => error.to_string(),
@@ -1204,6 +1205,23 @@ as another account:
                 return Err(format!(
                     "after TUN, no direct connection to {PUBLIC_ADDRESS}: {seen}"
                 ));
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        loop {
+            let seen = match (PUBLIC_NAME, 443).to_socket_addrs() {
+                Ok(addresses) => {
+                    let addresses: Vec<SocketAddr> = addresses.collect();
+                    if !addresses.is_empty() {
+                        println!("ok: after TUN, {PUBLIC_NAME} resolves to {addresses:?}");
+                        return Ok(());
+                    }
+                    "nothing".to_owned()
+                }
+                Err(error) => error.to_string(),
+            };
+            if Instant::now() >= deadline {
+                return Err(format!("after TUN, {PUBLIC_NAME} doesn't resolve: {seen}"));
             }
             thread::sleep(Duration::from_millis(500));
         }
