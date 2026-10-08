@@ -1,7 +1,8 @@
 # TUN goes through a privileged helper that runs its own sing-box on a config it has checked
 
-**Status: proposed.** The config policy (rule 2) is implemented in
-`crates/boxpilot-policy`; the helper itself is not built yet. Its
+**Status: proposed.** The config policy (rule 2) and the protocol
+(rule 1) are implemented, in `crates/boxpilot-policy` and
+`crates/boxpilot-protocol`; the helper itself is not built yet. Its
 trade-offs are settled by separation of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
 without changing it (see "Conflicts with earlier ADRs").
@@ -171,36 +172,71 @@ after three rounds of fixes: "Owner identity cannot carry this weight"
 
 ### 1. A typed, minimal protocol
 
-| Request | Carries → returns |
+The protocol lives in its own pure crate, `crates/boxpilot-protocol`: the
+frame decoder and the helper-side session are sans-I/O state machines,
+tested and fuzzed without a socket. `PROTOCOL_VERSION` is 1.
+
+| Request | Carries → reply |
 |---|---|
-| `Hello` | protocol version → helper version, the installed sing-box's version and hash, whether the caller may start |
-| `Start` | the profile config (bytes), its attachments, typed TUN options (IPv6, proxy port, Allow LAN, system proxy) → the API port and secret |
-| `Stop` | — |
-| `Status` | → running or stopped, the last exit reason |
-| `Logs` | → sing-box's stdout/stderr lines for this session |
+| `hello` | protocol version → helper version, the installed sing-box's version and hash, whether the caller may start |
+| `start` | `config_len`, the attachments' ids and lengths, typed TUN options (IPv6, proxy port, Allow LAN, system proxy); then the config and each attachment as blobs → `started` (API port and secret) or `refused` (the policy's refusals) |
+| `stop` | → `stopped` |
+| `status` | → stopped, starting or running, and the last exit |
+
+Any request can get `error` instead (`unauthorized`, `version_mismatch`,
+`busy`, `bad_request`, `internal`). sing-box's output and its exit arrive
+as **events** (`log`, `exited`), sent only to the connection that started
+it; there is no request for them, and nobody else ever sees them.
 
 - **Never** a binary path, arguments, environment variables or file
   paths. Typed options go in, and the helper builds the privileged
   config itself.
 - **The helper builds the privileged parts itself:**
   - the `tun` and mixed inbounds, from the typed options;
-  - its own `api` service, on a loopback port with a fresh secret. Both
-    come back in the `Start` reply, so the GUI's `SingBoxApi` works as it
-    does now;
+  - its own `api` service, on a loopback port with a fresh secret from
+    the OS RNG. Both come back in `started`, so the GUI's `SingBoxApi`
+    works as it does now;
   - the cache file;
   - logging to stdout only.
   
   The injection half of `prepare_config` moves into a module the GUI and
   the helper share.
-- **Framing:**
-  - length-prefixed messages with hard caps sized for real profiles and
-    rule sets (for example 32 MiB in total), checked *before* anything
-    is allocated;
-  - a read deadline, and one request at a time per connection;
-  - malformed input closes the connection.
+- **Framing.** A frame is a 4-byte big-endian length, a 1-byte type (JSON
+  message or binary blob), then the payload.
+  - The length is checked against the cap for what the session accepts
+    next *before* anything is allocated: a declared 4 GiB frame is
+    refused after its 5 header bytes. Before `hello`, and for callers who
+    may not start, that cap is 4 KiB.
+  - Large data never goes through the JSON parser. A `start` header is at
+    most 6,614 bytes (64 attachments with 64-character ids), and the
+    config and attachments follow as blobs of exactly the declared
+    lengths, 32 MiB in total.
+  - JSON is accepted only as objects with known fields: serde also takes
+    a struct written as an array, and an adapter refuses that form.
+  - One request at a time; `hello` first; any protocol error is answered
+    with `error` and closes the connection. Refusals and error messages
+    are capped, so a hostile config can't make the reply itself too
+    large to send.
   
   Rust rules out OpenVPN's stack overflow (CVE-2024-27459). It does not
-  rule out allocating whatever size a client declares.
+  rule out allocating whatever size a client declares; the caps do.
+- **What only the helper's I/O layer can do,** since the crate has no
+  socket or clock:
+  - a deadline for `hello` and for each frame once its header starts, and
+    a write deadline; a peer that stops reading is closed, which stops its
+    sing-box;
+  - a cap on concurrent connections, and on the memory they hold (the
+    decoder reports what it has reserved);
+  - after each frame, narrowing the decoder to the session's caps, and
+    marking a request answered before writing its reply;
+  - on EOF, even mid-frame, stopping that connection's sing-box;
+  - a bounded outgoing queue: log lines are dropped (and counted) rather
+    than grow memory or block sing-box's pipe; replies and `exited` never
+    are. sing-box's output is read continuously, line length capped while
+    reading, decoded lossily;
+  - running `boxpilot_policy::check` on the start, writing only the
+    attachments the checked config refers to, and running sing-box on
+    `materialize`'s output, never on the bytes received.
 
 ### 2. The config policy is the boundary
 
@@ -647,9 +683,10 @@ any of them.
   - The repository is a Cargo workspace. The helper will be its own
     crate (`boxpilot-helper`), so the privileged binary's dependency
     graph has no gpui and no reqwest.
-  - The config policy lives in `crates/boxpilot-policy`: pure, no I/O,
-    no gpui, for both the GUI and the helper. The protocol joins it
-    there.
+  - The config policy (`crates/boxpilot-policy`) and the protocol
+    (`crates/boxpilot-protocol`) are separate pure crates, no I/O, no
+    gpui, for both the GUI and the helper: what may run, and how it is
+    asked for, are different concerns.
   - `ProcessSession` gets a second backend, a helper session, next to
     the local child.
   - On Windows, `ensure_elevated` is removed, and TUN uses the helper
