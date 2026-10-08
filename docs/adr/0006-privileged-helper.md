@@ -479,10 +479,12 @@ policy.
     removed its stale adapter. Windows 10 and 11 are yet to be confirmed
     (`docs/helper-windows-checklist.md`).
 - **macOS:** sing-box runs under a sandbox profile that denies file writes
-  outside the helper's tree, and execution of anything but
-  `/usr/sbin/networksetup`. The profile is measured before it is
-  enforced: TUN needs `utun`, routing sockets and `networksetup` for the
-  system proxy.
+  outside its run and its account's state, reads of the users' and the
+  system's private files, and the execution of any program. The profile
+  was measured before it was enforced: TUN needs `utun` and routing
+  sockets. (This said "anything but `/usr/sbin/networksetup`" until the
+  measurement showed what `networksetup` runs in turn; the system proxy
+  moved to the helper instead, below.)
   - **Measured, then enforced.** A first profile,
     `(allow (with report) default)`, allowed every operation and
     reported it, and CI collected the reports (sing-box 1.14.2, macOS 14
@@ -529,17 +531,20 @@ policy.
       account's agent socket, not Docker's;
     - **system:** `sysctl` reads, no writes; the two Mach services
       measured.
-    - **Not measured yet, so allowed `(with report)`:** what TLS
-      certificate verification is expected to need (Security.framework
-      asks `trustd`; preferences through `cfprefsd`), and the `local` DNS
-      server's resolver configuration (`configd`'s DNS configuration).
-      CI's smoke profile now resolves over HTTPS (a certificate verified
-      by macOS's own verifier) and through `local`; the reports will say
-      which are used, and those not are dropped.
+    - **TLS and the `local` DNS server, measured in a second round:** CI's
+      smoke profile resolves over HTTPS (a certificate verified by macOS's
+      own verifier) and through `local`. What they were expected to need
+      was first allowed only `(with report)`. TLS used `trustd` and
+      `cfprefsd`'s daemon (with its shared memory); `local` needed only
+      mDNSResponder's socket. Those stay allowed; the rest of the guess
+      (`trustd.agent`, `cfprefsd.agent`, `configd`'s DNS configuration)
+      went unused and is gone.
     - **Known denials** (`sandboxplan::KNOWN_DENIALS`), each harmless:
       sing-tun's `fork` for `dscacheutil` (it ignores the error),
       CoreFoundation's look at `master.passwd`, opendirectoryd and root's
-      `.CFUserTextEncoding`, and dyld's `/dev/dtracehelper` (the kernel's
+      `.CFUserTextEncoding`, the preferences every application shares
+      (Security.framework reads them as it verifies a certificate, and
+      keeps its defaults), and dyld's `/dev/dtracehelper` (the kernel's
       DOF parser stays out of reach).
   - **The system proxy and the DNS flush move to the helper.** This
     changes what this ADR said before ("the helper's sing-box sets and

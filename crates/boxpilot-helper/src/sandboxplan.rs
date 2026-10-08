@@ -36,12 +36,13 @@
 //! would have meant letting it run a shell, or exempting `networksetup`
 //! from the sandbox, an unsandboxed root exec on sing-box's word.
 //!
-//! **Not measured yet**, and allowed only `(with report)`, so the reports
-//! say whether they are used: what TLS certificate verification needs
-//! (Security.framework asks `trustd`; preferences through `cfprefsd`) and
-//! what the `local` DNS server needs (`mDNSResponder`'s socket, the
-//! resolver configuration from `configd`). CI's smoke profile now verifies
-//! a certificate (DNS over HTTPS) and resolves through `local`.
+//! **TLS and the `local` DNS server, measured too.** CI's smoke profile
+//! verifies a certificate (DNS over HTTPS) and resolves through `local`.
+//! A round that allowed what they were expected to need only `(with
+//! report)` showed what they use: `trustd` and `cfprefsd`'s daemon (with
+//! its shared memory) for the certificate, `mDNSResponder`'s socket for
+//! `local`. The rest of the guess (`trustd.agent`, `cfprefsd.agent`,
+//! `configd`'s DNS configuration) went unused, so it is gone.
 //!
 //! **How it is applied: `/usr/bin/sandbox-exec`.** The supervisor
 //! `posix_spawn`s [`SANDBOX_EXEC`] by its absolute path, with the argv
@@ -185,16 +186,12 @@ pub const SING_BOX_PROFILE: &str = r#"(version 1)
        (global-name "com.apple.system.notification_center"))
 (allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
 
-; Not measured yet, so reported when used: TLS certificate verification
-; (Security.framework asks trustd), preferences, and the local DNS server's
-; resolver configuration.
-(allow (with report) mach-lookup
+; TLS certificate verification: Security.framework asks trustd, and reads
+; its preferences through cfprefsd (measured on CI's DNS over HTTPS).
+(allow mach-lookup
        (global-name "com.apple.trustd")
-       (global-name "com.apple.trustd.agent")
-       (global-name "com.apple.cfprefsd.daemon")
-       (global-name "com.apple.cfprefsd.agent")
-       (global-name "com.apple.SystemConfiguration.DNSConfiguration"))
-(allow (with report) ipc-posix-shm-read-data (ipc-posix-name "apple.cfprefs.daemonv1"))
+       (global-name "com.apple.cfprefsd.daemon"))
+(allow ipc-posix-shm-read-data (ipc-posix-name "apple.cfprefs.daemonv1"))
 "#;
 
 /// sing-box's own path: the one program the profile lets sandbox-exec
@@ -270,6 +267,13 @@ pub const KNOWN_DENIALS: &[KnownDenial] = &[
         operation: "file-read-data",
         target: "/private/var/root/.CFUserTextEncoding",
         why: "CoreFoundation's default text encoding, in root's home; it falls back to its own",
+    },
+    KnownDenial {
+        operation: "user-preference-read",
+        target: "kcfpreferencesanyapplication",
+        why: "Security.framework reads the preferences every application shares as it \
+              verifies a certificate; denied, it keeps its defaults, and verification \
+              succeeds (CI's DNS over HTTPS)",
     },
     KnownDenial {
         operation: "file-read-data",
@@ -777,11 +781,11 @@ mod tests {
         );
     }
 
-    /// The Mach services measured are allowed silently; the ones TLS and
-    /// the local DNS server are expected to need are reported, so CI says
-    /// which are used. None of them is the system keychain's server.
+    /// The Mach services allowed are the measured ones, and nothing is
+    /// allowed only to be reported any more. None of them is the system
+    /// keychain's server, or the account lookups' (`opendirectoryd`).
     #[test]
-    fn mach_services_are_the_measured_ones_and_reported_guesses() {
+    fn mach_services_are_the_measured_ones() {
         let mut silent = Vec::new();
         let mut reported = Vec::new();
         for rule in allows("mach-lookup") {
@@ -802,21 +806,15 @@ mod tests {
         }
         assert_eq!(
             silent,
-            ["com.apple.logd", "com.apple.system.notification_center"]
+            [
+                "com.apple.logd",
+                "com.apple.system.notification_center",
+                "com.apple.trustd",
+                "com.apple.cfprefsd.daemon",
+            ]
         );
-        for name in &reported {
-            assert!(
-                [
-                    "com.apple.trustd",
-                    "com.apple.trustd.agent",
-                    "com.apple.cfprefsd.daemon",
-                    "com.apple.cfprefsd.agent",
-                    "com.apple.SystemConfiguration.DNSConfiguration",
-                ]
-                .contains(&name.as_str()),
-                "{name}"
-            );
-        }
+        assert!(reported.is_empty(), "{reported:?}");
+        assert!(!SING_BOX_PROFILE.contains("(with report)"));
         assert!(!SING_BOX_PROFILE.contains("SecurityServer"));
         assert!(!SING_BOX_PROFILE.contains("opendirectoryd"));
     }
