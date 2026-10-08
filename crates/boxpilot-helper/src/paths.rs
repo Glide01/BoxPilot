@@ -1,17 +1,29 @@
-//! Where the helper keeps what it owns. Two trees, both verified admin-only
-//! before the helper trusts anything in them:
+//! Where the helper keeps what it owns. Two trees, side by side in
+//! `%ProgramFiles%\BoxPilot` ([`Layout::installed`]), both verified
+//! admin-only before the helper trusts anything in them:
 //!
 //! - **the helper directory** (`%ProgramFiles%\BoxPilot\Helper`, the helper
 //!   executable's own directory): the helper, its sing-box, the files
 //!   beside it and the install manifest. Fixed at install, never chosen by a
-//!   user (ADR 0006 rule 7);
-//! - **the state directory** (`%ProgramData%\BoxPilot\Helper`):
+//!   user (ADR 0006 rule 7). Users may read it: these are the binaries;
+//! - **the state directory** (`%ProgramFiles%\BoxPilot\HelperState`),
+//!   private to SYSTEM and Administrators ([`STATE_DIR_DACL`]: nobody else
+//!   may even read it):
 //!   - `runs\<random>`: one private directory per start, removed when that
 //!     sing-box has exited;
 //!   - `users\<SID>`: each caller's lasting state, its `cache.db` and its
-//!     Tailscale logins, so they survive reconnects without one account
-//!     seeing another's;
+//!     Tailscale logins (node keys included), so they survive reconnects
+//!     without one account seeing another's;
 //!   - `helper.log`: the helper's own log.
+//!
+//! Why Program Files and not ProgramData: every user may create entries
+//! in `C:\ProgramData`, so a user could create `ProgramData\BoxPilot`
+//! before the install, as a folder (the helper would then refuse to run)
+//! or as a junction (the installer, as SYSTEM, would then apply the
+//! state directory's descriptor to wherever it points). Users can create
+//! nothing under `C:\Program Files`. The state directory is the helper
+//! directory's sibling, never inside it, so nothing written as state can
+//! land among the binaries.
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +31,20 @@ use crate::manifest::MANIFEST_FILE;
 use boxpilot_policy::Placement;
 use std::fmt;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+
+/// The folder under `%ProgramFiles%` that holds both trees.
+pub const PRODUCT_DIR: &str = "BoxPilot";
+/// The helper directory, in [`PRODUCT_DIR`].
+pub const HELPER_DIR: &str = "Helper";
+/// The state directory, in [`PRODUCT_DIR`] beside [`HELPER_DIR`].
+pub const STATE_DIR: &str = "HelperState";
+
+/// The DACL of the state directory and of every directory the helper
+/// creates in it, as SDDL: protected (nothing inherited, so not Program
+/// Files' "Users: Read & execute"), full control for SYSTEM and
+/// Administrators, nothing for anyone else. The MSI creates the state
+/// directory with this DACL, owned by SYSTEM.
+pub const STATE_DIR_DACL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
 /// The per-run directories, under the state directory.
 pub const RUNS_DIR: &str = "runs";
@@ -48,6 +74,14 @@ impl Layout {
             helper_dir,
             state_dir,
         }
+    }
+
+    /// The installed service's trees, under `program_files` (the 64-bit
+    /// `%ProgramFiles%`, as Windows reports it): `BoxPilot\Helper` and,
+    /// beside it, `BoxPilot\HelperState`.
+    pub fn installed(program_files: &Path) -> Self {
+        let product = program_files.join(PRODUCT_DIR);
+        Self::new(product.join(HELPER_DIR), product.join(STATE_DIR))
     }
 
     pub fn helper_dir(&self) -> &Path {
@@ -173,6 +207,29 @@ mod tests {
             assert!(!is_sid(not_sid), "{not_sid}");
         }
         assert!(is_sid("S-1-5-1-2-3-4-5-6-7-8-9-10-11-12-13-14-15"));
+    }
+
+    /// Side by side under `Program Files\BoxPilot`: neither tree is in the
+    /// other, so state never lands among the binaries.
+    #[test]
+    fn the_installed_trees_are_siblings_in_program_files() {
+        let program_files = Path::new("/Program Files");
+        let layout = Layout::installed(program_files);
+        let product = program_files.join("BoxPilot");
+        assert_eq!(layout.helper_dir(), product.join("Helper"));
+        assert_eq!(layout.state_dir(), product.join("HelperState"));
+        assert_eq!(layout.helper_dir().parent(), layout.state_dir().parent());
+        assert!(!layout.state_dir().starts_with(layout.helper_dir()));
+        assert!(!layout.helper_dir().starts_with(layout.state_dir()));
+        for place in [
+            layout.runs_dir(),
+            layout.users_dir(),
+            layout.log_file(),
+            layout.user_dir("S-1-5-21-1-2-3-1001").unwrap(),
+        ] {
+            assert!(place.starts_with(layout.state_dir()), "{place:?}");
+            assert!(!place.starts_with(layout.helper_dir()), "{place:?}");
+        }
     }
 
     #[test]

@@ -12,9 +12,10 @@
   - Registers in Add/Remove Programs
   - Preserves user config in AppData (not touched by uninstall)
   - Installs the privileged helper (ADR 0006 rule 7): the BoxPilotHelper
-    service in the fixed Program Files\BoxPilot\Helper, and its state
-    folder ProgramData\BoxPilot\Helper, both writable by SYSTEM and
-    Administrators only. No custom actions.
+    service in the fixed Program Files\BoxPilot\Helper, and beside it its
+    state folder Program Files\BoxPilot\HelperState. Only SYSTEM and
+    Administrators may write either, and only they may read the state
+    folder. No custom actions.
 
   Build variables, besides the ones cargo wix defines:
   - HelperLibcronet: "yes" when sing-box's Windows archive ships
@@ -45,9 +46,10 @@
           through the MsiLockPermissionsEx table (PermissionEx/@Sddl
           below), which Windows Installer 4.5 and earlier silently ignore.
           An older installer would then leave the service with its default
-          DACL, which doesn't let users start it, and the state folders with
-          ProgramData's "Users may add" ACL, which the helper refuses. With
-          500 such an installer refuses the package instead.
+          DACL, which doesn't let users start it, and the state folder with
+          Program Files' inherited "Users: read & execute", which the helper
+          refuses there (exit code 11). With 500 such an installer refuses
+          the package instead.
         -->
         <Package Id='*'
             Keywords='Installer'
@@ -290,73 +292,67 @@
                                 KeyPath='yes'/>
                         </Component>
                     </Directory>
-                </Directory>
-            </Directory>
 
-            <!--
-              The helper's state: %ProgramData%\BoxPilot\Helper, holding
-              helper.log, runs\ (one private directory per sing-box start)
-              and users\<SID> (each account's cache.db and Tailscale state).
+                    <!--
+                      The helper's state: [ProgramFiles64Folder]BoxPilot\HelperState,
+                      holding helper.log, runs\ (one private directory per
+                      sing-box start) and users\<SID> (each account's cache.db
+                      and Tailscale state, node keys included). The helper
+                      finds it there (boxpilot_helper::paths::Layout::installed)
+                      and checks it on every start and spawn (exit code 11).
 
-              ProgramData lets every user create folders in it, and gives
-              the creator full control of what they create, so a plain
-              CreateFolder would inherit "Users may add files" and a user
-              could create (squat) either folder before the install. Both
-              are therefore created with an explicit protected security
-              descriptor (MsiLockPermissionsEx, applied by CreateFolders
-              each time it installs or reinstalls the component: to a
-              folder that is already there too, and again on every repair
-              and upgrade). The helper refuses a reparse point anywhere in
-              either path (exit code 11), so a junction squatted in their
-              place still fails closed. Whether Windows Installer would
-              apply the descriptor to what such a junction points to is to
-              be checked on Windows before release (ADR 0006,
-              "Verification before shipping"):
+                      Under Program Files, not ProgramData: every user may
+                      create entries in C:\ProgramData, so a user could create
+                      ProgramData\BoxPilot before the install, as a folder the
+                      helper would refuse, or as a junction (to System32, say)
+                      through which this installer, as SYSTEM, would apply the
+                      descriptor below to whatever it points at. Users can
+                      create nothing under Program Files. A sibling of Helper,
+                      never inside it: nothing written as state lands among
+                      the binaries, and Helper's ACL stays Program Files'.
 
-                O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)
+                      Program Files' inherited ACL lets Users read and
+                      execute, which is right for the binaries and wrong here,
+                      so the folder gets an explicit protected security
+                      descriptor (MsiLockPermissionsEx, applied by
+                      CreateFolders each time it installs or reinstalls the
+                      component: to a folder already there too, and again on
+                      every repair and upgrade):
 
-                O:SY   owner SYSTEM. The owner may always rewrite the DACL,
-                       so this is what takes a squatted folder away from
-                       the user who created it. The helper refuses an
-                       owner other than SYSTEM, Administrators or
-                       TrustedInstaller (exit code 11).
-                G:SY   group SYSTEM (no part in access checks; given so
-                       the descriptor is complete).
-                D:P    a protected DACL: nothing inherited from ProgramData,
-                       and any ACE a squatter added is replaced.
-                (A;OICI;FA;;;SY)   SYSTEM: full control of the folder,
-                       and, inherited, of the folders (CI) and files (OI)
-                       in it.
-                (A;OICI;FA;;;BA)   Administrators: the same.
+                        O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)
 
-              Nobody else gets anything, not even read: the GUI reaches
-              the helper through its pipe and never opens this tree. It is
-              the same DACL the helper gives every folder it creates there.
+                        O:SY   owner SYSTEM. The helper refuses an owner other
+                               than SYSTEM, Administrators or TrustedInstaller.
+                        G:SY   group SYSTEM (no part in access checks; given so
+                               the descriptor is complete).
+                        D:P    a protected DACL: nothing inherited from Program
+                               Files, so no "Users: read & execute".
+                        (A;OICI;FA;;;SY)   SYSTEM: full control of the folder,
+                               and, inherited, of the folders (CI) and files
+                               (OI) in it.
+                        (A;OICI;FA;;;BA)   Administrators: the same.
 
-              Uninstall: these are CreateFolder entries, which Windows
-              Installer removes on uninstall only when they are empty. Once
-              the helper has run, Helper is not (helper.log, runs\ and each
-              account's users\<SID>, whose Tailscale state includes its
-              node keys), so both folders stay, still readable by SYSTEM
-              and Administrators only; a later install reapplies the
-              descriptor and the helper picks its state up again. An
-              administrator deletes the folder to remove it. No custom
-              action does (ADR 0006 rule 7).
+                      Nobody else gets anything, not even read: the GUI
+                      reaches the helper through its pipe and never opens this
+                      tree. It is the DACL the helper gives every folder it
+                      creates there (paths::STATE_DIR_DACL), and the helper
+                      refuses the folder if anyone else may read or write it.
 
-              Explicit GUIDs: a component whose key path is its directory
-              can't have a generated one.
-            -->
-            <Directory Id='CommonAppDataFolder'>
-                <Directory Id='HelperStateParentFolder' Name='BoxPilot'>
-                    <Component Id='HelperStateParent' Guid='D1106E62-030F-47A2-A96B-98659D875B4A' Win64='yes' KeyPath='yes'>
-                        <CreateFolder>
-                            <PermissionEx
-                                Id='HelperStateParentSecurity'
-                                Sddl='O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'/>
-                        </CreateFolder>
-                    </Component>
-                    <Directory Id='HelperStateFolder' Name='Helper'>
-                        <Component Id='HelperState' Guid='9512794B-43BB-407A-B897-AA413592A994' Win64='yes' KeyPath='yes'>
+                      Uninstall: a CreateFolder entry, which Windows Installer
+                      removes on uninstall only when it is empty. Once the
+                      helper has run it is not, so HelperState stays (and with
+                      it Program Files\BoxPilot), still readable by SYSTEM and
+                      Administrators only; a later install reapplies the
+                      descriptor and the helper picks its state up again. An
+                      administrator deletes the folder to remove it, Tailscale
+                      logins included. No custom action does (ADR 0006
+                      rule 7).
+
+                      An explicit GUID: a component whose key path is its
+                      directory can't have a generated one.
+                    -->
+                    <Directory Id='HelperStateFolder' Name='HelperState'>
+                        <Component Id='HelperState' Guid='F6DA0A37-4B14-4977-823D-BAF496891DB3' Win64='yes' KeyPath='yes'>
                             <CreateFolder>
                                 <PermissionEx
                                     Id='HelperStateSecurity'
@@ -429,7 +425,6 @@
             <ComponentRef Id='HelperLibcronet'/>
             <?endif?>
             <ComponentRef Id='HelperManifest'/>
-            <ComponentRef Id='HelperStateParent'/>
             <ComponentRef Id='HelperState'/>
             <Feature
                 Id='StartMenuFeature'

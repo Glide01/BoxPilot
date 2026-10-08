@@ -10,9 +10,7 @@ use windows::core::GUID;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
-use windows::Win32::UI::Shell::{
-    FOLDERID_ProgramData, FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
-};
+use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
 
 fn known_folder(id: &GUID) -> io::Result<PathBuf> {
     // SAFETY: `id` is a known-folder GUID that outlives the call; no token
@@ -30,11 +28,6 @@ fn known_folder(id: &GUID) -> io::Result<PathBuf> {
 /// `C:\Program Files` (the 64-bit one).
 pub(crate) fn program_files() -> io::Result<PathBuf> {
     known_folder(&FOLDERID_ProgramFiles)
-}
-
-/// `C:\ProgramData`.
-pub(crate) fn program_data() -> io::Result<PathBuf> {
-    known_folder(&FOLDERID_ProgramData)
 }
 
 /// The Windows directory, `C:\Windows`, as text for sing-box's environment.

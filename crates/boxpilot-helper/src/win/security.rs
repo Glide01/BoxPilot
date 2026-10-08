@@ -67,11 +67,11 @@ impl SecurityDescriptor {
 }
 
 /// The DACL of every directory the helper creates in its state tree:
-/// protected (nothing inherited from `ProgramData`, whose users may add
-/// files), SYSTEM and Administrators only, and, for the unprivileged
-/// console seam, the user running it.
+/// `paths::STATE_DIR_DACL` (protected, so nothing is inherited from
+/// Program Files, whose users may read; SYSTEM and Administrators only),
+/// and, for the unprivileged console seam, the user running it.
 pub(crate) fn protected_dir_sddl(extra_sid: Option<&str>) -> String {
-    let mut sddl = String::from("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+    let mut sddl = String::from(crate::paths::STATE_DIR_DACL);
     if let Some(sid) = extra_sid {
         sddl.push_str(&format!("(A;OICI;FA;;;{sid})"));
     }

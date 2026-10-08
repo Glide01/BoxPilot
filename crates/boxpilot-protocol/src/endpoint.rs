@@ -27,8 +27,14 @@ pub mod exit {
     /// reparse point, an owner other than SYSTEM / Administrators /
     /// TrustedInstaller, or a non-administrator who may write there.
     pub const HELPER_DIR_REFUSED: i32 = 10;
-    /// The state directory failed verification the same way, or could not be
-    /// created.
+    /// The state directory (`%ProgramFiles%\BoxPilot\HelperState`, beside
+    /// the helper's) failed verification, or could not be created: a reparse
+    /// point anywhere in its path, an owner other than SYSTEM /
+    /// Administrators / TrustedInstaller, or a non-administrator who may
+    /// write there, or even read (it holds each account's cache and
+    /// Tailscale node keys, so Program Files' inherited "Users: read" is
+    /// refused too). Reinstalling BoxPilot recreates it as the helper wants
+    /// it.
     pub const STATE_DIR_REFUSED: i32 = 11;
     /// The install manifest is missing or malformed, or sing-box (or a file
     /// beside it) doesn't match it.

@@ -1,7 +1,10 @@
 //! Verifying the helper's trees before it trusts anything in them (ADR 0006
 //! rules 3 and 7): every directory from the volume root down, and each file
 //! the helper runs or reads, judged by `acl::judge`. Done when the helper
-//! starts and again before every spawn.
+//! starts and again before every spawn. The helper directory and its files
+//! are judged as `Role::Object` (nobody else may write them), the state
+//! directory and the directories in it as `Role::Private` (nobody else may
+//! read them either).
 //!
 //! Each object is opened without following a reparse point
 //! (`FILE_FLAG_OPEN_REPARSE_POINT`), so a link is seen as a link and
@@ -73,9 +76,9 @@ fn judge_open(path: &Path, file: &File, role: Role, trusted: &Trusted) -> Result
     acl::judge(&security, role, trusted).map_err(|why| refused(path, Why::Acl(why)))
 }
 
-/// Verify directory `dir` as an object and every directory above it, up to
-/// the volume root, as ancestors.
-pub(crate) fn dir_chain(dir: &Path, trusted: &Trusted) -> Result<(), Refused> {
+/// Verify directory `dir` in `role` and every directory above it, up to the
+/// volume root, as ancestors.
+pub(crate) fn dir_chain(dir: &Path, role: Role, trusted: &Trusted) -> Result<(), Refused> {
     let plain = dir.is_absolute()
         && dir
             .components()
@@ -84,22 +87,18 @@ pub(crate) fn dir_chain(dir: &Path, trusted: &Trusted) -> Result<(), Refused> {
         return Err(refused(dir, Why::NotAbsolute));
     }
     for (depth, path) in dir.ancestors().enumerate() {
-        let role = if depth == 0 {
-            Role::Object
-        } else {
-            Role::Ancestor
-        };
+        let role = if depth == 0 { role } else { Role::Ancestor };
         let handle = open_for_security(path).map_err(|error| refused(path, Why::Io(error)))?;
         judge_open(path, &handle, role, trusted)?;
     }
     Ok(())
 }
 
-/// Verify directory `dir` alone, as an object: for a directory the helper
+/// Verify directory `dir` alone, in `role`: for a directory the helper
 /// created inside a tree whose chain it has just verified.
-pub(crate) fn dir_only(dir: &Path, trusted: &Trusted) -> Result<(), Refused> {
+pub(crate) fn dir_only(dir: &Path, role: Role, trusted: &Trusted) -> Result<(), Refused> {
     let handle = open_for_security(dir).map_err(|error| refused(dir, Why::Io(error)))?;
-    judge_open(dir, &handle, Role::Object, trusted)
+    judge_open(dir, &handle, role, trusted)
 }
 
 /// Open `path`, a file in a directory just verified, for reading, sharing

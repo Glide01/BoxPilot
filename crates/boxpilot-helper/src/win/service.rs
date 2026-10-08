@@ -109,9 +109,10 @@ fn serve() -> i32 {
     })
 }
 
-/// The service's fixed trees: the helper's own directory, which must be
-/// `%ProgramFiles%\BoxPilot\Helper` (ADR 0006 rule 7: never a folder a user
-/// picked), and `%ProgramData%\BoxPilot\Helper`.
+/// The service's fixed trees (`Layout::installed`): the helper's own
+/// directory, which must be `%ProgramFiles%\BoxPilot\Helper` (ADR 0006
+/// rule 7: never a folder a user picked), and the private state directory
+/// beside it, `%ProgramFiles%\BoxPilot\HelperState`.
 fn setup() -> Result<Setup, (i32, String)> {
     let internal = |what: &str, error: std::io::Error| (exit::INTERNAL, format!("{what}: {error}"));
     let exe = std::env::current_exe().map_err(|error| internal("the helper's path", error))?;
@@ -122,11 +123,11 @@ fn setup() -> Result<Setup, (i32, String)> {
             "the helper has no directory".to_owned(),
         ))?
         .to_owned();
-    let expected = folders::program_files()
-        .map_err(|error| internal("Program Files", error))?
-        .join("BoxPilot")
-        .join("Helper");
-    if !same_path(&helper_dir, &expected) {
+    let installed = Layout::installed(
+        &folders::program_files().map_err(|error| internal("Program Files", error))?,
+    );
+    let expected = installed.helper_dir();
+    if !same_path(&helper_dir, expected) {
         return Err((
             exit::HELPER_DIR_REFUSED,
             format!(
@@ -136,12 +137,8 @@ fn setup() -> Result<Setup, (i32, String)> {
             ),
         ));
     }
-    let state_dir = folders::program_data()
-        .map_err(|error| internal("ProgramData", error))?
-        .join("BoxPilot")
-        .join("Helper");
     Ok(Setup {
-        layout: Layout::new(helper_dir, state_dir),
+        layout: Layout::new(helper_dir, installed.state_dir().to_owned()),
         trusted: Trusted::administrators(),
         dir_sddl: protected_dir_sddl(None),
         clean_adapters: true,

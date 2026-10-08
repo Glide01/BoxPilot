@@ -11,21 +11,27 @@
 //!   point the helper at a tree someone else controls;
 //! - **every owner trusted**: SYSTEM, Administrators or TrustedInstaller. An
 //!   owner may always rewrite the DACL;
-//! - **the object itself** (the helper or state directory, and each file the
-//!   helper runs or reads there): no ACE that applies to it grants a
+//! - **the helper directory and each file the helper runs or reads there**
+//!   ([`Role::Object`]): no ACE that applies to it grants a
 //!   non-administrator any write-class right. That includes `FILE_ADD_FILE`:
 //!   the application directory comes first in the DLL search order, so a
-//!   user who can add a file there can plant a DLL into a SYSTEM process;
+//!   user who can add a file there can plant a DLL into a SYSTEM process.
+//!   Reading is fine: these are the installed binaries;
+//! - **the state directory and each directory in it** ([`Role::Private`]):
+//!   no ACE grants a non-administrator any right at all, reading included.
+//!   It holds every caller's cache file and Tailscale node keys, so Program
+//!   Files' inherited "Users: Read & execute" is refused there; only a
+//!   protected SYSTEM + Administrators DACL passes;
 //! - **each ancestor**: no ACE grants a non-administrator `DELETE`,
 //!   `WRITE_DAC`, `WRITE_OWNER`, `FILE_DELETE_CHILD`, `GENERIC_ALL` or
 //!   `GENERIC_WRITE`, any of which would let them swap out or re-permission
 //!   what lies below. Adding files beside it is fine: users may create
-//!   folders in `C:\` and in `C:\ProgramData`.
+//!   folders in `C:\`.
 //!
 //! Inherit-only ACEs don't apply to the object itself. On an ancestor they
 //! are skipped: what the helper uses below it is judged on its own. On the
-//! object they are not: the helper and sing-box create files in their
-//! directories (the log, the cache file, Tailscale state), and those files
+//! helper's own directories they are not: the helper and sing-box create
+//! files there (the log, the cache file, Tailscale state), and those files
 //! inherit them. Only `CREATOR OWNER` is skipped there, since it becomes
 //! the creator, SYSTEM. Deny ACEs only take rights away, so they never make
 //! an object unsafe. An allow ACE of a type the helper doesn't read fails
@@ -124,6 +130,12 @@ pub const OBJECT_FORBIDDEN: u32 = FILE_WRITE_DATA
     | GENERIC_WRITE
     | GENERIC_ALL;
 
+/// The rights no non-administrator may hold on the state directory or a
+/// directory in it: every right but `SYNCHRONIZE`, which grants nothing on
+/// its own. Reading is refused as well as writing: the tree holds each
+/// caller's cache file and Tailscale node keys.
+pub const PRIVATE_FORBIDDEN: u32 = !SYNCHRONIZE;
+
 /// The rights no non-administrator may hold on an ancestor: any that lets
 /// them replace, rename or re-permission what lies below it.
 pub const ANCESTOR_FORBIDDEN: u32 =
@@ -192,9 +204,12 @@ pub struct Security {
 /// Where in the chain an object stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    /// The helper or state directory itself, or a file the helper uses in
-    /// it.
+    /// The helper directory, or a file the helper runs or reads in it:
+    /// nobody but administrators may write it.
     Object,
+    /// The state directory, or a directory in it: nobody but
+    /// administrators may write it, or read it either.
+    Private,
     /// A directory above one.
     Ancestor,
 }
@@ -245,7 +260,7 @@ pub enum AclRefusal {
     UnknownAce {
         ace_type: u8,
     },
-    /// An ACE grants a non-administrator a forbidden right.
+    /// An ACE grants a non-administrator a right it may not hold there.
     Grants {
         sid: String,
         mask: u32,
@@ -271,7 +286,8 @@ impl fmt::Display for AclRefusal {
             }
             AclRefusal::Grants { sid, mask } => write!(
                 f,
-                "lets {sid}, who is not an administrator, write to it (rights 0x{mask:08x})"
+                "grants {sid}, who is not an administrator, rights it may not hold there \
+                 (0x{mask:08x})"
             ),
         }
     }
@@ -292,6 +308,7 @@ pub fn judge(security: &Security, role: Role, trusted: &Trusted) -> Result<(), A
     let dacl = security.dacl.as_ref().ok_or(AclRefusal::NullDacl)?;
     let forbidden = match role {
         Role::Object => OBJECT_FORBIDDEN,
+        Role::Private => PRIVATE_FORBIDDEN,
         Role::Ancestor => ANCESTOR_FORBIDDEN,
     };
     for ace in dacl {
@@ -321,14 +338,15 @@ pub fn judge(security: &Security, role: Role, trusted: &Trusted) -> Result<(), A
 }
 
 /// Whether `ace` counts for an object in `role`: every ACE that applies to
-/// the object itself, and on the object, also every ACE its new files and
-/// folders inherit, `CREATOR OWNER` aside (it becomes their creator).
+/// the object itself, and on one of the helper's own (not an ancestor),
+/// also every ACE its new files and folders inherit, `CREATOR OWNER` aside
+/// (it becomes their creator).
 fn applies(ace: &Ace, role: Role) -> bool {
     if ace.flags & ace_flag::INHERIT_ONLY == 0 {
         return true;
     }
     let inherited = ace.flags & (ace_flag::OBJECT_INHERIT | ace_flag::CONTAINER_INHERIT) != 0;
-    role == Role::Object && inherited && ace.sid != sid::CREATOR_OWNER
+    role != Role::Ancestor && inherited && ace.sid != sid::CREATOR_OWNER
 }
 
 #[cfg(test)]
@@ -448,47 +466,9 @@ mod tests {
         )
     }
 
-    /// `C:\ProgramData`, owned by SYSTEM: `D:PAI(A;OICI;FA;;;SY)
-    /// (A;OICI;FA;;;BA)(A;OICIIO;GA;;;CO)(A;OICI;RX;;;BU)
-    /// (A;CI;WDADWEAWA;;;BU)`. Users may create files and folders in it.
-    fn program_data() -> Security {
-        object(
-            SYSTEM,
-            vec![
-                Ace::allow(OI | CI, FILE_ALL_ACCESS, SYSTEM),
-                Ace::allow(OI | CI, FILE_ALL_ACCESS, ADMINISTRATORS),
-                Ace::allow(OI | CI | IO, GENERIC_ALL, CREATOR_OWNER),
-                Ace::allow(OI | CI, READ_EXECUTE, USERS),
-                Ace::allow(
-                    CI,
-                    FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES,
-                    USERS,
-                ),
-            ],
-        )
-    }
-
-    /// A folder created under `C:\ProgramData` without a DACL of its own:
-    /// it inherits the users' right to add files and folders.
-    fn program_data_child(owner: &str) -> Security {
-        object(
-            owner,
-            vec![
-                Ace::allow(ID | OI | CI, FILE_ALL_ACCESS, SYSTEM),
-                Ace::allow(ID | OI | CI, FILE_ALL_ACCESS, ADMINISTRATORS),
-                Ace::allow(ID | OI | CI | IO, GENERIC_ALL, CREATOR_OWNER),
-                Ace::allow(ID | OI | CI, READ_EXECUTE, USERS),
-                Ace::allow(
-                    ID | CI,
-                    FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES,
-                    USERS,
-                ),
-            ],
-        )
-    }
-
-    /// The state directory as the helper creates it:
-    /// `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`.
+    /// The state directory (`Program Files\BoxPilot\HelperState`) as the
+    /// MSI and the helper create it, and every directory the helper
+    /// creates in it: `O:SY D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`.
     fn protected(owner: &str) -> Security {
         object(
             owner,
@@ -512,26 +492,88 @@ mod tests {
         assert_eq!(judge(&program_files_file(), Role::Object, &trusted), Ok(()));
     }
 
+    /// `C:\`, `Program Files`, `Program Files\BoxPilot`, then the
+    /// protected `HelperState`.
     #[test]
-    fn the_default_program_data_chain_passes_with_a_protected_state_dir() {
+    fn the_state_chain_passes_with_a_protected_state_dir() {
         let trusted = admins();
         assert_eq!(judge(&drive_root(), Role::Ancestor, &trusted), Ok(()));
-        assert_eq!(judge(&program_data(), Role::Ancestor, &trusted), Ok(()));
+        assert_eq!(judge(&program_files(), Role::Ancestor, &trusted), Ok(()));
         assert_eq!(
-            judge(&program_data_child(SYSTEM), Role::Ancestor, &trusted),
+            judge(
+                &program_files_child(ADMINISTRATORS),
+                Role::Ancestor,
+                &trusted
+            ),
             Ok(())
         );
-        assert_eq!(judge(&protected(SYSTEM), Role::Object, &trusted), Ok(()));
+        for owner in [SYSTEM, ADMINISTRATORS] {
+            for role in [Role::Private, Role::Object] {
+                assert_eq!(judge(&protected(owner), role, &trusted), Ok(()));
+            }
+        }
+    }
+
+    /// The state directory holds every caller's cache file and Tailscale
+    /// node keys: what Program Files would hand down to a plain folder
+    /// (Users and app containers may read and execute) is fine for the
+    /// helper's binaries, and refused there.
+    #[test]
+    fn program_files_inherited_read_is_refused_for_the_state_dir() {
+        let trusted = admins();
+        let plain = program_files_child(ADMINISTRATORS);
+        assert_eq!(judge(&plain, Role::Object, &trusted), Ok(()));
         assert_eq!(
-            judge(&protected(ADMINISTRATORS), Role::Object, &trusted),
-            Ok(())
+            judge(&plain, Role::Private, &trusted),
+            Err(AclRefusal::Grants {
+                sid: USERS.into(),
+                mask: READ_EXECUTE
+            })
         );
+        for (trustee, mask) in [
+            (USERS, FILE_READ_DATA),
+            (AUTHENTICATED_USERS, FILE_READ_ATTRIBUTES),
+            (EVERYONE, READ_CONTROL),
+            (ALL_APPLICATION_PACKAGES, GENERIC_READ),
+            (ALICE, FILE_EXECUTE),
+        ] {
+            let mut security = protected(SYSTEM);
+            security
+                .dacl
+                .as_mut()
+                .unwrap()
+                .push(Ace::allow(0, mask, trustee));
+            assert_eq!(
+                judge(&security, Role::Private, &trusted),
+                Err(AclRefusal::Grants {
+                    sid: trustee.into(),
+                    mask
+                }),
+                "{trustee} {mask:#x}"
+            );
+        }
+        // What files and folders created in it would inherit counts too.
+        let mut inherited = protected(SYSTEM);
+        inherited
+            .dacl
+            .as_mut()
+            .unwrap()
+            .push(Ace::allow(OI | CI | IO, GENERIC_READ, USERS));
+        assert!(judge(&inherited, Role::Private, &trusted).is_err());
+        // `SYNCHRONIZE` alone grants nothing.
+        let mut synchronize = protected(SYSTEM);
+        synchronize
+            .dacl
+            .as_mut()
+            .unwrap()
+            .push(Ace::allow(0, SYNCHRONIZE, USERS));
+        assert_eq!(judge(&synchronize, Role::Private, &trusted), Ok(()));
     }
 
     /// Folders users may add to are fine above the helper's, never as its
     /// own.
     #[test]
-    fn a_folder_users_may_add_to_is_no_helper_or_state_dir() {
+    fn a_folder_users_may_add_to_is_no_helper_dir() {
         let trusted = admins();
         // What its new folders inherit (Modify for Authenticated Users)
         // refuses it first; its own `AD` would too.
@@ -555,34 +597,19 @@ mod tests {
                 mask: FILE_APPEND_DATA
             })
         );
-        assert_eq!(
-            judge(&program_data(), Role::Object, &trusted),
-            Err(AclRefusal::Grants {
-                sid: USERS.into(),
-                mask: 0x116
-            })
-        );
-        // A state directory created without a protected DACL inherits that.
-        assert_eq!(
-            judge(&program_data_child(SYSTEM), Role::Object, &trusted),
-            Err(AclRefusal::Grants {
-                sid: USERS.into(),
-                mask: 0x116
-            })
-        );
     }
 
-    /// `ProgramData` lets users create folders, so a user can create the
-    /// state directory first. Its owner gives it away.
+    /// A folder a user created, wherever they could, is theirs: its owner
+    /// gives it away, whatever its DACL says.
     #[test]
-    fn a_squatted_folder_is_refused_by_its_owner() {
-        for role in [Role::Object, Role::Ancestor] {
+    fn a_users_folder_is_refused_by_its_owner() {
+        for role in [Role::Object, Role::Private, Role::Ancestor] {
             assert_eq!(
                 judge(&protected(ALICE), role, &admins()),
                 Err(AclRefusal::Owner { sid: ALICE.into() })
             );
             assert_eq!(
-                judge(&program_data_child(ALICE), role, &admins()),
+                judge(&program_files_child(ALICE), role, &admins()),
                 Err(AclRefusal::Owner { sid: ALICE.into() })
             );
         }
@@ -592,7 +619,7 @@ mod tests {
     fn a_reparse_point_is_refused_wherever_it_stands() {
         let mut link = program_files_child(ADMINISTRATORS);
         link.reparse_point = true;
-        for role in [Role::Object, Role::Ancestor] {
+        for role in [Role::Object, Role::Private, Role::Ancestor] {
             assert_eq!(judge(&link, role, &admins()), Err(AclRefusal::ReparsePoint));
         }
     }
@@ -640,14 +667,16 @@ mod tests {
                     .as_mut()
                     .unwrap()
                     .push(Ace::allow(0, mask, trustee));
-                assert_eq!(
-                    judge(&security, Role::Object, &admins()),
-                    Err(AclRefusal::Grants {
-                        sid: trustee.into(),
-                        mask
-                    }),
-                    "{mask:#x} for {trustee}"
-                );
+                for role in [Role::Object, Role::Private] {
+                    assert_eq!(
+                        judge(&security, role, &admins()),
+                        Err(AclRefusal::Grants {
+                            sid: trustee.into(),
+                            mask
+                        }),
+                        "{mask:#x} for {trustee} on {role:?}"
+                    );
+                }
             }
         }
     }

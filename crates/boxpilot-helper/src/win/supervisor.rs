@@ -8,7 +8,7 @@ use super::security::{create_dir, SecurityDescriptor};
 use super::spawn::{self, Job, Launch};
 use super::sys::wait_handle;
 use super::verify::{self, Refused};
-use crate::acl::Trusted;
+use crate::acl::{Role, Trusted};
 use crate::exit;
 use crate::helper::{HelperError, Installed, Process, RunEvents, Supervisor};
 use crate::helper_log;
@@ -60,7 +60,8 @@ impl WinSupervisor {
     pub(crate) fn start(setup: Setup, max_log_line: usize) -> Result<Self, StartError> {
         let helper_refused = |refused: Refused| (exit::HELPER_DIR_REFUSED, refused.to_string());
         let layout = &setup.layout;
-        verify::dir_chain(layout.helper_dir(), &setup.trusted).map_err(helper_refused)?;
+        verify::dir_chain(layout.helper_dir(), Role::Object, &setup.trusted)
+            .map_err(helper_refused)?;
         if let Some(exe) = &setup.own_exe {
             verify::open_file(exe, &setup.trusted).map_err(helper_refused)?;
         }
@@ -119,7 +120,7 @@ impl WinSupervisor {
     fn open_binaries(&self) -> Result<Vec<File>, HelperError> {
         let layout = &self.setup.layout;
         let trusted = &self.setup.trusted;
-        verify::dir_chain(layout.helper_dir(), trusted)
+        verify::dir_chain(layout.helper_dir(), Role::Object, trusted)
             .map_err(|refused| HelperError::new(refused.to_string()))?;
         let mut held = Vec::new();
         for (name, sha256) in self.manifest.files() {
@@ -134,8 +135,10 @@ impl WinSupervisor {
     }
 
     /// The state directory: its parent created if missing, itself created
-    /// protected if missing, then the whole chain verified. A folder a user
-    /// created first is refused here, by its owner.
+    /// protected if missing (the MSI creates it), then the whole chain
+    /// verified, the state directory as private. Nobody but administrators
+    /// can create anything under Program Files, so nobody else can have
+    /// made it first; one that isn't private is refused here.
     fn prepare_state(&self) -> Result<(), HelperError> {
         let state = self.setup.layout.state_dir();
         if let Some(parent) = state.parent() {
@@ -148,8 +151,12 @@ impl WinSupervisor {
     }
 
     fn verify_state(&self) -> Result<(), HelperError> {
-        verify::dir_chain(self.setup.layout.state_dir(), &self.setup.trusted)
-            .map_err(|refused| HelperError::new(refused.to_string()))
+        verify::dir_chain(
+            self.setup.layout.state_dir(),
+            Role::Private,
+            &self.setup.trusted,
+        )
+        .map_err(|refused| HelperError::new(refused.to_string()))
     }
 
     /// Create `path` with the protected DACL; `Ok(false)` if it existed.
@@ -164,7 +171,7 @@ impl WinSupervisor {
     /// verified if it was already there.
     fn ensure_dir(&self, path: &Path) -> Result<(), HelperError> {
         self.create(path)?;
-        verify::dir_only(path, &self.setup.trusted)
+        verify::dir_only(path, Role::Private, &self.setup.trusted)
             .map_err(|refused| HelperError::new(refused.to_string()))
     }
 
@@ -219,7 +226,7 @@ impl Supervisor for WinSupervisor {
             return Err(HelperError::new("a fresh run directory already existed"));
         }
         let run = RunDir::adopt(run_dir);
-        verify::dir_only(run.path(), &self.setup.trusted)
+        verify::dir_only(run.path(), Role::Private, &self.setup.trusted)
             .map_err(|refused| HelperError::new(refused.to_string()))?;
         let placement = paths::placement(run.path(), &user_dir)
             .map_err(|error| HelperError::new(error.to_string()))?;

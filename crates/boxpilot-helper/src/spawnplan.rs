@@ -212,13 +212,13 @@ mod tests {
 
     #[test]
     fn sing_box_gets_exactly_its_arguments() {
-        let run = r"C:\ProgramData\BoxPilot\Helper\runs\0123abcd";
+        let run = r"C:\Program Files\BoxPilot\HelperState\runs\0123abcd";
         let config = format!(r"{run}\config.json");
         let args = sing_box_args(run, &config);
         let line = command_line(r"C:\Program Files\BoxPilot\Helper\sing-box.exe", &args).unwrap();
         assert_eq!(
             line,
-            r#""C:\Program Files\BoxPilot\Helper\sing-box.exe" run -D C:\ProgramData\BoxPilot\Helper\runs\0123abcd -c C:\ProgramData\BoxPilot\Helper\runs\0123abcd\config.json --disable-color"#
+            r#""C:\Program Files\BoxPilot\Helper\sing-box.exe" run -D "C:\Program Files\BoxPilot\HelperState\runs\0123abcd" -c "C:\Program Files\BoxPilot\HelperState\runs\0123abcd\config.json" --disable-color"#
         );
         assert_eq!(args_of(&line), args);
     }
