@@ -170,8 +170,10 @@ jobs:
         run: |
           Copy-Item "release/sing-box.exe" -Destination "target/x86_64-pc-windows-msvc/release/sing-box.exe"
 
+      # The repository is a Cargo workspace (the GUI plus crates/), and
+      # cargo-wix refuses to guess which member to package.
       - name: Build MSI installer
-        run: cargo wix --no-build --nocapture --target x86_64-pc-windows-msvc -o release/
+        run: cargo wix --package box_pilot_gui --no-build --nocapture --target x86_64-pc-windows-msvc -o release/
 
       # Hand the MSI to the publish job. Artifacts count against the Actions
       # storage quota (release assets don't), so keep them only as long as
