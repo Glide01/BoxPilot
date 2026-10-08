@@ -131,29 +131,26 @@ impl Render for HomePage {
         if !state.settings.has_profiles() {
             let app_state_add = self.app_state.clone();
             let theme = cx.theme();
-            return empty_state(
+            let empty = empty_state(
                 theme,
                 Icon::default().path("icons/power.svg"),
                 t.home.no_subscription_title,
                 t.home.no_subscription_hint,
             )
-            .size_full()
-            .child(
-                div().mt_3().child(
-                    empty_state_button("home-add-subscription")
-                        .icon_label(IconName::Plus, t.home.add_subscription)
-                        .on_click(move |_, window, cx| {
-                            super::profiles::ProfilesPage::open_profile_dialog(
-                                app_state_add.clone(),
-                                None,
-                                false,
-                                window,
-                                cx,
-                            );
-                        }),
-                ),
-            )
-            .into_any_element();
+            .action(
+                empty_state_button("home-add-subscription")
+                    .icon_label(IconName::Plus, t.home.add_subscription)
+                    .on_click(move |_, window, cx| {
+                        super::profiles::ProfilesPage::open_profile_dialog(
+                            app_state_add.clone(),
+                            None,
+                            false,
+                            window,
+                            cx,
+                        );
+                    }),
+            );
+            return div().size_full().child(empty).into_any_element();
         }
 
         let process = state.process.read(cx);

@@ -581,10 +581,12 @@ impl Render for ConnectionsPage {
             },
         ));
 
-        let body = if !live {
-            empty_state(theme, IconName::Network, t.empty_title, t.empty_hint)
-                .child(connect_button("connections-connect"))
-                .into_any_element()
+        // The empty state goes on the page's root (see `empty_state`), the
+        // list in the body under the header.
+        let (empty, list) = if !live {
+            let empty = empty_state(theme, IconName::Network, t.empty_title, t.empty_hint)
+                .action(connect_button("connections-connect"));
+            (Some(empty), None)
         } else if self.rows.is_empty() {
             let (title, hint) = match (query_empty, self.view) {
                 // Nothing at all yet (the toolbar is hidden): whatever the
@@ -594,7 +596,8 @@ impl Render for ConnectionsPage {
                 (true, ConnectionView::Active) => (t.no_active_title, t.no_active_hint),
                 (true, ConnectionView::Closed) => (t.no_closed_title, t.no_closed_hint),
             };
-            empty_state(theme, IconName::Network, title, hint).into_any_element()
+            let empty = empty_state(theme, IconName::Network, title, hint);
+            (Some(empty), None)
         } else {
             let rows = self.rows.clone();
             let list_connections = connections.clone();
@@ -624,7 +627,7 @@ impl Render for ConnectionsPage {
             .track_scroll(&self.scroll)
             .size_full();
 
-            card_frame(theme)
+            let list = card_frame(theme)
                 .flex_1()
                 .min_h_0()
                 .p_0()
@@ -636,8 +639,8 @@ impl Render for ConnectionsPage {
                         .size_full()
                         .child(list)
                         .vertical_scrollbar(&self.scroll),
-                )
-                .into_any_element()
+                );
+            (None, Some(list))
         };
 
         // The details panel overlays the list's right side, below the
@@ -670,7 +673,7 @@ impl Render for ConnectionsPage {
             .flex_1()
             .min_h_0()
             .v_flex()
-            .child(body)
+            .children(list)
             .children(details);
 
         div()
@@ -687,6 +690,8 @@ impl Render for ConnectionsPage {
             .gap_4()
             .child(header)
             .when(has_any, |page| page.child(controls))
+            // Before the body, so the details panel stays above it.
+            .children(empty)
             .child(body)
     }
 }

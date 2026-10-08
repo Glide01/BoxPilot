@@ -677,7 +677,7 @@ impl Render for GroupsPage {
 
         let body = if !has_groups {
             empty_state(theme, IconName::Globe, t.empty_title, t.empty_hint)
-                .when(!live, |this| this.child(connect_button("groups-connect")))
+                .when(!live, |this| this.action(connect_button("groups-connect")))
                 .into_any_element()
         } else if self.layout.rows.is_empty() {
             empty_state(theme, IconName::Search, t.no_match_title, t.no_match_hint)

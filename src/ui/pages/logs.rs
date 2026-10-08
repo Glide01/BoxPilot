@@ -329,7 +329,7 @@ impl Render for LogsPage {
                 s().logs.empty_title,
                 s().logs.empty_hint,
             )
-            .when(stopped, |this| this.child(connect_button("logs-connect")))
+            .when(stopped, |this| this.action(connect_button("logs-connect")))
             .into_any_element()
         } else {
             // 只读、无边框、不换行的编辑器:鼠标可拖选 + 复制 + 搜索 + 横向滚动。

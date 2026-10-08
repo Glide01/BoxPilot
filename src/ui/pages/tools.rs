@@ -479,7 +479,7 @@ impl Render for ToolsPage {
                 s().tools.not_running_title,
                 s().tools.not_running_hint,
             )
-            .child(connect_button("tools-connect"))
+            .action(connect_button("tools-connect"))
             .into_any_element()
         } else {
             let cards = div()

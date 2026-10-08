@@ -292,57 +292,113 @@ pub fn section_heading(theme: &Theme, title: &'static str) -> Div {
         .child(title)
 }
 
-/// Centered empty state: the icon in a soft disc, a title and a hint. Fills
-/// the remaining page height (`flex_1`) without a frame of its own — an
-/// empty page needs no box around its emptiness. Callers may append an
-/// action button.
+/// Centred empty state: the icon in a soft disc, a title and a hint, and
+/// optionally an [`EmptyState::action`] under them. No frame of its own —
+/// an empty page needs no box around its emptiness.
+///
+/// It covers its parent, which must be the page's root: centred on the
+/// whole page rather than on the room under the page's title, it sits at
+/// the same height on every page, whatever the header above it holds, and
+/// on Home, which has none. Only the icon, title and hint are centred; the
+/// action hangs under them, so a page with one puts its message where a
+/// page without one does.
 pub fn empty_state(
     theme: &Theme,
     icon: impl Into<Icon>,
     title: &'static str,
     subtitle: &'static str,
-) -> Div {
-    div()
-        .v_flex()
-        .flex_1()
-        .w_full()
-        .items_center()
-        .justify_center()
-        .gap_2()
-        .pb_8()
-        .child(
-            div()
-                .size(px(56.))
-                .mb_2()
-                .rounded_full()
-                .bg(theme.muted)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon.into().size(px(24.)).text_color(theme.muted_foreground)),
-        )
-        .child(
-            div()
-                .text_base()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.foreground)
-                .child(title),
-        )
-        .child(
-            div()
-                .max_w(px(360.))
-                .text_center()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(subtitle),
-        )
+) -> EmptyState {
+    EmptyState {
+        icon: icon.into().size(px(24.)).text_color(theme.muted_foreground),
+        disc: theme.muted,
+        title,
+        title_color: theme.foreground,
+        subtitle,
+        subtitle_color: theme.muted_foreground,
+        action: None,
+    }
+}
+
+/// See [`empty_state`].
+#[derive(IntoElement)]
+pub struct EmptyState {
+    icon: Icon,
+    disc: Hsla,
+    title: &'static str,
+    title_color: Hsla,
+    subtitle: &'static str,
+    subtitle_color: Hsla,
+    action: Option<AnyElement>,
+}
+
+impl EmptyState {
+    /// The page's way out of being empty: a button
+    /// ([`empty_state_button`], [`connect_button`]).
+    pub fn action(mut self, action: impl IntoElement) -> Self {
+        self.action = Some(action.into_any_element());
+        self
+    }
+}
+
+impl RenderOnce for EmptyState {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let message = div()
+            .v_flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .size(px(56.))
+                    .mb_2()
+                    .rounded_full()
+                    .bg(self.disc)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(self.icon),
+            )
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.title_color)
+                    .child(self.title),
+            )
+            .child(
+                div()
+                    .max_w(px(360.))
+                    .text_center()
+                    .text_sm()
+                    .text_color(self.subtitle_color)
+                    .child(self.subtitle),
+            );
+        // Zero height, so it leaves the message centred: the action
+        // overflows downward from it.
+        let action = div()
+            .h_0()
+            .w_full()
+            .flex()
+            .justify_center()
+            .items_start()
+            .children(self.action.map(|action| div().mt_5().child(action)));
+        div()
+            .absolute()
+            .inset_0()
+            .v_flex()
+            .items_center()
+            .justify_center()
+            // A little above the middle, where the eye puts the centre.
+            .pb_8()
+            .child(message)
+            .child(action)
+    }
 }
 
 /// An empty state's call to action, unlabelled: a primary button with a
 /// header button's text size (gpui-component's medium size jumps to 16px
 /// text, which reads louder than everything around it), given a little
-/// more room. The caller adds the label, icon and handler and appends it
-/// to [`empty_state`].
+/// more room. The caller adds the label, icon and handler and passes it to
+/// [`EmptyState::action`].
 pub fn empty_state_button(id: impl Into<ElementId>) -> Button {
     Button::new(id).primary().small().h(px(30.)).px_3()
 }
@@ -350,12 +406,10 @@ pub fn empty_state_button(id: impl Into<ElementId>) -> Button {
 /// The primary "Connect" action an empty state offers when what it lacks
 /// only exists while sing-box runs. Dispatches `ToggleProcess`, the same
 /// action as the Home power button and its shortcut.
-pub fn connect_button(id: &'static str) -> Div {
-    div().mt_3().child(
-        empty_state_button(id)
-            .icon_label(Icon::default().path("icons/power.svg"), s().status.connect)
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleProcess), cx)),
-    )
+pub fn connect_button(id: &'static str) -> Button {
+    empty_state_button(id)
+        .icon_label(Icon::default().path("icons/power.svg"), s().status.connect)
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleProcess), cx))
 }
 
 /// A labeled settings row: label (+ optional hint) on the left, the caller's
