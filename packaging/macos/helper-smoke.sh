@@ -7,6 +7,7 @@
 #
 #   packaging/macos/helper-smoke.sh <step> [<BoxPilot.dmg> <mac_smoke>]
 #   packaging/macos/helper-smoke.sh gui-client <gui_helper_smoke>
+#   packaging/macos/helper-smoke.sh sandbox-reports <sandbox_report>
 #
 # e.g. packaging/macos/helper-smoke.sh install \
 #        release/BoxPilot-1.13.5-macos-arm64.dmg \
@@ -49,6 +50,12 @@
 #   kill-helper      SIGKILL to the helper during TUN: sing-box goes with it
 #   system-proxy     TUN with the system proxy: sing-box sets it and unsets it
 #                    on stop; killed outright, the next helper start resets it
+#   sandbox-reports  what sing-box did under its sandbox profile, which
+#                    measures and doesn't enforce yet (sandboxplan): the
+#                    kernel's sandbox reports since the install, summed up by
+#                    operation and target (examples/sandbox_report.rs), the
+#                    raw lines in logs/sandbox-reports.txt. It fails only if
+#                    no report names sing-box though the steps saw it run
 #   uninstall        helper-uninstall.sh: the daemon and its paths are gone,
 #                    the state directory stays; --remove-state removes it
 #   logs             the helper's log, launchctl print, the system log for the
@@ -88,6 +95,14 @@ APP=$WORK/BoxPilot.app
 CONTENTS=$APP/Contents
 SMOKE=$WORK/mac_smoke
 GUI=$WORK/gui_helper_smoke
+REPORT=$WORK/sandbox_report
+# When the install step ran: the sandbox reports are collected from then on.
+SANDBOX_SINCE=$WORK/sandbox.since
+# The PIDs of the helper's sing-box the steps saw, one per line.
+SING_BOX_PIDS=$WORK/sing-box-pids.txt
+# The kernel's sandbox reports in the unified log (process 0, the sandbox
+# kext as the sender; also by their text, should the sender's path differ).
+SANDBOX_PREDICATE='(processID == 0) AND ((senderImagePath CONTAINS "/Sandbox") OR (eventMessage CONTAINS "Sandbox: "))'
 OTHER_USER=bpsmoke
 OTHER_DIR=$WORK/other
 
@@ -96,6 +111,8 @@ dmg=${2:-}
 smoke_source=${3:-}
 # gui-client's one argument.
 gui_source=${2:-}
+# sandbox-reports' one argument.
+report_source=${2:-}
 
 # ---- Saying what happened ----
 
@@ -259,12 +276,13 @@ route_interface() {
 }
 
 # The helper's (pid $1) one child, sing-box, in $sing_box; fails the step
-# unless there is exactly one.
+# unless there is exactly one. Its PID is kept for the sandbox-reports step.
 find_sing_box() {
     children=$(pgrep -P "$1" || :)
     count=$(printf '%s\n' "$children" | grep -c . || :)
     [ "$count" -eq 1 ] || fail "the helper (pid $1) has $count children, not 1: $children"
     sing_box=$children
+    printf '%s\n' "$sing_box" >>"$SING_BOX_PIDS"
 }
 
 # sing-box (pid $1) is the helper's (pid $2) child, in its process group, as
@@ -400,6 +418,8 @@ step_install() {
     sudo rm -rf "$WORK"
     mkdir -p "$WORK" "$LOGS"
     chmod 0755 "$WORK" "$LOGS"
+    # Local time, as `log show --start` reads it.
+    date '+%Y-%m-%d %H:%M:%S' >"$SANDBOX_SINCE"
     mount=$WORK/dmg
     mkdir "$mount"
     hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "$dmg" >/dev/null
@@ -858,6 +878,56 @@ step_system_proxy() {
     assert_tun_down
 }
 
+# What sing-box did under its sandbox profile (sandboxplan: measuring; not
+# enforced yet), from the kernel's sandbox reports since the install: every
+# step that ran sing-box (protocol, gui-client, kill-helper, system-proxy)
+# and anything it ran (networksetup). The raw lines go in
+# $LOGS/sandbox-reports.txt, which the logs step prints; the summary is
+# printed here. What the reports say never fails the step: only no report
+# naming sing-box, though the steps saw it run, does, because then the
+# collection is broken or sing-box ran unsandboxed. A raw sample is printed
+# then, so the next look isn't blind.
+step_sandbox_reports() {
+    [ -f "$report_source" ] || fail "no sandbox_report at '$report_source'"
+    cp "$report_source" "$REPORT"
+    chmod 0755 "$REPORT"
+    since=$(cat "$SANDBOX_SINCE" 2>/dev/null || :)
+    [ -n "$since" ] || fail "no start time in $SANDBOX_SINCE (the install step writes it)"
+    raw=$LOGS/sandbox-reports.txt
+    printf 'the kernel sandbox reports since %s (log show --predicate %s)\n' "$since" "$SANDBOX_PREDICATE"
+    # The file is the runner's: the redirect is meant to be made without sudo.
+    # shellcheck disable=SC2024
+    if ! sudo log show --start "$since" --style compact --info --predicate "$SANDBOX_PREDICATE" \
+        >"$raw" 2>"$WORK/log-show.err"; then
+        cat "$WORK/log-show.err" >&2 || :
+        fail "log show failed (above)"
+    fi
+    printf '%s lines, %s with a sandbox report, raw in %s\n' \
+        "$(wc -l <"$raw" | tr -d ' ')" "$(grep -c 'Sandbox: ' "$raw" || :)" "$raw"
+    seen=$(sort -nu "$SING_BOX_PIDS" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || :)
+    printf 'the sing-box PIDs the steps saw: %s\n' "${seen:-none}"
+
+    status=0
+    "$REPORT" "$raw" --pids "$SING_BOX_PIDS" || status=$?
+    case $status in
+        0)
+            ok "sing-box's sandbox reports are summed up above; the raw lines are in $raw"
+            return
+            ;;
+        1) ;;
+        *) fail "sandbox_report failed (exit code $status, above)" ;;
+    esac
+    printf '==== a broader look since %s: sing-box, sandboxd and the sandbox reporting subsystem (the first 200 lines)\n' "$since"
+    sudo log show --start "$since" --style compact --info --predicate \
+        'eventMessage CONTAINS "sing-box" OR process == "sandboxd" OR subsystem == "com.apple.sandbox.reporting"' \
+        2>&1 | head -n 200 || :
+    if [ -z "$seen" ]; then
+        note "no sandbox report names sing-box, and no step recorded a sing-box PID: nothing was measured"
+        return
+    fi
+    fail "no sandbox report names sing-box, though the steps saw it run (PIDs $seen): the collection is broken, or sing-box ran unsandboxed (samples above)"
+}
+
 step_uninstall() {
     stop_helper
     # The logs step runs after the state directory is gone. (The file is
@@ -919,11 +989,12 @@ case $step in
     broken-install) step_broken_install ;;
     kill-helper) step_kill_helper ;;
     system-proxy) step_system_proxy ;;
+    sandbox-reports) step_sandbox_reports ;;
     uninstall) step_uninstall ;;
     logs)
         step_logs
         exit 0
         ;;
-    *) fail "unknown step '$step' (install, inspect, protocol, gui-client, idle-exit, other-user, broken-install, kill-helper, system-proxy, uninstall, logs)" ;;
+    *) fail "unknown step '$step' (install, inspect, protocol, gui-client, idle-exit, other-user, broken-install, kill-helper, system-proxy, sandbox-reports, uninstall, logs)" ;;
 esac
 printf 'helper smoke %s: every check held\n' "$step"

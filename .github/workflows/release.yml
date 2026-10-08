@@ -671,9 +671,11 @@ jobs:
       # They come after "Upload DMG", so the DMG is uploaded whatever they
       # find, and each runs while the install held, so one round shows every
       # finding.
+      # And the reader of the sandbox reports the measuring profile makes
+      # (examples/sandbox_report.rs, never shipped either).
       - name: Build the helper smoke client
         if: matrix.test
-        run: cargo build --release --target ${{ matrix.target }} -p boxpilot-helper --example mac_smoke
+        run: cargo build --release --target ${{ matrix.target }} -p boxpilot-helper --example mac_smoke --example sandbox_report
 
       # The GUI's own helper client against the same daemon
       # (examples/gui_helper_smoke.rs, never shipped): a debug build of
@@ -733,6 +735,24 @@ jobs:
         timeout-minutes: 10
         run: packaging/macos/helper-smoke.sh system-proxy
 
+      # What sing-box did under its sandbox profile, which measures and
+      # doesn't enforce yet (ADR 0006, "Defense in depth";
+      # crates/boxpilot-helper/src/sandboxplan.rs): the kernel's sandbox
+      # reports since the install, from every step above that ran sing-box
+      # and from what it ran (networksetup), summed up by operation and
+      # target under "==== sing-box's sandbox reports"; the raw lines go in
+      # logs/sandbox-reports.txt, which the logs step prints. The enforced,
+      # deny-by-default profile is written from this. What the reports say
+      # never fails the step; no report naming sing-box, though the steps
+      # saw it run, does: the collection is broken, or the sandbox wasn't
+      # applied.
+      - name: "Helper smoke: what sing-box did under its sandbox profile"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 15
+        env:
+          TARGET: ${{ matrix.target }}
+        run: packaging/macos/helper-smoke.sh sandbox-reports "target/$TARGET/release/examples/sandbox_report"
+
       - name: "Helper smoke: uninstall"
         if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
         timeout-minutes: 10
@@ -740,7 +760,8 @@ jobs:
 
       # The helper's own log (readable by root only, which the runner may
       # become), launchd's state, the system log for the label, and the
-      # smoke client's output, whatever the steps above found.
+      # smoke client's output and the raw sandbox reports, whatever the
+      # steps above found.
       - name: "Helper smoke: logs"
         if: always() && matrix.test && steps.helper-install.outcome != 'skipped'
         timeout-minutes: 5

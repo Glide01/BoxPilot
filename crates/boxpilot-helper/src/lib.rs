@@ -28,9 +28,10 @@
 //!   and the helper's own keep) and [`tun`] (which adapters to remove);
 //! - macOS: [`modes`] (who may write where the helper reads from, by owner
 //!   and mode), [`owner`] (who may start), [`cleanup`] (what to undo after
-//!   a run, or a crash), [`launchd`] (the daemon's plist) and
-//!   [`sandboxplan`] (sing-box's sandbox profile, its parameters and how it
-//!   is applied);
+//!   a run, or a crash), [`launchd`] (the daemon's plist), [`sandboxplan`]
+//!   (sing-box's sandbox profile, its parameters and how it is applied) and
+//!   [`sandboxreport`] (reading what that profile reported, for CI's
+//!   measurement);
 //! - both: [`spawnplan`] (sing-box's command line and environment).
 //!
 //! The platform layers are the only modules with `unsafe` code, each block
@@ -68,6 +69,7 @@ pub mod paths;
 pub mod runcfg;
 pub mod rundir;
 pub mod sandboxplan;
+pub mod sandboxreport;
 pub mod spawnplan;
 pub mod tokenplan;
 pub mod transport;
