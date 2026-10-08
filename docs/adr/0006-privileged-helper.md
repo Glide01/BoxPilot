@@ -7,8 +7,19 @@ installs the MSI on a Windows Server runner, drives the real service
 there, and measures the tokens sing-box and the helper run with (see
 "Verification before shipping"). It has **not run on Windows 10 or 11, or
 under the GUI, yet**; `docs/helper-windows-checklist.md`
-lists what must be verified there first. macOS (phase 2) is not started. Its
-trade-offs are settled by separation of tasks (课题分离, below).
+lists what must be verified there first. macOS (phase 2) is started, in
+three parts. The first is built: the helper as a launchd daemon on a
+launchd-created socket (callers by `LOCAL_PEERCRED` uid, the owner model),
+its trees verified by owner and mode, sing-box run as root through
+`posix_spawn` in the helper's process group, the crash cleanup; the
+install and uninstall scripts and the AppleScript prompt (a constant, not
+wired up yet); the payload in the DMG; and a CI smoke test that installs it
+from the DMG on GitHub's Apple-silicon runner and drives the real daemon
+(`docs/helper-macos-checklist.md`). The POSIX half of it is unit-tested on
+Linux too. Still to come: the GUI's client, install and remove UI (until
+then macOS stays Proxy mode only, ADR 0005), then sing-box's sandbox
+profile, measured before it is enforced. Its trade-offs are settled by
+separation of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
 without changing it (see "Conflicts with earlier ADRs").
 
@@ -495,6 +506,11 @@ not from a BoxPilot setting:
   - Another account takes over with its own administrator prompt.
   - The last account authorized holds it, as with ADR 0003's grant on
     Linux.
+  - Root may start too: a root process is already beyond any boundary
+    the helper draws (it could rewrite the owner record, or run sing-box
+    itself), so refusing it protects nothing, and it gets no more than the
+    owner does. A missing or malformed owner record means a broken
+    install, and then nobody may start, root included.
 - **Everyone else** gets `Hello` and `Status` only: no logs, no control.
   This is Tailscale's operator model. Logs matter here: sing-box's errors
   can quote the file a field names, so its logs are as private as the
@@ -549,7 +565,17 @@ not from a BoxPilot setting:
     removed.
   - **macOS:** reset the system proxy only while it still points at
     `127.0.0.1`, and flush mDNSResponder (which needs root; see
-    ADR 0005).
+    ADR 0005). Narrowed further, since any user can start the helper:
+    the proxy is reset only on the port of a run of the helper's own,
+    after a sing-box that couldn't undo it (it crashed or was killed), or
+    at the next start after a helper that died with one, as a marker in
+    the state directory records. So a helper start never turns off a
+    proxy another program, or the user's own Proxy-mode sing-box, set on
+    loopback. DNS is flushed after every run.
+  - **macOS, sing-box with the helper:** sing-box runs in the helper's
+    process group, which launchd ends when the helper's job ends
+    (`AbandonProcessGroup` stays false), SIGKILL included: the job
+    object's role on Windows.
 - **No shells at runtime.** Every tool is called by absolute path, never
   through a shell, and no `sh` or AppleScript string is built at runtime.
 
@@ -612,7 +638,9 @@ not from a BoxPilot setting:
 - **What it installs,** all root:wheel and not writable by anyone else:
   - `/Library/PrivilegedHelperTools/io.github.glide01.boxpilot.helper`;
   - sing-box, its manifest and the per-owner state in
-    `/Library/Application Support/BoxPilot Helper/`;
+    `/Library/Application Support/BoxPilot Helper/`: sing-box and the
+    manifest in `bin`, the state in `state` beside it (0700, with the
+    owner record), so nothing written as state lands among the binaries;
   - the plist in `/Library/LaunchDaemons/`.
 - **Login Items.** macOS 13+ lists the helper under Login Items. If the
   user turns it off there, BoxPilot treats it as not installed.
@@ -870,6 +898,16 @@ any of them.
   exit codes, the uninstall, and both tokens, read from outside while TUN
   runs. `docs/helper-windows-checklist.md` marks what it covers; it
   doesn't replace that checklist's run on Windows 10 and 11 below.
+  - **macOS:** the `macos` job's Apple-silicon leg installs the helper
+    from the DMG it built, with `sudo` standing in for the administrator
+    prompt, and drives the daemon with
+    `crates/boxpilot-helper/examples/mac_smoke.rs` through
+    `packaging/macos/helper-smoke.sh`, as the owner, as root and as a
+    fresh standard account: the installed paths and the launchd socket,
+    authority, connection limits and deadlines, real TUN starts and the
+    loopback rule, the idle exit, broken installs' exit codes, SIGKILL to
+    the helper, the system proxy and its reset after a crash, and the
+    uninstall. `docs/helper-macos-checklist.md` marks what it covers.
 - **The token probe, on every CI run.** Before the smoke test's first TUN
   start, `crates/boxpilot-helper/examples/token_probe.rs` (never shipped)
   runs as SYSTEM and starts the installed sing-box down the helper's own

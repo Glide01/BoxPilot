@@ -214,11 +214,13 @@ expect_stat() {
     ok "$1: $got"
 }
 
-# Every directory from / to $1, for the record.
+# Every directory from / to $1, with its ACL entries if any (the helper
+# judges owners and mode bits; this shows what else is there), for the
+# record.
 show_chain() {
     path=$1
     while :; do
-        sudo stat -f '  %Su:%Sg %Sp %N' "$path"
+        sudo ls -lde "$path"
         [ "$path" != / ] || break
         path=$(dirname "$path")
     done
