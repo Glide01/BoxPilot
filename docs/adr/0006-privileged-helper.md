@@ -2,9 +2,11 @@
 
 **Status: proposed.** Windows (phase 1) is built: the policy, the
 protocol, the helper service, the MSI and the GUI client. It has been
-type-checked and unit-tested on Linux, and reviewed adversarially, but it
-has **not run on Windows yet**; `docs/helper-windows-checklist.md` lists
-what must be verified there first. macOS (phase 2) is not started. Its
+reviewed adversarially, and CI builds and unit-tests it on Windows, then
+installs the MSI on a Windows Server runner and drives the real service
+there (see "Verification before shipping"). It has **not run on Windows
+10 or 11, or under the GUI, yet**; `docs/helper-windows-checklist.md`
+lists what must be verified there first. macOS (phase 2) is not started. Its
 trade-offs are settled by separation of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
 without changing it (see "Conflicts with earlier ADRs").

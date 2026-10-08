@@ -1,7 +1,8 @@
 # Privileged helper: Windows verification checklist
 
-The Windows helper (ADR 0006, phase 1) was type-checked and unit-tested on
-Linux and reviewed, but none of it has run on Windows. Run this on clean
+The Windows helper (ADR 0006, phase 1) has been reviewed, and CI installs
+and drives it on a Windows Server runner (below), but it has not run on a
+Windows client SKU or under the GUI. Run this on clean
 Windows 10 and Windows 11 machines, with a standard account, an
 unelevated administrator and an elevated administrator, before the first
 release that ships it. Each item names what must hold.
