@@ -1014,13 +1014,11 @@ function Invoke-BrokenInstallStep {
     }
     Assert-HelperRecovered
 
-    # The same on sing-box.exe itself. endpoint.rs documents the helper
-    # directory's code for it ("or a file in it"), but the helper checks
-    # the files it runs as it hashes them (WinSupervisor::open_binaries),
-    # and reports any refusal there as the manifest's. Either refuses to
-    # run; the other code is reported as a warning.
+    # The same on sing-box.exe itself: the helper directory's code too ("or
+    # a file in it"), not the manifest's, though the helper checks it as
+    # it hashes it (WinSupervisor::open_binaries).
     Invoke-WithUsersAce $singBox 'Write' {
-        Assert-StartRefused 'a Users write ACE on sing-box.exe' 'HELPER_DIR_REFUSED' @('MANIFEST_REFUSED')
+        Assert-StartRefused 'a Users write ACE on sing-box.exe' 'HELPER_DIR_REFUSED'
     }
     Assert-HelperRecovered
 
