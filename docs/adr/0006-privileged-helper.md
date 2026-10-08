@@ -1,7 +1,8 @@
 # TUN goes through a privileged helper that runs its own sing-box on a config it has checked
 
-**Status: proposed.** This is a design; nothing here is implemented yet.
-Its trade-offs are settled by separation of tasks (课题分离, below).
+**Status: proposed.** The config policy (rule 2) is implemented in
+`crates/boxpilot-policy`; the helper itself is not built yet. Its
+trade-offs are settled by separation of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
 without changing it (see "Conflicts with earlier ADRs").
 
@@ -95,7 +96,8 @@ docs.
 - **Read files:**
   - Every TLS `*_path` (certificates, keys, ECH), and the top-level
     `certificate` paths.
-  - A local `rule_set`'s `path`, and the hosts DNS server's `path`.
+  - A local `rule_set`'s `path`, a remote one's `initial_path`, and the
+    hosts DNS server's `path`.
   - SSH `private_key_path`.
   - The OpenVPN and OpenConnect key, certificate and secret paths.
 - **Run a program:**
@@ -203,18 +205,48 @@ after three rounds of fixes: "Owner identity cannot carry this weight"
 ### 2. The config policy is the boundary
 
 The config policy is a pure function in the crate the GUI and the helper
-share: JSON in, a checked config or a list of refusals out. It has no
-gpui and no I/O, and is unit-tested the way `prepare_config` is. The GUI
-runs it so it can explain a refusal before it asks the helper. The
-helper runs it again, and only the helper's verdict counts.
+share (`crates/boxpilot-policy`): JSON in, a checked config or a list of
+refusals out. It has no gpui and no I/O. The GUI runs it so it can
+explain a refusal before it asks the helper. The helper runs it again,
+and only the helper's verdict counts. Each rule below names the sing-box
+1.14.2 field it covers, and the tests' fixtures decode with that
+version's `sing-box check`.
 
 It applies **only to privilege BoxPilot lends.** A profile that runs at
 the user's own privilege never meets it.
 
 - **Parse defensively,** with size and nesting limits.
   - Top-level keys come from an allowlist: `log`, `dns`, `ntp`,
-    `certificate`, `endpoints`, `outbounds`, `route`, `experimental`.
-  - `inbounds` and `services` must be absent; the helper adds its own.
+    `certificate`, `endpoints`, `outbounds`, `route`, `experimental`,
+    `http_clients`. `$schema` is dropped.
+  - `inbounds` is refused: BoxPilot owns inbounds, and the helper adds
+    its own.
+  - In `services`, `api` services are dropped (see "Control planes"), and
+    any other service is refused. The output has no `services`; the
+    helper adds its own `api`.
+- **Field names exactly as sing-box spells them.** sing-box's decoder, a
+  fork of Go's `encoding/json`, matches field names case-insensitively,
+  under Unicode folding: to it, `Executable_Path` is `executable_path`,
+  and `ſtate_directory` (with U+017F) is `state_directory`. A rule keyed
+  on a name would miss both. So any key in a field position with an
+  upper-case or non-ASCII character is refused; sing-box's own names are
+  all lower-case ASCII. (Keys of data maps, such as headers or predefined
+  hosts, aren't field names and are exempt.)
+- **Types come from allowlists,** checked against 1.14.2's registries:
+  - outbounds: direct, block, selector, urltest, socks, http, shadowsocks,
+    snell, vmess, trojan, naive, ssh, shadowtls, vless, anytls, hysteria,
+    tuic, hysteria2;
+  - endpoints: wireguard, openconnect, openvpn-client, openvpn-server,
+    tailscale;
+  - DNS servers: udp, tcp, tls, https, quic, h3, local, hosts, fakeip,
+    dhcp, mdns, tailscale, openconnect, openvpn;
+  - rule sets: inline, local, remote.
+
+  A type upstream adds next year fails closed, as a path field does.
+  Left off on purpose: `tor` (runs a program), `bridge` (since 1.14.0, it
+  turns the machine into a router: IP forwarding, pf anchors, NAT), DNS
+  `resolved` (it serves what the refused `resolved` service collects), and
+  the types 1.14.2 keeps only to report that they were removed.
 - **Deny by shape, not by name.**
   - Any key at any depth that names a filesystem location is refused:
     `*_path`, `*_directory`, `path`, `directory`, `output`, `pid_file` and
@@ -249,11 +281,20 @@ the user's own privilege never meets it.
 - **Refused on the privileged path, with the field named in the
   message:**
   - anything that runs a program: the tor outbound and the OpenConnect
-    wrappers;
-  - non-network system changes: NTP `write_to_system` and the Tailscale
-    SSH server;
-  - every profile `service`, which the absent-`services` rule already
-    covers.
+    `csd` / `hip` / `tncc` wrappers;
+  - non-network system changes: NTP `write_to_system`, the Tailscale
+    `ssh_server`, and TLS spoofing (outbound TLS `spoof`, the
+    `tls_spoof` route option), which on Windows installs the WinDivert
+    kernel driver on first use;
+  - OpenConnect's AnyConnect flavor (the default one). Its built-in host
+    scan stats and checksums any file the VPN server names, with no
+    option to turn it off; as root, that probes files the owner can't
+    read;
+  - file paths with no key that shows them: v2ray-plugin's `cert=` inside
+    shadowsocks `plugin_opts`, and a non-empty dial `netns`;
+  - sections not reviewed yet: `network_namespaces`,
+    `certificate_providers`, `experimental.debug`;
+  - every profile `service` other than `api`.
   
   A profile that needs one of these still runs in Proxy mode, at the
   user's own privilege. Choosing between the two is the user's call.
@@ -264,7 +305,11 @@ the user's own privilege never meets it.
   keeps working in Proxy mode, as written.
 - **Environment.** sing-box starts with a scrubbed environment: no
   `SUDO_*`, and no user `HOME`. Its `-D`, working directory and `HOME`
-  are the run directory, and stdin is null.
+  are the run directory, and stdin is null. `PATH` holds only system
+  directories: on Windows the naive outbound loads `libcronet.dll` from
+  beside sing-box, then from `PATH`, and a system `PATH` with a
+  user-writable entry would let a user plant that DLL in a SYSTEM
+  process.
 - **Audited at every `SINGBOX_VERSION` bump.**
   - Diff upstream's `option/` tree and the `api` service's RPCs for
     anything new that takes a path, opens a listener or runs a program.
@@ -321,7 +366,9 @@ not from a BoxPilot setting:
   - The last account authorized holds it, as with ADR 0003's grant on
     Linux.
 - **Everyone else** gets `Hello` and `Status` only: no logs, no control.
-  This is Tailscale's operator model.
+  This is Tailscale's operator model. Logs matter here: sing-box's errors
+  can quote the file a field names, so its logs are as private as the
+  files it reads.
 
 ### 5. Transports the OS protects; no loopback HTTP
 
@@ -375,7 +422,8 @@ not from a BoxPilot setting:
   service through its `ServiceInstall` / `ServiceControl` tables. No
   custom actions (Mandiant, 2023). So TUN needs no prompt of its own on
   Windows.
-- **A fixed directory.** The helper and its own copy of sing-box go in
+- **A fixed directory.** The helper, its own copy of sing-box and the
+  `libcronet.dll` beside it (in the hash manifest too) go in
   `[ProgramFiles64Folder]BoxPilot\Helper`, which is *not* configurable.
   Today's MSI lets the user choose `APPLICATIONFOLDER`, and a SYSTEM
   service must never run from a folder its user picked.
@@ -596,11 +644,12 @@ any of them.
 ## Consequences
 
 - **Code.**
-  - The repository becomes a Cargo workspace. The helper is its own
+  - The repository is a Cargo workspace. The helper will be its own
     crate (`boxpilot-helper`), so the privileged binary's dependency
     graph has no gpui and no reqwest.
-  - The config policy and the protocol live in a small, pure crate
-    (no I/O, no gpui) that both the GUI and the helper use.
+  - The config policy lives in `crates/boxpilot-policy`: pure, no I/O,
+    no gpui, for both the GUI and the helper. The protocol joins it
+    there.
   - `ProcessSession` gets a second backend, a helper session, next to
     the local child.
   - On Windows, `ensure_elevated` is removed, and TUN uses the helper
