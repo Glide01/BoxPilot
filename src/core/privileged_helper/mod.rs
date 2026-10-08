@@ -27,6 +27,7 @@
 //! check.
 
 pub mod client;
+pub mod macos_install;
 #[cfg(target_os = "windows")]
 mod windows;
 
