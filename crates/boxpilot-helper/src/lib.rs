@@ -19,10 +19,23 @@
 //! - [`runcfg`] turns a `start` into the config sing-box runs, and
 //!   [`rundir`] writes it into a fresh run directory.
 //!
+//! The judgements the Windows layer makes are pure functions here too, so
+//! they are tested on every OS: [`acl`] (who may write where the helper
+//! reads from), [`authority`] (who may start), [`spawnplan`] (sing-box's
+//! command line and environment) and [`tun`] (which adapters to remove).
+//!
+//! The platform layer lives in `win`, under `cfg(windows)`: the service,
+//! the pipe, the caller's token, directory ACLs, and the spawn. It is the
+//! only module with `unsafe` code, each block in a small wrapper with its
+//! `SAFETY` comment.
+//!
 //! [`Authority`]: boxpilot_protocol::Authority
 
 #![deny(unsafe_code)]
 
+pub mod acl;
+pub mod authority;
+pub mod cli;
 pub mod conn;
 pub mod exit;
 pub mod helper;
@@ -33,7 +46,13 @@ pub mod outbox;
 pub mod paths;
 pub mod runcfg;
 pub mod rundir;
+pub mod spawnplan;
 pub mod transport;
+pub mod tun;
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod win;
 
 #[cfg(test)]
 mod testing;

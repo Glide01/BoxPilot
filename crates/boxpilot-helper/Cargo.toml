@@ -33,3 +33,34 @@ sha2 = "0.10"
 # The `api` service's per-run secret and the run directory's name, from the
 # OS RNG. Already in the graph at 0.3, as the GUI uses it.
 getrandom = "0.3"
+
+# The platform layer (`src/win`). The same `windows` version as the GUI's,
+# so the graph holds one copy; the features are the calls the helper makes:
+# - Foundation, Security, Security_Authorization: handles, SIDs, tokens,
+#   security descriptors (GetSecurityInfo, SDDL), impersonation;
+# - Storage_FileSystem, System_IO, System_Pipes: the overlapped named pipe,
+#   CreateDirectoryW, the stdout/stderr pipes;
+# - System_Threading, System_JobObjects: CreateProcessW with a handle list,
+#   events, the job object;
+# - System_Services: the SCM entry;
+# - Devices_DeviceAndDriverInstallation: removing stale sing-tun adapters;
+# - System_SystemInformation, UI_Shell, System_Com: the Windows directory
+#   and the known folders (and freeing their path);
+# - System_LibraryLoader: SetDefaultDllDirectories.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+] }
