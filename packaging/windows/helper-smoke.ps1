@@ -28,15 +28,17 @@ administrator, one step per CI step:
                    (crates/boxpilot-helper/examples/token_probe.rs) as SYSTEM
                    starts sing-box under one token after another, the first
                    adapter on this machine (wintun's driver install) with the
-                   smallest; then the helper's own token under candidate
-                   required-privilege lists (sc.exe privs), each with a TUN
-                   run, and the original put back. Before `protocol`, whose
-                   first TUN start would install the driver otherwise. Trial
-                   failures are data; only a broken probe fails the step.
+                   smallest, and the shipped tokenplan::SING_BOX_TOKEN on a
+                   first install and in steady state; then the helper's own
+                   token under what the SCM gives it (sc.exe privs), each
+                   with a TUN run. Before `protocol`, whose first TUN start
+                   would install the driver otherwise. It fails if the
+                   shipped plans stop working or TUN needs a dangerous
+                   privilege; narrower tokens failing are data.
   protocol         the smoke client as this administrator: hello, a refused
                    start, connection slots, the write deadline, three TUN runs
                    (one with probes and checks from outside while it runs,
-                   sing-box's token among them)
+                   sing-box's and the helper's tokens among them)
   idle-exit        the service stops by itself a minute after the last
                    connection, with exit code 0
   standard-user    the smoke client and sc.exe as a new standard
@@ -84,7 +86,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $EndpointSource = Join-Path $RepoRoot 'crates\boxpilot-protocol\src\endpoint.rs'
 $WxsSource = Join-Path $RepoRoot 'wix\main.wxs'
-$SpawnPlanSource = Join-Path $RepoRoot 'crates\boxpilot-helper\src\spawnplan.rs'
+$TokenPlanSource = Join-Path $RepoRoot 'crates\boxpilot-helper\src\tokenplan.rs'
 $ProductDir = Join-Path $env:ProgramFiles 'BoxPilot'
 $HelperDir = Join-Path $ProductDir 'Helper'
 $StateDir = Join-Path $ProductDir 'HelperState'
@@ -176,19 +178,19 @@ function Get-ProbeExe {
     (Resolve-Path -LiteralPath $Probe).Path
 }
 
-# sing-box's privilege allowlist as crates/boxpilot-helper/src/spawnplan.rs
-# declares it (SING_BOX_PRIVILEGES), never a guess: the helper's own token
-# must keep at least these to hand them on. Call it inside @(...).
-function Read-SingBoxAllowlist {
-    $text = Get-Content -LiteralPath $SpawnPlanSource -Raw
-    $match = [regex]::Match($text, 'pub const SING_BOX_PRIVILEGES: &\[&str\] =\s*&\[(?<list>[^\]]*)\];')
+# A privilege list as crates/boxpilot-helper/src/tokenplan.rs declares it
+# (SING_BOX_PRIVILEGES, HELPER_PRIVILEGES), never a guess. Call it inside
+# @(...).
+function Read-PrivilegeList([string] $Name) {
+    $text = Get-Content -LiteralPath $TokenPlanSource -Raw
+    $match = [regex]::Match($text, 'pub const ' + $Name + ': &\[&str\] =\s*&\[(?<list>[^\]]*)\];')
     if (-not $match.Success) {
-        throw "no SING_BOX_PRIVILEGES in $SpawnPlanSource"
+        throw "no $Name in $TokenPlanSource"
     }
     $names = @([regex]::Matches($match.Groups['list'].Value, '"(Se[A-Za-z]+Privilege)"') |
             ForEach-Object { $_.Groups[1].Value })
     if ($names.Count -eq 0) {
-        throw "SING_BOX_PRIVILEGES in $SpawnPlanSource names no privilege"
+        throw "$Name in $TokenPlanSource names no privilege"
     }
     $names
 }
@@ -563,32 +565,33 @@ function Assert-Listeners([int] $HelperPid, [int] $SingBoxPid, [string] $TunPref
     Write-Host "ok: the helper listens on no TCP port; sing-box on loopback and $TunPrefix only"
 }
 
-# sing-box's token, read from outside by the smoke client as this
-# administrator: exactly the privileges, integrity level and Administrators
-# group spawnplan::SING_BOX_TOKEN plans. If an administrator can't read it at
-# all (exit code 3), that is said, not failed. The helper's own token is
-# printed for the record.
-function Assert-SingBoxToken([int] $SingBoxPid, [int] $HelperPid) {
-    $check = Invoke-Native $script:SmokeExe @('token', '--pid', "$SingBoxPid", '--expect', 'sing-box')
+# A token read from outside by the smoke client as this administrator
+# (`service_smoke token --expect <Expect>`). If an administrator can't read
+# it at all (exit code 3), that is said, not failed.
+function Assert-Token([string] $What, [int] $ProcessId, [string] $Expect, [string] $Plan) {
+    $check = Invoke-Native $script:SmokeExe @('token', '--pid', "$ProcessId", '--expect', $Expect)
     Write-Host $check.Output
     switch ($check.ExitCode) {
         0 {
-            Write-Host "ok: sing-box's token (pid $SingBoxPid) is what spawnplan::SING_BOX_TOKEN plans"
+            Write-Host "ok: $What's token (pid $ProcessId) is what $Plan plans"
         }
         3 {
-            Write-Note ("this administrator could not read sing-box's token (pid $SingBoxPid) from " +
+            Write-Note ("this administrator could not read $What's token (pid $ProcessId) from " +
                 "outside, so it is not checked; the smoke client's output says why")
         }
         default {
-            throw "sing-box's token (pid $SingBoxPid) is not what spawnplan::SING_BOX_TOKEN plans (the smoke client's output is above)"
+            throw "$What's token (pid $ProcessId) is not what $Plan plans (the smoke client's output is above)"
         }
     }
-    Write-Host "---- the helper's own token (pid $HelperPid), for the record"
-    $helper = Invoke-Native $script:SmokeExe @('token', '--pid', "$HelperPid", '--expect', 'print')
-    Write-Host $helper.Output
-    if ($helper.ExitCode -ne 0) {
-        Write-Note "this administrator could not read the helper's own token (pid $HelperPid) from outside (exit code $($helper.ExitCode))"
-    }
+}
+
+# While TUN runs: sing-box's token is exactly what tokenplan::SING_BOX_TOKEN
+# plans (privileges, integrity level, Administrators), and the helper's own
+# holds exactly tokenplan::HELPER_TOKEN's privileges, which it dropped to
+# when it started.
+function Assert-SingBoxToken([int] $SingBoxPid, [int] $HelperPid) {
+    Assert-Token 'sing-box' $SingBoxPid 'sing-box' 'tokenplan::SING_BOX_TOKEN'
+    Assert-Token 'the helper' $HelperPid 'helper' 'tokenplan::HELPER_TOKEN'
 }
 
 function Get-SingTunDevices([switch] $PresentOnly) {
@@ -1048,9 +1051,9 @@ function Invoke-ProbeAsSystem {
 }
 
 # `sc.exe privs`: the service's required privileges
-# (SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO, the setting the MSI's
-# MsiServiceConfig table would write). The SCM gives the helper's process
-# only these when it next starts.
+# (SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO). The SCM gives the helper's
+# process only these when it next starts; the helper then drops what of
+# them tokenplan::HELPER_TOKEN doesn't keep.
 function Set-HelperPrivileges([string[]] $Privileges) {
     Stop-HelperService
     $set = Invoke-Sc privs $ServiceName (@($Privileges) -join '/')
@@ -1067,30 +1070,37 @@ function Get-TokenVerdict([int] $ExitCode, [string] $Held) {
     }
 }
 
-# One candidate for the helper's own token: the required privileges set,
-# then a whole TUN run through the real service (the pipe and the caller's
-# token, the job, CreateProcessAsUserW with sing-box's restricted token,
-# the adapter cleanup after it), with both tokens read from outside while
-# it runs. Never throws: what happened is the row.
-function Invoke-HelperTokenTrial([int] $Index, [string] $Name, [string[]] $Privileges) {
+# One helper token trial: the SCM's list set (or, with -Scm '', left as it
+# is), then a whole TUN run through the real service (the pipe and the
+# caller's token, the job, CreateProcessAsUserW with sing-box's restricted
+# token, the adapter cleanup after it), with both tokens read from outside
+# while it runs. The helper's must be exactly -HelperHolds (comma-separated)
+# or, with -HelperHolds '', exactly tokenplan::HELPER_TOKEN's privileges.
+# Never throws: what happened is the row.
+function Invoke-HelperTokenTrial([int] $Index, [string] $Name, [string] $Scm, [string] $HelperHolds) {
     Write-Host "---- helper token trial ${Index}: $Name"
-    Write-Host "required privileges: $(@($Privileges) -join ' ')"
     $row = [ordered]@{
-        '#'        = $Index
-        'helper'   = $Name
-        'starts'   = 'no'
-        'TUN run'  = '-'
-        'token'    = '-'
-        'sing-box' = '-'
-        'cleanup'  = '-'
+        '#'          = $Index
+        'SCM gives'  = $Name
+        'starts'     = 'no'
+        'TUN run'    = '-'
+        'its token'  = '-'
+        'sing-box'   = '-'
+        'cleanup'    = '-'
     }
-    try {
-        Set-HelperPrivileges $Privileges
-    } catch {
-        $row['starts'] = 'sc privs failed'
-        Write-Host $_.Exception.Message
-        return [pscustomobject] $row
+    if ($Scm) {
+        try {
+            Set-HelperPrivileges @($Scm -split '/')
+        } catch {
+            $row['starts'] = 'sc privs failed'
+            Write-Host $_.Exception.Message
+            return [pscustomobject] $row
+        }
+    } else {
+        Stop-HelperService
     }
+    Write-Host "---- sc.exe qprivs $ServiceName"
+    Write-Host (Invoke-Sc qprivs $ServiceName).Output
     $ready = Join-Path $LogDir "helper-token-$Index.ready"
     $release = Join-Path $LogDir "helper-token-$Index.release"
     Remove-Files @($ready, $release)
@@ -1099,9 +1109,14 @@ function Invoke-HelperTokenTrial([int] $Index, [string] $Name, [string[]] $Privi
         $null = Wait-SmokeReady $background $ready 90
         $row['starts'] = 'yes'
         $helperPid = Get-HelperPid
-        $check = Invoke-Native $script:SmokeExe @('token', '--pid', "$helperPid", '--expect', 'privileges', '--privileges', (@($Privileges) -join ','))
+        $expect = if ($HelperHolds) {
+            @('--expect', 'privileges', '--privileges', $HelperHolds)
+        } else {
+            @('--expect', 'helper')
+        }
+        $check = Invoke-Native $script:SmokeExe (@('token', '--pid', "$helperPid") + $expect)
         Write-Host $check.Output
-        $row['token'] = Get-TokenVerdict $check.ExitCode 'as required'
+        $row['its token'] = Get-TokenVerdict $check.ExitCode 'as expected'
         $singBox = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='sing-box.exe'" |
                 Where-Object { $_.ParentProcessId -eq $helperPid })
         if ($singBox.Count -eq 1) {
@@ -1120,73 +1135,59 @@ function Invoke-HelperTokenTrial([int] $Index, [string] $Name, [string[]] $Privi
     }
     $code = $background.Process.ExitCode
     $row['TUN run'] = if ($code -eq 0) { 'works' } else { "fails ($code)" }
+    # The helper removes sing-box's adapter after the run (DiUninstallDevice
+    # as its own, dropped token): none may be left.
     $stale = @(Get-SingTunDevices | Where-Object { -not $_.Present })
     $row['cleanup'] = if ($stale.Count -eq 0) { 'none stale' } else { "$($stale.Count) stale left" }
     [pscustomobject] $row
 }
 
-# The helper's own token, as a candidate (ADR 0006, "Defense in depth"):
-# with a required-privilege list the SCM strips every other privilege from
-# the helper when it starts, which also bounds sing-box. Each candidate holds
-# sing-box's allowlist (the helper can't hand on what it lacks), smallest
-# first; the last, every privilege the helper holds today, is the control.
-# Then every privilege is required again, which gives the helper what it had
-# with no list, and that is checked.
+# The helper's own token (ADR 0006, "Defense in depth"). It drops every
+# privilege tokenplan::HELPER_TOKEN doesn't keep when it starts, whatever the
+# SCM gave it. Three trials, each a whole TUN run:
+#   1. the SCM's default, as the MSI installs it (no list): the helper holds
+#      exactly HELPER_PRIVILEGES;
+#   2. the SCM gives only SeChangeNotifyPrivilege: data, whether the helper
+#      also works without SeLoadDriverPrivilege (cleanup included), to
+#      tighten HELPER_PRIVILEGES from;
+#   3. the SCM gives every privilege SYSTEM holds: the helper still holds
+#      exactly HELPER_PRIVILEGES. That list stays (it gives what no list
+#      gives), and the steps after this one run with it.
+# Trials 1 and 3 check what ships: they fail the step if TUN doesn't work or
+# the helper's token isn't HELPER_PRIVILEGES. Trial 2 is data.
 function Invoke-HelperTokenTrials([string[]] $SystemPrivileges) {
-    $allowlist = @(Read-SingBoxAllowlist)
-    Write-Host "---- sc.exe qprivs $ServiceName, as the MSI left it"
-    Write-Host (Invoke-Sc qprivs $ServiceName).Output
-    Stop-HelperService
-    Invoke-Smoke 'hello', '--expect', 'start'
-    $helperPid = Get-HelperPid
-    Write-Host "---- the helper's own token as the SCM gives it with no list (pid $helperPid)"
-    $baseline = Invoke-Native $script:SmokeExe @('token', '--pid', "$helperPid", '--expect', 'print')
-    Write-Host $baseline.Output
-    $held = @([regex]::Matches($baseline.Output, '(?m)^\s+privilege\s+(Se[A-Za-z]+Privilege)\s') |
-            ForEach-Object { $_.Groups[1].Value })
-    if ($baseline.ExitCode -ne 0 -or $held.Count -eq 0) {
-        Write-Note ("the helper's own token could not be read from outside (exit code $($baseline.ExitCode)): " +
-            "the privileges SYSTEM holds in the token probe's task stand in for it")
-        $held = @($SystemPrivileges)
-    }
-    $with = {
-        param([string[]] $Extra)
-        @(@($allowlist) + @($Extra) | Select-Object -Unique)
-    }
-    $candidates = @(
-        @{ Name = "sing-box's allowlist"; Privileges = @(& $with @()) },
-        @{ Name = '+ Impersonate'; Privileges = @(& $with @('SeImpersonatePrivilege')) },
-        @{ Name = '+ IncreaseQuota'; Privileges = @(& $with @('SeIncreaseQuotaPrivilege')) },
-        @{ Name = '+ AssignPrimaryToken, IncreaseQuota'; Privileges = @(& $with @('SeAssignPrimaryTokenPrivilege', 'SeIncreaseQuotaPrivilege')) },
-        @{ Name = '+ Impersonate, IncreaseQuota, CreateGlobal, Audit'; Privileges = @(& $with @('SeImpersonatePrivilege', 'SeIncreaseQuotaPrivilege', 'SeCreateGlobalPrivilege', 'SeAuditPrivilege')) },
-        @{ Name = 'every privilege it holds'; Privileges = $held }
-    )
+    $helperPrivileges = @(Read-PrivilegeList 'HELPER_PRIVILEGES')
     $rows = New-Object System.Collections.Generic.List[object]
     try {
-        $index = 0
-        foreach ($candidate in $candidates) {
-            $index++
-            $rows.Add((Invoke-HelperTokenTrial $index $candidate.Name $candidate.Privileges))
-        }
+        $rows.Add((Invoke-HelperTokenTrial 1 'its default (no list)' '' ''))
+        $rows.Add((Invoke-HelperTokenTrial 2 'SeChangeNotifyPrivilege only' 'SeChangeNotifyPrivilege' 'SeChangeNotifyPrivilege'))
     } finally {
-        Write-Host "---- putting back: $ServiceName requires every privilege it held ($($held.Count)), as with no list"
-        Set-HelperPrivileges $held
-        Write-Host (Invoke-Sc qprivs $ServiceName).Output
-    }
-    Invoke-Smoke 'hello', '--expect', 'start'
-    $helperPid = Get-HelperPid
-    $after = Invoke-Native $script:SmokeExe @('token', '--pid', "$helperPid", '--expect', 'privileges', '--privileges', ($held -join ','))
-    Write-Host $after.Output
-    if ($after.ExitCode -eq 0) {
-        Write-Host "ok: the helper holds every privilege it held before the trials"
-    } else {
-        Write-Note "after the helper token trials, the helper's token differs from before (exit code $($after.ExitCode)); the steps after this one run with it"
+        # The SCM's list back to what no list gives, whatever happened.
+        $rows.Add((Invoke-HelperTokenTrial 3 "every privilege SYSTEM holds ($(@($SystemPrivileges).Count))" (@($SystemPrivileges) -join '/') ''))
     }
     Stop-HelperService
     $table = $rows | Format-Table -AutoSize -Wrap | Out-String -Width 250
-    Write-Host '---- the helper''s own token under required-privilege lists (sc.exe privs):'
+    $narrow = $rows[1]
+    $shrinks = $narrow.'starts' -eq 'yes' -and $narrow.'TUN run' -eq 'works' -and
+        $narrow.'its token' -eq 'as expected' -and $narrow.'sing-box' -eq 'as planned' -and
+        $narrow.'cleanup' -eq 'none stale'
+    $finding = if ($shrinks) {
+        "finding: the helper works with SeChangeNotifyPrivilege alone (TUN, sing-box's token, the adapter cleanup): HELPER_PRIVILEGES ($($helperPrivileges -join ', ')) can shrink to it"
+    } else {
+        "finding: the helper does not fully work with SeChangeNotifyPrivilege alone (trial 2 above): HELPER_PRIVILEGES ($($helperPrivileges -join ', ')) stays"
+    }
+    Write-Host "---- the helper's own token, under what the SCM gives it:"
     Write-Host $table
-    Set-Content -LiteralPath (Join-Path $LogDir 'helper-token-trials.txt') -Value $table
+    Write-Host $finding
+    Set-Content -LiteralPath (Join-Path $LogDir 'helper-token-trials.txt') -Value ($table + $finding)
+    foreach ($row in @($rows[0], $rows[2])) {
+        $ok = $row.'starts' -eq 'yes' -and $row.'TUN run' -eq 'works' -and $row.'cleanup' -eq 'none stale' -and
+            @('as expected', 'unreadable') -contains $row.'its token' -and
+            @('as planned', 'unreadable') -contains $row.'sing-box'
+        if (-not $ok) {
+            throw "helper token trial $($row.'#') ($($row.'SCM gives')) failed: the helper as it ships doesn't hold its plan or doesn't run TUN (the table and its output are above)"
+        }
+    }
 }
 
 function Invoke-TokenProbeStep {
@@ -1224,10 +1225,21 @@ function Invoke-TokenProbeStep {
         throw "the token probe said ok but wrote no $resultFile"
     }
     $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-StringData
-    if ($result['dangerous_needed'] -and $result['dangerous_needed'] -ne 'none') {
-        Write-Note "TUN worked only with privileges spawnplan::NEVER_FOR_SING_BOX names: $($result['dangerous_needed'])"
+    # The regression check: the shipped plan installs wintun's driver and
+    # carries traffic, and TUN needed no privilege NEVER_FOR_SING_BOX names.
+    # Narrower tokens failing are data.
+    if ($result['shipped_plan'] -ne 'works') {
+        throw ("tokenplan::SING_BOX_TOKEN no longer runs TUN: on a first install $($result['shipped_install']), " +
+            "in steady state $($result['shipped_steady']) (the probe's trials are above)")
     }
+    if ($result['dangerous_needed'] -ne 'none') {
+        throw "TUN needed privileges tokenplan::NEVER_FOR_SING_BOX names: $($result['dangerous_needed']) (the probe's trials are above)"
+    }
+    Write-Host 'ok: the shipped plan installs wintun''s driver and carries traffic; no dangerous privilege was needed'
     $system = @("$($result['system_privileges'])" -split '\s+' | Where-Object { $_ })
+    if ($system.Count -eq 0) {
+        throw "the token probe's result names no privilege SYSTEM holds"
+    }
     Invoke-HelperTokenTrials $system
     Test-StaleAdapters
 }

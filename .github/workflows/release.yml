@@ -266,15 +266,17 @@ jobs:
         timeout-minutes: 5
         run: ./packaging/windows/helper-smoke.ps1 -Step inspect -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
 
-      # Which token sing-box needs for TUN, measured (ADR 0006, "Defense in
-      # depth"): crates/boxpilot-helper/examples/token_probe.rs, never
-      # shipped, runs as SYSTEM (a one-shot scheduled task) and starts the
-      # installed sing-box under one token after another, down the helper's
-      # own spawn path; then the helper's own token is tried under candidate
-      # required-privilege lists. It comes before the protocol step, so the
+      # Which token sing-box needs for TUN, measured on every run (ADR 0006,
+      # "Defense in depth"): crates/boxpilot-helper/examples/token_probe.rs,
+      # never shipped, runs as SYSTEM (a one-shot scheduled task) and starts
+      # the installed sing-box under one token after another, down the
+      # helper's own spawn path; then the helper's own token is checked under
+      # what the SCM gives it. It comes before the protocol step, so the
       # first TUN adapter on this runner, which installs wintun's driver, is
-      # the probe's, with its smallest token. A trial that fails is data:
-      # only a broken probe fails this step.
+      # the probe's, with its smallest token. It is the regression check for
+      # sing-box and wintun upgrades: it fails if the shipped token plans
+      # (tokenplan::SING_BOX_TOKEN, HELPER_TOKEN) stop working or TUN needs a
+      # privilege NEVER_FOR_SING_BOX names. Narrower tokens failing are data.
       - name: "Helper smoke: what sing-box's token needs (token probe)"
         timeout-minutes: 30
         run: ./packaging/windows/helper-smoke.ps1 -Step token-probe -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe -Probe target/x86_64-pc-windows-msvc/release/examples/token_probe.exe
