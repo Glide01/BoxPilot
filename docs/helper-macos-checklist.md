@@ -1,13 +1,13 @@
 # Privileged helper: macOS verification checklist
 
-The macOS helper (ADR 0006, phase 2, its first part) is built: the launchd
-daemon, its install and uninstall scripts, its payload in the DMG, and the
-AppleScript prompt as a constant. The GUI doesn't use it yet, so macOS is
-still Proxy mode only (ADR 0005). It has not run on a Mac a person uses, on
-an Intel Mac, on macOS 12 or 13, or under the GUI. Run this on clean Macs
-(macOS 12, 13 and the current release; Apple silicon and Intel) with an
-administrator account and a standard account before the first release that
-lets the GUI use it. Each item names what must hold.
+The macOS helper (ADR 0006, phase 2) is built but for sing-box's sandbox
+profile: the launchd daemon, its install and uninstall scripts, its payload
+in the DMG, and the GUI's side (its client, Settings › TUN's install,
+reinstall and remove, TUN's availability following the helper). It has not
+run on a Mac a person uses, on an Intel Mac, on macOS 12 or 13, or under the
+GUI. Run this on clean Macs (macOS 12, 13 and the current release; Apple
+silicon and Intel) with an administrator account and a standard account
+before the first release that ships it. Each item names what must hold.
 
 **CI covers part of it.** The release workflow's `macos` job builds the
 DMG, checks the helper's payload in it with the helper's own manifest
@@ -16,8 +16,10 @@ parser (both architectures), and on GitHub's Apple-silicon runner
 from outside with a smoke client (`crates/boxpilot-helper/examples/mac_smoke.rs`),
 as the runner's account (the owner, an administrator with passwordless
 sudo), as root and as a fresh standard account, through
-`packaging/macos/helper-smoke.sh` (one step per CI step). Items or parts
-marked **CI** are checked there. `sudo` stands in for the administrator
+`packaging/macos/helper-smoke.sh` (one step per CI step), then with the
+GUI's own client code (`examples/gui_helper_smoke.rs`, built from
+BoxPilot's crate, never shipped). Items or parts marked **CI** are checked
+there. `sudo` stands in for the administrator
 prompt, and the runner is a VM with one network service, so a release still
 needs the manual run; what is unmarked is manual only. The helper's POSIX
 layer (`src/posix`: the socket, the peer's uid, the accept loop, the
@@ -51,7 +53,8 @@ unit-tested on Linux and, by the job's Test step, on macOS.
 - macOS 13 and later: the "Background Items Added" notification, and
   System Settings › General › Login Items lists the helper under BoxPilot's
   name (`AssociatedBundleIdentifiers`). Turning it off there unloads it;
-  the GUI must then treat it as not installed (phase 2).
+  the GUI then treats it as not installed (see "GUI" below; **CI** checks
+  the GUI's reading of an unloaded job, after `launchctl bootout`).
 - Installing from a downloaded, quarantined DMG: the installed helper and
   sing-box run (the install clears their quarantine flag), and Gatekeeper
   shows nothing for them.
@@ -61,7 +64,8 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   an ACL to these root-owned directories, but a misconfiguration would go
   unnoticed by it.
 - Upgrade: an app with a different sing-box or helper; `hello` reports the
-  installed sing-box's hash, the GUI asks to reinstall (phase 2), and the
+  installed sing-box's hash, the GUI asks to reinstall (see "GUI" below;
+  **CI** checks that the GUI reads another sing-box hash as stale), and the
   reinstall replaces both while the old helper stops its sing-box first.
 - `helper-uninstall.sh` unloads the daemon and removes the helper, the
   plist, `bin` and the socket; the state directory stays and it says so
@@ -85,8 +89,10 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   notes it, doesn't fail on it). Each, restored, works again (**CI**). Also
   by hand: a symbolic link anywhere in either path, an owner other than
   root, the helper started from another path (10), no socket from launchd
-  (17), started as another user (18). The GUI's message for each is
-  phase 2's.
+  (17), started as another user (18). The GUI reads the exit code with
+  `launchctl print`, as the user, and Settings › TUN says why (**CI** for a
+  tampered sing-box, 12; if `launchctl print` gives an unprivileged account
+  no exit code, CI notes it and the GUI says "turned off" instead).
 - Clients waiting while a broken helper exits get the end of the stream at
   once, and launchd doesn't start it again for them in a loop.
 - A malformed or missing owner record: the helper runs, and nobody may
@@ -154,18 +160,71 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   attachments (the helper's half is in CI: the smoke profile's local rule
   set travels as an attachment, and sing-box starts on it).
 
-## GUI (phase 2)
+## GUI
 
-The GUI isn't in CI, and doesn't use the helper yet.
+The GUI's views aren't in CI. Its client code is (**CI**): `open()` and
+`hello` as the owner, a TUN start through the GUI's start path
+(`start_profile`: a local rule set read as the user and sent as an
+attachment, the running view written) and its `stop`, answered well before
+its deadline, a connection the helper ends (writing and stopping after it
+fail at once, never with the `EINVAL` macOS gives `setsockopt` then), and
+the helper's states as Settings › TUN reads them: ready, turned off
+(`launchctl bootout`), stale (another sing-box in the app's manifest),
+broken (a tampered sing-box). By hand, from BoxPilot.app, with an
+administrator account and a standard account:
 
-- Settings › TUN shows the helper's state: not installed, installed and
-  current, installed but stale (another sing-box hash or protocol
-  version), broken (the exit code's message), turned off in Login Items.
-- "Install helper" and "Remove helper" show one administrator prompt each,
-  with BoxPilot's text; the password never reaches BoxPilot.
-- TUN through the helper: Logs, Groups, Connections and Traffic work on the
-  helper's API; quitting BoxPilot stops sing-box; killing BoxPilot stops
-  sing-box (its connection closes); Proxy mode still runs as written,
-  without the helper.
+- **First run:** BoxPilot starts in Proxy mode. Home's TUN tab is greyed
+  out and says to install the helper in Settings › TUN; the tray menu has
+  no Proxy Mode submenu.
+- **Settings › TUN** shows "Privileged helper" with its state, looked at
+  again each time Settings is shown: not installed (Install), ready
+  (Reinstall, Remove), stale, another account's, broken (its exit code's
+  words), turned off in Login Items, and as root "runs as root" with no
+  buttons. Run from `cargo run` (no app bundle), it says installing needs
+  BoxPilot.app and shows no buttons.
+- **Install:** BoxPilot's dialog first, then macOS's administrator prompt
+  with BoxPilot's text ("BoxPilot wants to install its privileged helper
+  for TUN mode."). The password goes only to macOS: nothing of it in
+  BoxPilot's logs or files. Cancelling the prompt changes nothing and says
+  so; a standard account is asked for an administrator's name and
+  password. Afterwards Settings says ready, Home's TUN tab can be chosen,
+  and the tray has its Proxy Mode submenu.
+- **Login Items:** with BoxPilot running, turn the helper off in System
+  Settings › General › Login Items. Opening Settings shows it as turned
+  off, Home's TUN tab greys out, and a TUN start (TUN still chosen) asks
+  to reinstall it. Turning it back on there makes it ready again. Check
+  whether a reinstall while it is off there turns it on again, or fails
+  until it is turned on: the dialog says to turn it on there either way.
+- **Upgrade:** install the helper from one build, then open a build with
+  another sing-box (or another helper). Settings says it is from another
+  BoxPilot version; a TUN start asks to reinstall it; after the reinstall
+  TUN starts at once.
+- **Another account:** install from account A, then log into account B:
+  Settings says another account owns it; B's TUN start asks to install it
+  again, saying it takes it over; after that A is the one asked.
+- **Remove:** a confirmation, then macOS's prompt with BoxPilot's text. With
+  TUN running through the helper, BoxPilot stops it first (no "connection
+  lost" message). Afterwards Settings says not installed, TUN stays chosen
+  if it was, and the next TUN start asks to install it. The state
+  directory stays.
+- **Reinstall while TUN runs:** sing-box stops first, the helper is
+  replaced, and TUN starts again by itself.
+- **TUN start and stop:** Logs, Groups, Connections, Traffic and the Clash
+  mode work on the helper's API; the TUN IPv6 switch, the proxy port and
+  Allow LAN restart it with the new setting; a profile with a refused
+  field (a tor outbound) says which field and why, and runs in Proxy mode.
+- **System proxy:** in TUN mode with "System Proxy" on, the primary network
+  service's web, secure web and SOCKS proxies point at 127.0.0.1 and the
+  proxy port while TUN runs, on a standard account too, and are off after
+  a stop. BoxPilot itself doesn't touch them (sing-box does); in Proxy
+  mode it still runs as before.
+- **BoxPilot crashing while TUN runs:** kill BoxPilot (`kill -9`): its
+  connection closes, the helper stops sing-box, `utun` and its routes go,
+  and the system proxy sing-box set is off (sing-box unsets it on its
+  stop; if sing-box itself was killed too, the helper's next start resets
+  it). The next BoxPilot starts TUN again without a prompt.
+- **Quitting BoxPilot** while TUN runs stops sing-box, as above.
+- **As root** (`sudo` BoxPilot's binary): TUN runs the bundled sing-box
+  directly, as written, with no helper and no prompt.
 - The helper, connected for `hello` while BoxPilot runs in Proxy mode with
   the system proxy on, leaves that proxy alone.

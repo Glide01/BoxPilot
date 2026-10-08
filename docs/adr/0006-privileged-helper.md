@@ -7,19 +7,29 @@ installs the MSI on a Windows Server runner, drives the real service
 there, and measures the tokens sing-box and the helper run with (see
 "Verification before shipping"). It has **not run on Windows 10 or 11, or
 under the GUI, yet**; `docs/helper-windows-checklist.md`
-lists what must be verified there first. macOS (phase 2) is started, in
-three parts. The first is built: the helper as a launchd daemon on a
+lists what must be verified there first. macOS (phase 2) is built but for
+its last part, of three. The first: the helper as a launchd daemon on a
 launchd-created socket (callers by `LOCAL_PEERCRED` uid, the owner model),
 its trees verified by owner and mode, sing-box run as root through
 `posix_spawn` in the helper's process group, the crash cleanup; the
-install and uninstall scripts and the AppleScript prompt (a constant, not
-wired up yet); the payload in the DMG; and a CI smoke test that installs it
-from the DMG on GitHub's Apple-silicon runner and drives the real daemon
+install and uninstall scripts and the AppleScript prompt; the payload in
+the DMG; and a CI smoke test that installs it from the DMG on GitHub's
+Apple-silicon runner and drives the real daemon
 (`docs/helper-macos-checklist.md`). The POSIX half of it is unit-tested on
-Linux too. Still to come: the GUI's client, install and remove UI (until
-then macOS stays Proxy mode only, ADR 0005), then sing-box's sandbox
-profile, measured before it is enforced. Its trade-offs are settled by
-separation of tasks (课题分离, below).
+Linux too. The second: the GUI. Its client reaches the daemon over
+launchd's socket; Settings › TUN shows the helper's state (not installed,
+turned off, ready, another account's, stale, broken with its exit code)
+and installs, reinstalls and removes it behind the one administrator
+prompt; a TUN start asks to install or reinstall it when it must, as
+ADR 0003's grant does; TUN can be chosen once it is installed; and the
+helper's sing-box sets the system proxy itself. The same CI job drives the
+installed daemon with the GUI's own client code
+(`examples/gui_helper_smoke.rs`): `hello`, a TUN start and stop, a
+connection the helper ends, and the states Settings › TUN shows. It has
+not run under the GUI on a real Mac yet; the checklist lists what a person
+must check there first. Still to come: sing-box's sandbox profile,
+measured before it is enforced. Its trade-offs are settled by separation
+of tasks (课题分离, below).
 Accepting it refines ADR 0005, and draws a boundary around ADR 0002
 without changing it (see "Conflicts with earlier ADRs").
 
@@ -643,14 +653,18 @@ not from a BoxPilot setting:
     owner record), so nothing written as state lands among the binaries;
   - the plist in `/Library/LaunchDaemons/`.
 - **Login Items.** macOS 13+ lists the helper under Login Items. If the
-  user turns it off there, BoxPilot treats it as not installed.
+  user turns it off there, BoxPilot treats it as not installed: launchd no
+  longer serves its socket, so TUN can't be chosen, and Settings › TUN
+  says to turn it back on there, or to reinstall it.
 
 **Upgrade.** `Hello` reports the helper's protocol version and the hash of
 its sing-box. When they don't match what this BoxPilot ships:
 
 - on Windows, the MSI upgrade replaces both;
 - on macOS, the GUI asks to reinstall, as ADR 0003's per-version grant
-  does today.
+  does today. It also compares the installed helper and its plist with the
+  app's, byte for byte: a fixed helper is BoxPilot's task even when its
+  sing-box hasn't changed, and no MSI upgrade brings it there.
 
 The helper never runs a sing-box it didn't install.
 
@@ -845,7 +859,16 @@ any of them.
     the MSI installs.
   - On macOS, `TUN_AVAILABLE` becomes "the helper is installed and
     current". "Install helper" is a prompt like Linux's grant prompt, and
-    Settings › TUN shows the helper's state with a Remove button.
+    Settings › TUN shows the helper's state with a Remove button. As
+    built: TUN can be chosen once the helper is installed and not turned
+    off (`AppState::tun_available`), and a start through one that isn't
+    current, or is another account's, asks to reinstall it first, so TUN
+    runs only on a current helper the account owns. A saved TUN choice is
+    never turned into Proxy mode for a missing helper (Proxy mode would
+    quietly carry less traffic than the user chose): TUN stays chosen,
+    and a start asks to install it. A first run on macOS starts in Proxy
+    mode, so it doesn't open with an administrator prompt. BoxPilot run as
+    root runs TUN directly, as written, with no helper.
   - The UI term is "Privileged helper" (特权助手, already used in the
     README). It goes into `CONTEXT.md` when this ADR is accepted.
 - **The portable exe** uses the helper if the MSI installed one. Run as
@@ -860,7 +883,9 @@ any of them.
     the GUI sets it itself, as the user; a SYSTEM sing-box never writes
     it.
   - **macOS:** a root sing-box's `networksetup` also works on standard
-    accounts, which closes a gap ADR 0005 notes.
+    accounts, which closes a gap ADR 0005 notes. So the helper's sing-box
+    sets and unsets it, the helper resets it after a crash, and the GUI
+    leaves it alone in helper TUN mode.
 - **Profiles that need a refused feature** run in Proxy mode only. A TUN
   start says which field was refused and why.
 - **Windows system proxy cleanup** is now conservative, as on Linux and
@@ -907,7 +932,12 @@ any of them.
     authority, connection limits and deadlines, real TUN starts and the
     loopback rule, the idle exit, broken installs' exit codes, SIGKILL to
     the helper, the system proxy and its reset after a crash, and the
-    uninstall. `docs/helper-macos-checklist.md` marks what it covers.
+    uninstall. Then the GUI's own client code
+    (`examples/gui_helper_smoke.rs`, never shipped) drives the same daemon
+    as the owner: `hello`, a TUN start through the GUI's start path and its
+    stop, a connection the helper ends, and the helper's states as
+    Settings › TUN reads them (ready, turned off, stale, broken).
+    `docs/helper-macos-checklist.md` marks what it covers.
 - **The token probe, on every CI run.** Before the smoke test's first TUN
   start, `crates/boxpilot-helper/examples/token_probe.rs` (never shipped)
   runs as SYSTEM and starts the installed sing-box down the helper's own
