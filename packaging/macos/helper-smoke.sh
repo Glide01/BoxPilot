@@ -8,6 +8,7 @@
 #   packaging/macos/helper-smoke.sh <step> [<BoxPilot.dmg> <mac_smoke>]
 #   packaging/macos/helper-smoke.sh gui-client <gui_helper_smoke>
 #   packaging/macos/helper-smoke.sh sandbox-reports <sandbox_report>
+#   packaging/macos/helper-smoke.sh sandbox-probe <sandbox_probe>
 #
 # e.g. packaging/macos/helper-smoke.sh install \
 #        release/BoxPilot-1.13.5-macos-arm64.dmg \
@@ -48,18 +49,25 @@
 #                    state directory: each stops the helper with its exit code;
 #                    a malformed owner record: nobody may start
 #   kill-helper      SIGKILL to the helper during TUN: sing-box goes with it
-#   system-proxy     TUN with the system proxy: sing-box sets it and unsets it
-#                    on stop; killed outright, the next helper start resets it
-#   sandbox-reports  what sing-box did under its sandbox profile, which
-#                    measures and doesn't enforce yet (sandboxplan): the
-#                    kernel's sandbox reports since the install, summed up by
-#                    operation and target (examples/sandbox_report.rs), the
-#                    raw lines in logs/sandbox-reports.txt. It fails only if
-#                    no report names sing-box though the steps saw it run
+#   system-proxy     TUN with the system proxy: the helper sets it once
+#                    sing-box is up and unsets it after the stop; killed
+#                    outright, the next helper start resets it
+#   sandbox-reports  what sing-box's enforced sandbox profile reported
+#                    (sandboxplan): the kernel's sandbox reports since the
+#                    install, summed up by operation and target, and sing-box's
+#                    denials (examples/sandbox_report.rs); the raw lines in
+#                    logs/sandbox-reports.raw. It fails on a denial
+#                    sandboxplan::KNOWN_DENIALS doesn't explain, and if no
+#                    report names sing-box though the steps saw it run
+#   sandbox-probe    the shipped profile, run as root on a probe of its own
+#                    (examples/sandbox_probe.rs): what it must deny is
+#                    denied, what sing-box needs is allowed
 #   uninstall        helper-uninstall.sh: the daemon and its paths are gone,
 #                    the state directory stays; --remove-state removes it
 #   logs             the helper's log, launchctl print, the system log for the
-#                    label, and the smoke client's output (CI runs it always)
+#                    label, and the smoke client's output; last, the sandbox
+#                    summary, its denials and the probe's results (CI runs it
+#                    always)
 #
 # Each check fails the step with what it saw. Everything goes in
 # /private/tmp/boxpilot-helper-smoke, which the other account can reach.
@@ -96,6 +104,11 @@ CONTENTS=$APP/Contents
 SMOKE=$WORK/mac_smoke
 GUI=$WORK/gui_helper_smoke
 REPORT=$WORK/sandbox_report
+PROBE=$WORK/sandbox_probe
+# The sandbox summary and the probe's results, which the logs step prints
+# again last: only the end of a long job log may be at hand.
+SANDBOX_SUMMARY=$WORK/sandbox-summary.txt
+SANDBOX_PROBE_RESULTS=$WORK/sandbox-probe.txt
 # When the install step ran: the sandbox reports are collected from then on.
 SANDBOX_SINCE=$WORK/sandbox.since
 # The PIDs of the helper's sing-box the steps saw, one per line.
@@ -111,8 +124,9 @@ dmg=${2:-}
 smoke_source=${3:-}
 # gui-client's one argument.
 gui_source=${2:-}
-# sandbox-reports' one argument.
+# sandbox-reports' and sandbox-probe's one argument.
 report_source=${2:-}
+probe_source=${2:-}
 
 # ---- Saying what happened ----
 
@@ -384,6 +398,17 @@ proxy_set_on() {
 flush_dns() {
     sudo dscacheutil -flushcache || :
     sudo killall -HUP mDNSResponder || :
+}
+
+# Wait at most $2 s until a service's proxy is on 127.0.0.1:$1: the helper
+# sets it once sing-box is up, just after the start is answered.
+wait_proxy_set_on() {
+    waited=0
+    until proxy_set_on "$1"; do
+        waited=$((waited + 1))
+        [ "$waited" -le "$2" ] || return 1
+        sleep 1
+    done
 }
 
 # Turn off every proxy still on 127.0.0.1:$1: a proxy left pointing at a
@@ -825,7 +850,8 @@ step_kill_helper() {
 }
 
 step_system_proxy() {
-    # sing-box sets the proxy and unsets it itself on a clean stop.
+    # The helper sets the proxy once sing-box is up (sing-box's sandbox
+    # denies it networksetup), and unsets it after the stop.
     ready=$WORK/proxy.ready
     release=$WORK/proxy.release
     rm -f "$ready" "$release"
@@ -834,14 +860,17 @@ step_system_proxy() {
     wait_ready "$ready" "$proxy_pid" 180
     port=$(ready_value "$ready" proxy_port)
     trap 'reset_proxy_on "$port"' EXIT
-    if ! proxy_set_on "$port"; then
+    if ! wait_proxy_set_on "$port" 30; then
         touch "$release"
         wait "$proxy_pid" || :
         cat "$LOGS/tun-proxy.txt"
-        networksetup -listallhardwareports || :
+        networksetup -listnetworkserviceorder || :
+        route -n get default || :
+        helper_log_tail 20
         fail "while TUN runs with the system proxy, no network service's proxy is 127.0.0.1:$port"
     fi
-    ok "sing-box set the system proxy to 127.0.0.1:$port"
+    ok "the helper set the system proxy to 127.0.0.1:$port"
+    helper_log_tail 30 | grep 'proxies of' || :
     touch "$release"
     finish_background "$proxy_pid" tun-proxy
     if proxy_set_on "$port"; then
@@ -859,16 +888,16 @@ step_system_proxy() {
     wait_ready "$ready" "$proxy_pid" 180
     port=$(ready_value "$ready" proxy_port)
     trap 'reset_proxy_on "$port"' EXIT
-    proxy_set_on "$port" || fail "while TUN runs with the system proxy, no proxy is 127.0.0.1:$port"
+    wait_proxy_set_on "$port" 30 || fail "while TUN runs with the system proxy, no proxy is 127.0.0.1:$port"
     helper=$(helper_pid)
     find_sing_box "$helper"
     printf 'killing the helper (pid %s) and sing-box (pid %s) together with SIGKILL\n' "$helper" "$sing_box"
     sudo kill -9 "$helper" "$sing_box"
     finish_background "$proxy_pid" tun-proxy-killed
     if proxy_set_on "$port"; then
-        ok "the killed sing-box left the proxy on, as expected"
+        ok "the killed run left the proxy on, as expected"
     else
-        note "the system proxy was off before the helper restarted (sing-box got to unset it?)"
+        note "the system proxy was off before the helper restarted"
     fi
     smoke hello --expect start
     if proxy_set_on "$port"; then
@@ -880,22 +909,23 @@ step_system_proxy() {
     assert_tun_down
 }
 
-# What sing-box did under its sandbox profile (sandboxplan: measuring; not
-# enforced yet), from the kernel's sandbox reports since the install: every
-# step that ran sing-box (protocol, gui-client, kill-helper, system-proxy)
-# and anything it ran (networksetup). The raw lines go in
-# $LOGS/sandbox-reports.txt, which the logs step prints; the summary is
-# printed here. What the reports say never fails the step: only no report
-# naming sing-box, though the steps saw it run, does, because then the
-# collection is broken or sing-box ran unsandboxed. A raw sample is printed
-# then, so the next look isn't blind.
+# What sing-box's sandbox profile reported (sandboxplan: enforced), from
+# the kernel's sandbox reports since the install: every step that ran
+# sing-box (protocol, gui-client, kill-helper, system-proxy). The raw lines
+# go in $LOGS/sandbox-reports.raw (the logs step prints its head and tail);
+# the summary is printed here, and again last by the logs step. The step
+# fails on a denial sandboxplan::KNOWN_DENIALS doesn't explain (something
+# sing-box tried that the profile doesn't allow), and if no report names
+# sing-box though the steps saw it run: then the collection is broken, or
+# sing-box ran unsandboxed, and a raw sample is printed, so the next look
+# isn't blind.
 step_sandbox_reports() {
     [ -f "$report_source" ] || fail "no sandbox_report at '$report_source'"
     cp "$report_source" "$REPORT"
     chmod 0755 "$REPORT"
     since=$(cat "$SANDBOX_SINCE" 2>/dev/null || :)
     [ -n "$since" ] || fail "no start time in $SANDBOX_SINCE (the install step writes it)"
-    raw=$LOGS/sandbox-reports.txt
+    raw=$LOGS/sandbox-reports.raw
     printf 'the kernel sandbox reports since %s (log show --predicate %s)\n' "$since" "$SANDBOX_PREDICATE"
     # The file is the runner's: the redirect is meant to be made without sudo.
     # shellcheck disable=SC2024
@@ -910,13 +940,15 @@ step_sandbox_reports() {
     printf 'the sing-box PIDs the steps saw: %s\n' "${seen:-none}"
 
     status=0
-    "$REPORT" "$raw" --pids "$SING_BOX_PIDS" || status=$?
+    "$REPORT" "$raw" --pids "$SING_BOX_PIDS" >"$SANDBOX_SUMMARY" 2>&1 || status=$?
+    cat "$SANDBOX_SUMMARY"
     case $status in
         0)
-            ok "sing-box's sandbox reports are summed up above; the raw lines are in $raw"
+            ok "sing-box's sandbox reports are summed up above, with no unexpected denial"
             return
             ;;
         1) ;;
+        3) fail "sing-box met denials sandboxplan::KNOWN_DENIALS doesn't explain (above): the profile lacks something it needs, or sing-box tried what it must not" ;;
         *) fail "sandbox_report failed (exit code $status, above)" ;;
     esac
     printf '==== a broader look since %s: sing-box, sandboxd and the sandbox reporting subsystem (the first 200 lines)\n' "$since"
@@ -928,6 +960,23 @@ step_sandbox_reports() {
         return
     fi
     fail "no sandbox report names sing-box, though the steps saw it run (PIDs $seen): the collection is broken, or sing-box ran unsandboxed (samples above)"
+}
+
+# The shipped profile, with the parameters the helper builds, run as root on
+# a probe of its own (examples/sandbox_probe.rs): writing outside its run,
+# reading this account's home, root's, another account's state and the
+# password hashes, running a shell, forking and another local service's
+# socket must be denied; its run and its account's state, the routing and
+# utun sockets, IP sockets and mDNSResponder allowed.
+step_sandbox_probe() {
+    [ -f "$probe_source" ] || fail "no sandbox_probe at '$probe_source'"
+    cp "$probe_source" "$PROBE"
+    chmod 0755 "$PROBE"
+    status=0
+    sudo "$PROBE" --home "$HOME" --socket "$SOCKET_PATH" >"$SANDBOX_PROBE_RESULTS" 2>&1 || status=$?
+    cat "$SANDBOX_PROBE_RESULTS"
+    [ "$status" -eq 0 ] || fail "sing-box's sandbox profile didn't hold what it must (above)"
+    ok "sing-box's sandbox profile denies what it must, and allows what sing-box needs"
 }
 
 step_uninstall() {
@@ -979,6 +1028,19 @@ step_logs() {
         printf '==== %s\n' "$file"
         cat "$file"
     done
+    raw=$LOGS/sandbox-reports.raw
+    if [ -f "$raw" ]; then
+        printf '==== %s: %s lines; the first and last 15\n' "$raw" "$(wc -l <"$raw" | tr -d ' ')"
+        head -n 15 "$raw"
+        printf '[...]\n'
+        tail -n 15 "$raw"
+    fi
+    # Last, so the end of the job log holds them.
+    for file in "$SANDBOX_SUMMARY" "$SANDBOX_PROBE_RESULTS"; do
+        [ -f "$file" ] || continue
+        printf '==== %s\n' "$file"
+        cat "$file"
+    done
 }
 
 case $step in
@@ -992,11 +1054,12 @@ case $step in
     kill-helper) step_kill_helper ;;
     system-proxy) step_system_proxy ;;
     sandbox-reports) step_sandbox_reports ;;
+    sandbox-probe) step_sandbox_probe ;;
     uninstall) step_uninstall ;;
     logs)
         step_logs
         exit 0
         ;;
-    *) fail "unknown step '$step' (install, inspect, protocol, gui-client, idle-exit, other-user, broken-install, kill-helper, system-proxy, sandbox-reports, uninstall, logs)" ;;
+    *) fail "unknown step '$step' (install, inspect, protocol, gui-client, idle-exit, other-user, broken-install, kill-helper, system-proxy, sandbox-reports, sandbox-probe, uninstall, logs)" ;;
 esac
 printf 'helper smoke %s: every check held\n' "$step"

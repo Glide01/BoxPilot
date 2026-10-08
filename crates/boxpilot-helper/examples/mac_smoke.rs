@@ -113,6 +113,10 @@ as another account:
     const PUBLIC_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 443);
     /// A public name, for DNS through TUN and a by-name proxy request.
     const PUBLIC_NAME: &str = "one.one.one.one";
+    /// Where the DNS probe sends its query: an address TUN routes, whose
+    /// queries sing-box hijacks and answers over HTTPS
+    /// ([`dns_through_tun`]).
+    const DNS_PROBE_SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 53);
 
     /// The attachment the TUN profile's local rule set travels as.
     const RULE_SET_ID: &str = "smoke-rules";
@@ -648,14 +652,22 @@ as another account:
     }
 
     /// The smallest profile a TUN start can run that keeps the runner's
-    /// network: one direct outbound bound to the real interface, DNS
-    /// hijacked to a public resolver, and a local rule set that travels as
-    /// an attachment, as the GUI sends it.
+    /// network, and makes sing-box do what real profiles need of the
+    /// system: one direct outbound bound to the real interface, DNS
+    /// hijacked to a resolver over HTTPS (sing-box verifies its TLS
+    /// certificate, through macOS's own verifier), the `local` DNS server
+    /// for the outbounds' own lookups (mDNSResponder), and a local rule set
+    /// that travels as an attachment, as the GUI sends it. All of it runs
+    /// under sing-box's enforced sandbox profile.
     fn tun_start(proxy_port: u16, system_proxy: bool) -> Result<StartRequest, String> {
         let mut config = json!({
             "log": {"level": "info"},
             "dns": {
-                "servers": [{"type": "udp", "tag": "public", "server": "1.1.1.1"}]
+                "servers": [
+                    {"type": "https", "tag": "doh", "server": "1.1.1.1"},
+                    {"type": "local", "tag": "local"}
+                ],
+                "final": "doh"
             },
             "outbounds": [{"type": "direct", "tag": "direct"}],
             "route": {
@@ -671,7 +683,7 @@ as another account:
                     {"rule_set": "smoke", "action": "reject"}
                 ],
                 "auto_detect_interface": true,
-                "default_domain_resolver": "public",
+                "default_domain_resolver": "local",
                 "final": "direct"
             }
         });
@@ -1554,7 +1566,95 @@ as another account:
             return Err(format!("through TUN, {PUBLIC_NAME} resolved to nothing"));
         }
         println!("ok: through TUN, {PUBLIC_NAME} resolves to {resolved:?}");
+        let answers = dns_through_tun(PUBLIC_NAME)?;
+        println!(
+            "ok: through TUN, a DNS query to {DNS_PROBE_SERVER} for {PUBLIC_NAME} is answered over \
+             HTTPS ({answers} answers): sing-box verified a TLS certificate under its sandbox"
+        );
         Ok(())
+    }
+
+    /// Ask [`DNS_PROBE_SERVER`] for `name`'s A records over UDP, from this
+    /// machine, so the query goes through TUN, where sing-box hijacks it
+    /// and answers it from its only DNS server for it, over HTTPS: an
+    /// answer means sing-box verified the resolver's TLS certificate. How
+    /// many answers came.
+    fn dns_through_tun(name: &str) -> Result<usize, String> {
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+            .map_err(|error| format!("a UDP socket: {error}"))?;
+        socket
+            .connect(DNS_PROBE_SERVER)
+            .map_err(|error| format!("routing {DNS_PROBE_SERVER}: {error}"))?;
+        let local = socket.local_addr().map_err(|error| error.to_string())?;
+        let tun = IpAddr::V4(tun_address());
+        if local.ip() != tun {
+            return Err(format!(
+                "a DNS query to {DNS_PROBE_SERVER} would start from {local}, not the TUN address \
+                 {tun}"
+            ));
+        }
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| error.to_string())?;
+        let mut last = String::new();
+        for attempt in 0..3u16 {
+            let id = 0xb0c5 ^ attempt;
+            let query = dns_query(id, name);
+            if let Err(error) = socket.send(&query) {
+                last = format!("sending: {error}");
+                continue;
+            }
+            let mut reply = [0u8; 1500];
+            let len = match socket.recv(&mut reply) {
+                Ok(len) => len,
+                Err(error) => {
+                    last = format!("no reply: {error}");
+                    continue;
+                }
+            };
+            match dns_answers(&reply[..len], id) {
+                Ok(answers) if answers > 0 => return Ok(answers),
+                Ok(_) => last = "a reply with no answer".into(),
+                Err(error) => last = error,
+            }
+        }
+        Err(format!(
+            "through TUN, DNS for {name} over HTTPS failed ({last}): sing-box couldn't reach or \
+             verify its resolver"
+        ))
+    }
+
+    /// A DNS query: header (`id`, recursion desired, one question), then
+    /// `name`, type A, class IN.
+    fn dns_query(id: u16, name: &str) -> Vec<u8> {
+        let mut query = Vec::new();
+        query.extend_from_slice(&id.to_be_bytes());
+        query.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
+        for label in name.split('.') {
+            query.push(label.len() as u8);
+            query.extend_from_slice(label.as_bytes());
+        }
+        query.extend_from_slice(&[0, 0, 1, 0, 1]);
+        query
+    }
+
+    /// The number of answers in `reply` to query `id`, if it is a
+    /// successful response to it.
+    fn dns_answers(reply: &[u8], id: u16) -> Result<usize, String> {
+        if reply.len() < 12 {
+            return Err(format!("a {}-byte reply", reply.len()));
+        }
+        if u16::from_be_bytes([reply[0], reply[1]]) != id {
+            return Err("a reply to another query".into());
+        }
+        if reply[2] & 0x80 == 0 {
+            return Err("not a response".into());
+        }
+        let rcode = reply[3] & 0x0f;
+        if rcode != 0 {
+            return Err(format!("response code {rcode}"));
+        }
+        Ok(usize::from(u16::from_be_bytes([reply[6], reply[7]])))
     }
 
     fn expect_reached(via: Via, proxy: SocketAddr, dest: &Dest, port: u16) -> Result<(), String> {

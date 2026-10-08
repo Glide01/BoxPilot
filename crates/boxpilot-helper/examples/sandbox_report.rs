@@ -1,18 +1,23 @@
-//! `sandbox_report`: what sing-box did under its measuring sandbox profile
-//! (ADR 0006, "Defense in depth"; `sandboxplan`), from the kernel's sandbox
-//! reports as `log show` printed them, summed up by `sandboxreport`.
+//! `sandbox_report`: what sing-box's sandbox profile reported (ADR 0006,
+//! "Defense in depth"; `sandboxplan`), from the kernel's sandbox reports as
+//! `log show` printed them, summed up by `sandboxreport`: by operation and
+//! target, and sing-box's denials, each one `sandboxplan::KNOWN_DENIALS`
+//! explains or unexpected.
 //!
 //! CI's macOS job runs it through `packaging/macos/helper-smoke.sh
 //! sandbox-reports`, over the reports of every smoke step that ran
 //! sing-box: the TUN runs, the GUI client's, the helper killed under it,
-//! the system proxy. The summary is what the enforced profile is written
-//! from. It is a measuring tool: nothing installs it, and it reads only the
-//! files it is given.
+//! the system proxy. It is the profile's regression check: an unexpected
+//! denial is something sing-box tried that the profile doesn't allow. It
+//! is a measuring tool: nothing installs it, and it reads only the files it
+//! is given.
 //!
-//! Exit code 0 when sing-box's reports were found; 1 when none were (the
-//! collection is broken, or sing-box ran unsandboxed), and then a raw
-//! sample of the file is printed instead, so the next look isn't blind; 2
-//! for a bad command line or a file it can't read.
+//! Exit code 0 when sing-box's reports were found and none of its denials
+//! is unexpected; 3 when one is; 1 when no report names sing-box (the
+//! collection is broken, or sing-box ran unsandboxed: the enforced profile
+//! always reports dyld's `/dev/dtracehelper`), and then a raw sample of the
+//! file is printed instead, so the next look isn't blind; 2 for a bad
+//! command line or a file it can't read.
 
 use boxpilot_helper::sandboxplan::STATUS;
 use boxpilot_helper::sandboxreport::{HelperPaths, Summary};
@@ -29,6 +34,7 @@ usage: sandbox_report <log show output> [--pids <file>]
 const FOUND: i32 = 0;
 const NONE_FOUND: i32 = 1;
 const USAGE_ERROR: i32 = 2;
+const UNEXPECTED_DENIALS: i32 = 3;
 
 /// How many lines a raw sample shows.
 const RAW_SAMPLE: usize = 40;
@@ -91,7 +97,22 @@ fn run() -> i32 {
         );
     }
     if summary.total() > 0 {
-        return FOUND;
+        let unexpected = summary.unexpected_denials();
+        if unexpected.is_empty() {
+            return FOUND;
+        }
+        println!();
+        println!(
+            "==== {} of sing-box's denials no known denial explains (sandboxplan::KNOWN_DENIALS):",
+            unexpected.len()
+        );
+        for denial in &unexpected {
+            println!(
+                "  {} {} ({} reports)",
+                denial.operation, denial.target, denial.count
+            );
+        }
+        return UNEXPECTED_DENIALS;
     }
 
     println!();

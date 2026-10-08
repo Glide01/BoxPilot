@@ -671,11 +671,12 @@ jobs:
       # They come after "Upload DMG", so the DMG is uploaded whatever they
       # find, and each runs while the install held, so one round shows every
       # finding.
-      # And the reader of the sandbox reports the measuring profile makes
-      # (examples/sandbox_report.rs, never shipped either).
+      # And the reader of sing-box's sandbox reports and the sandbox probe
+      # (examples/sandbox_report.rs, examples/sandbox_probe.rs, never
+      # shipped either).
       - name: Build the helper smoke client
         if: matrix.test
-        run: cargo build --release --target ${{ matrix.target }} -p boxpilot-helper --example mac_smoke --example sandbox_report
+        run: cargo build --release --target ${{ matrix.target }} -p boxpilot-helper --example mac_smoke --example sandbox_report --example sandbox_probe
 
       # The GUI's own helper client against the same daemon
       # (examples/gui_helper_smoke.rs, never shipped): a debug build of
@@ -735,23 +736,35 @@ jobs:
         timeout-minutes: 10
         run: packaging/macos/helper-smoke.sh system-proxy
 
-      # What sing-box did under its sandbox profile, which measures and
-      # doesn't enforce yet (ADR 0006, "Defense in depth";
+      # What sing-box's enforced, deny-by-default sandbox profile reported
+      # (ADR 0006, "Defense in depth";
       # crates/boxpilot-helper/src/sandboxplan.rs): the kernel's sandbox
-      # reports since the install, from every step above that ran sing-box
-      # and from what it ran (networksetup), summed up by operation and
-      # target under "==== sing-box's sandbox reports"; the raw lines go in
-      # logs/sandbox-reports.txt, which the logs step prints. The enforced,
-      # deny-by-default profile is written from this. What the reports say
-      # never fails the step; no report naming sing-box, though the steps
-      # saw it run, does: the collection is broken, or the sandbox wasn't
-      # applied.
-      - name: "Helper smoke: what sing-box did under its sandbox profile"
+      # reports since the install, from every step above that ran sing-box,
+      # summed up by operation and target under "==== sing-box's sandbox
+      # reports", with sing-box's denials. It is the profile's regression
+      # check: it fails on a denial sandboxplan::KNOWN_DENIALS doesn't
+      # explain, and if no report names sing-box though the steps saw it
+      # run (the collection is broken, or the sandbox wasn't applied). The
+      # logs step prints the summary again, last.
+      - name: "Helper smoke: what sing-box's sandbox profile reported"
         if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
         timeout-minutes: 15
         env:
           TARGET: ${{ matrix.target }}
         run: packaging/macos/helper-smoke.sh sandbox-reports "target/$TARGET/release/examples/sandbox_report"
+
+      # The shipped profile, run as root on a probe of its own
+      # (examples/sandbox_probe.rs): writing outside its run, reading a
+      # user's home, root's, another account's state, running a shell,
+      # forking and another local service's socket must be denied; what
+      # sing-box needs allowed. After the reports step, so the probe's own
+      # denials aren't in them.
+      - name: "Helper smoke: what sing-box's sandbox denies (sandbox probe)"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 5
+        env:
+          TARGET: ${{ matrix.target }}
+        run: packaging/macos/helper-smoke.sh sandbox-probe "target/$TARGET/release/examples/sandbox_probe"
 
       - name: "Helper smoke: uninstall"
         if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
@@ -760,8 +773,8 @@ jobs:
 
       # The helper's own log (readable by root only, which the runner may
       # become), launchd's state, the system log for the label, and the
-      # smoke client's output and the raw sandbox reports, whatever the
-      # steps above found.
+      # smoke client's output, whatever the steps above found; last, the
+      # sandbox summary, its denials and the probe's results.
       - name: "Helper smoke: logs"
         if: always() && matrix.test && steps.helper-install.outcome != 'skipped'
         timeout-minutes: 5
