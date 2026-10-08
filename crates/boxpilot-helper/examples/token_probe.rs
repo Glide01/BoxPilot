@@ -314,6 +314,8 @@ wintun's driver and brings TUN up and down many times. --budget-secs
                         .collect::<Vec<_>>()
                         .join(",")
                 )
+            } else if missing.iter().all(|name| is_never(name)) {
+                format!("all but {} of NEVER_FOR_SING_BOX", missing.len())
             } else {
                 format!("{} privileges", self.keep.len())
             };
