@@ -1,0 +1,39 @@
+//! BoxPilot's privileged helper (ADR 0006): a service that runs sing-box as
+//! SYSTEM for TUN mode, on behalf of a GUI that stays unprivileged, on a
+//! config the helper has checked itself.
+//!
+//! Nothing the GUI sends is trusted. A connection's [`Authority`] comes from
+//! the OS; its requests go through `boxpilot_protocol`'s session; a `start`'s
+//! config goes through `boxpilot_policy` and runs only as the helper rewrote
+//! it ([`runcfg`]); the sing-box binary is the one the install manifest
+//! names, by hash ([`manifest`]).
+//!
+//! The modules here are the helper's cross-platform core, tested on every
+//! OS:
+//!
+//! - [`conn`] drives one connection over any [`transport::Transport`]: the
+//!   frame decoder, the session, deadlines, the memory budget, and the
+//!   bounded [`outbox`] that sing-box's [`lines`] go out through;
+//! - [`helper`] is the machine-wide state behind every connection: one
+//!   sing-box at a time, started through a platform [`helper::Supervisor`];
+//! - [`runcfg`] turns a `start` into the config sing-box runs, and
+//!   [`rundir`] writes it into a fresh run directory.
+//!
+//! [`Authority`]: boxpilot_protocol::Authority
+
+#![deny(unsafe_code)]
+
+pub mod conn;
+pub mod exit;
+pub mod helper;
+pub mod lines;
+pub mod log;
+pub mod manifest;
+pub mod outbox;
+pub mod paths;
+pub mod runcfg;
+pub mod rundir;
+pub mod transport;
+
+#[cfg(test)]
+mod testing;

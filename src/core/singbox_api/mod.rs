@@ -66,8 +66,9 @@ use std::fmt;
 /// Tag of the `api` service BoxPilot injects into the runtime config.
 /// Distinct from anything a subscription is likely to use, since service tags
 /// share one namespace; `prepare_config` adds a suffix in case the config's
-/// own services use it anyway.
-pub const API_SERVICE_TAG: &str = "boxpilot-api";
+/// own services use it anyway. Defined with the injection itself, which the
+/// privileged helper shares (`boxpilot_runconfig`).
+pub use boxpilot_runconfig::API_SERVICE_TAG;
 
 /// First sing-box release with the `api` service. Older binaries reject the
 /// runtime config ("unknown service type").
@@ -90,11 +91,9 @@ pub fn supports_api_service(version: &str) -> bool {
 /// Bytes of OS randomness in each run's API secret (hex-encoded on the wire).
 const SECRET_LEN: usize = 32;
 
-/// Origin the `api` service's CORS allows. `.invalid` can never resolve
-/// (RFC 6761), so no page can be served from it — unlike `null`, which
-/// sandboxed iframes and `file:` pages send. BoxPilot itself sends no
-/// `Origin` at all, which the CORS layer lets through.
-const ALLOWED_ORIGIN: &str = "http://boxpilot.invalid";
+// Origin the `api` service's CORS allows (`boxpilot_runconfig` explains
+// the choice), and how BoxPilot recognizes its own service.
+use boxpilot_runconfig::API_ALLOWED_ORIGIN as ALLOWED_ORIGIN;
 
 /// The sing-box API service endpoint for one sing-box run, always on
 /// loopback, plus that run's secret. The single owner of host + port +
@@ -136,20 +135,20 @@ impl SingBoxApi {
         format!("Bearer {}", self.secret_hex())
     }
 
+    /// This endpoint as the run config's `api` service, which
+    /// `boxpilot_runconfig` writes the same way for the GUI and for the
+    /// privileged helper.
+    pub fn service(&self) -> boxpilot_runconfig::ApiService {
+        boxpilot_runconfig::ApiService::new(self.port, &self.secret)
+    }
+
     /// The `services[]` entry for the runtime config — sing-box must listen
     /// exactly where this client will call, and accept only its secret.
     /// Without `secret` sing-box serves anyone who can reach the port, and
     /// without `access_control_allow_origin` its CORS answers `*`, so every
     /// web page could read the responses.
     pub fn service_config(&self) -> Value {
-        serde_json::json!({
-            "type": "api",
-            "tag": API_SERVICE_TAG,
-            "listen": "127.0.0.1",
-            "listen_port": self.port,
-            "secret": self.secret_hex(),
-            "access_control_allow_origin": [ALLOWED_ORIGIN]
-        })
+        self.service().service_config()
     }
 
     /// The port this endpoint listens on.

@@ -14,12 +14,26 @@ readme = "README.md"
 product-name = "BoxPilot"
 product-icon = "assets/app.ico"
 
-# The GUI stays the root package; the crates beside it are pure and carry no
-# gpui (ADR 0006). They are default members too, so the plain `cargo test`
-# CI runs at the root covers their tests as well.
+# The GUI stays the root package; the crates beside it carry no gpui
+# (ADR 0006). The policy, protocol and run-config crates are pure; the
+# privileged helper is a binary of its own, so its dependency graph has no
+# gpui and no reqwest. They are default members too, so the plain
+# `cargo test` CI runs at the root covers their tests as well.
 [workspace]
-members = [".", "crates/boxpilot-policy", "crates/boxpilot-protocol"]
-default-members = [".", "crates/boxpilot-policy", "crates/boxpilot-protocol"]
+members = [
+    ".",
+    "crates/boxpilot-helper",
+    "crates/boxpilot-policy",
+    "crates/boxpilot-protocol",
+    "crates/boxpilot-runconfig",
+]
+default-members = [
+    ".",
+    "crates/boxpilot-helper",
+    "crates/boxpilot-policy",
+    "crates/boxpilot-protocol",
+    "crates/boxpilot-runconfig",
+]
 
 [profile.release]
 panic = "abort"
@@ -70,6 +84,9 @@ prost ={ version = "0.14", default-features = false, features = ["derive", "std"
 # OS RNG for the per-run sing-box API secret (`core/singbox_api`). Already in
 # the dep graph at 0.3, so this adds no new crate.
 getrandom = "0.3"
+# The inbounds, cache file and `api` service BoxPilot injects into every run
+# config, shared with the privileged helper (ADR 0006). Pure, no gpui.
+boxpilot-runconfig = { path = "crates/boxpilot-runconfig" }
 # OS UI language for the "System" language preference.
 sys-locale = "0.3"
 # LAN IPv4 addresses shown in the "Allow LAN connections" hint.

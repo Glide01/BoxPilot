@@ -3,10 +3,11 @@ use crate::core::atomic_write::{
 };
 use crate::core::paths::create_private_dir;
 use crate::core::settings::{AppSettings, HTTP_TIMEOUT_SECS, PROXY_PORT};
-use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi, API_SERVICE_TAG};
+use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi};
 use crate::core::sub_usage::{parse_userinfo, SubscriptionUsage, USERINFO_HEADER};
 use crate::core::timefmt::to_unix_secs;
 use crate::i18n::s;
+use boxpilot_runconfig::{config_listen_ports, pick_port_avoiding, Inject};
 use reqwest::blocking::Client;
 use reqwest::Proxy;
 use serde_json::Value;
@@ -100,15 +101,12 @@ pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
 }
 
 /// The TUN interface's IPv4 address — always present in TUN mode. Public so
-/// `core::lan` can leave the TUN's own /30 out of the LAN addresses.
-pub const TUN_IPV4_ADDRESS: &str = "172.18.0.1/30";
-/// Added to the TUN interface only when `RuntimeOptions::tun_ipv6` is on.
-const TUN_IPV6_ADDRESS: &str = "fdfe:dcba:9876::1/126";
-/// The TUN inbound's `strict_route`. Off on Linux: there sing-box enforces
-/// it with its own nftables / ip rules, which cut off whatever isn't routed
-/// through the tunnel (Docker and libvirt bridges, other VPNs, hosts on the
-/// LAN). Elsewhere it keeps traffic from leaking around the tunnel.
-const TUN_STRICT_ROUTE: bool = !cfg!(target_os = "linux");
+/// `core::lan` can leave the TUN's own /30 out of the LAN addresses. The
+/// injection that uses it lives in `boxpilot_runconfig`, which the
+/// privileged helper shares.
+pub use boxpilot_runconfig::TUN_IPV4_ADDRESS;
+#[cfg(test)]
+use boxpilot_runconfig::{address_port, API_SERVICE_TAG, TUN_IPV6_ADDRESS};
 
 /// Everything `prepare_config` needs to turn a canonical config into the form
 /// sing-box actually runs. Grouped into one struct so the injected shape can
@@ -162,9 +160,6 @@ impl Default for RuntimeOptions {
     }
 }
 
-/// How many ports `pick_api_port` draws before giving up.
-const API_PORT_PICK_ATTEMPTS: usize = 16;
-
 /// The loopback port BoxPilot's `api` service gets for one sing-box start:
 /// one the OS reports free right now, other than the local proxy port and the
 /// config's own listener ports (`config_listen_ports`), which aren't bound
@@ -182,60 +177,10 @@ pub fn pick_api_port(config_data: &str, proxy_port: u16) -> Result<u16, String> 
 }
 
 /// A port the OS hands out for `127.0.0.1:0`, with the listener that holds
-/// it.
+/// it: the candidates `pick_port_avoiding` draws from.
 fn free_loopback_port() -> io::Result<(u16, TcpListener)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     Ok((listener.local_addr()?.port(), listener))
-}
-
-/// Draw ports from `next` until one is not `excluded`. Each rejected draw's
-/// holder stays alive until the end, so the OS can't offer the same port
-/// twice; the picked one's is dropped, freeing the port for sing-box.
-fn pick_port_avoiding<H>(
-    excluded: &[u16],
-    mut next: impl FnMut() -> io::Result<(u16, H)>,
-) -> io::Result<u16> {
-    let mut rejected = Vec::new();
-    for _ in 0..API_PORT_PICK_ATTEMPTS {
-        let (port, holder) = next()?;
-        if !excluded.contains(&port) {
-            return Ok(port);
-        }
-        rejected.push(holder);
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AddrInUse,
-        "every port offered is one the config uses",
-    ))
-}
-
-/// Ports the config's own listeners will take besides the inbounds BoxPilot
-/// owns: every service's `listen_port` (its own `api` services among them),
-/// and the `clash_api` / `v2ray_api` controller addresses.
-fn config_listen_ports(json: &Value) -> Vec<u16> {
-    let mut ports: Vec<u16> = json["services"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|service| service["listen_port"].as_u64())
-        .filter_map(|port| u16::try_from(port).ok())
-        .collect();
-    let experimental = &json["experimental"];
-    for address in [
-        &experimental["clash_api"]["external_controller"],
-        &experimental["v2ray_api"]["listen"],
-    ] {
-        if let Some(port) = address.as_str().and_then(address_port) {
-            ports.push(port);
-        }
-    }
-    ports
-}
-
-/// The port of a `host:port` listen address (`127.0.0.1:9090`, `[::]:9090`,
-/// `:9090`).
-fn address_port(address: &str) -> Option<u16> {
-    address.rsplit_once(':')?.1.parse().ok()
 }
 
 /// Whether a line sing-box printed says it could not listen on `api_port`,
@@ -248,18 +193,10 @@ pub fn is_api_bind_failure(line: &str, api_port: u16) -> bool {
     line.contains(&format!("listen tcp 127.0.0.1:{}: bind: ", api_port))
 }
 
-/// The `services[]` tag for BoxPilot's `api` service: `API_SERVICE_TAG`, or
-/// with a `-2`, `-3`, … suffix if the config's own services already use it.
-fn api_service_tag(services: &[Value]) -> String {
-    let taken = |tag: &str| services.iter().any(|service| service["tag"] == tag);
-    std::iter::once(API_SERVICE_TAG.to_string())
-        .chain((2..).map(|n| format!("{}-{}", API_SERVICE_TAG, n)))
-        .find(|tag| !taken(tag))
-        .expect("a free tag among infinitely many")
-}
-
 /// The object at `parent[key]`, created empty — or replacing a non-object —
-/// if need be. `parent` must be an object.
+/// if need be. `parent` must be an object. The tests build canonical configs
+/// with it; `prepare_config` leaves this to `boxpilot_runconfig`.
+#[cfg(test)]
 fn object_entry<'a>(parent: &'a mut Value, key: &str) -> &'a mut Value {
     if !parent[key].is_object() {
         parent[key] = Value::Object(Default::default());
@@ -267,79 +204,33 @@ fn object_entry<'a>(parent: &'a mut Value, key: &str) -> &'a mut Value {
     &mut parent[key]
 }
 
-/// Where the mixed inbound listens: every IPv4 interface when LAN
-/// connections are allowed, loopback otherwise. IPv4 only, matching the
-/// addresses the Settings hint lists (`core::lan`).
-fn mixed_listen_address(allow_lan: bool) -> &'static str {
-    if allow_lan {
-        "0.0.0.0"
-    } else {
-        "127.0.0.1"
-    }
-}
-
-/// Inject mode-specific inbounds into config (used at process start)
+/// Inject mode-specific inbounds into config (used at process start).
+///
+/// `boxpilot_runconfig::inject` writes BoxPilot's parts, the same ones the
+/// privileged helper writes: the inbounds, `cache_file.enabled` (sing-box
+/// then remembers the selected nodes), and BoxPilot's own `api` service on
+/// `opts.api`. Everything else runs as the config wrote it, its own
+/// controllers included (ADR 0002). sing-box may set the system proxy here:
+/// it runs as the user.
 pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String, String> {
     let mut json: Value = serde_json::from_str(config_data)
         .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
-    if !json.is_object() {
-        return Err(s().errors.not_object.to_string());
-    }
-
-    let mut mixed_inbound = serde_json::json!({
-        "type": "mixed",
-        "tag": "proxy",
-        "listen": mixed_listen_address(opts.allow_lan),
-        "listen_port": opts.proxy_port
-    });
-    if opts.set_system_proxy {
-        mixed_inbound["set_system_proxy"] = serde_json::Value::Bool(true);
-    }
-
-    let inbounds = if opts.proxy_mode {
-        serde_json::Value::Array(vec![mixed_inbound])
-    } else {
-        let mut address = vec![serde_json::Value::from(TUN_IPV4_ADDRESS)];
-        if opts.tun_ipv6 {
-            address.push(serde_json::Value::from(TUN_IPV6_ADDRESS));
-        }
-        let tun_inbound = serde_json::json!({
-            "type": "tun",
-            "tag": "tun0",
-            "address": address,
-            "auto_route": true,
-            "strict_route": TUN_STRICT_ROUTE,
-            "stack": "mixed"
-        });
-        serde_json::Value::Array(vec![tun_inbound, mixed_inbound])
-    };
-
-    json["inbounds"] = inbounds;
-
-    // With cache_file enabled, sing-box (≥1.8) automatically persists the
-    // chosen selector node across restarts (cache.db) — the old
-    // `store_selected` field was removed upstream and now fails config
-    // validation as an unknown field. Only `enabled` is forced: the rest of
-    // `experimental` (the config's own clash_api / v2ray_api, its other
-    // cache_file fields) runs as the config wrote it (ADR 0002).
-    let experimental = object_entry(&mut json, "experimental");
-    object_entry(experimental, "cache_file")["enabled"] = Value::Bool(true);
-
-    // BoxPilot's own sing-box API service (≥1.14) for groups, node
-    // switching, delay tests and the traffic readout: loopback, behind this
-    // run's secret. The config's own services, its `api` ones included,
-    // pass through untouched; ours takes a tag none of them uses, and a port
-    // none of them listens on (`pick_api_port`).
-    let mut services: Vec<Value> = json
-        .get("services")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut ours = opts.api.service_config();
-    ours["tag"] = Value::from(api_service_tag(&services));
-    services.push(ours);
-    json["services"] = Value::Array(services);
-
+    let root = json
+        .as_object_mut()
+        .ok_or_else(|| s().errors.not_object.to_string())?;
+    let api = opts.api.service();
+    boxpilot_runconfig::inject(
+        root,
+        &Inject {
+            proxy_mode: opts.proxy_mode,
+            set_system_proxy: opts.set_system_proxy,
+            forbid_system_proxy: false,
+            proxy_port: opts.proxy_port,
+            tun_ipv6: opts.tun_ipv6,
+            allow_lan: opts.allow_lan,
+            api: &api,
+        },
+    );
     serde_json::to_string_pretty(&json)
         .map_err(|e| (s().errors.serialize_config)(&e.to_string()))
 }

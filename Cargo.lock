@@ -695,6 +695,7 @@ name = "box_pilot_gui"
 version = "1.13.5"
 dependencies = [
  "anyhow",
+ "boxpilot-runconfig",
  "chrono",
  "dirs 5.0.1",
  "embed-resource 2.5.2",
@@ -720,6 +721,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "boxpilot-helper"
+version = "0.1.0"
+dependencies = [
+ "boxpilot-policy",
+ "boxpilot-protocol",
+ "boxpilot-runconfig",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "boxpilot-policy"
 version = "0.1.0"
 dependencies = [
@@ -732,6 +746,13 @@ version = "0.1.0"
 dependencies = [
  "boxpilot-policy",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "boxpilot-runconfig"
+version = "0.1.0"
+dependencies = [
  "serde_json",
 ]
 
