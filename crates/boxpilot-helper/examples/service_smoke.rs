@@ -131,6 +131,11 @@ as a standard account:
     /// The helper drops a client that stops reading after 10 s (its write
     /// deadline, `conn::Timeouts::write`); this waits that out with room.
     const WRITE_DEADLINE_WAIT: Duration = Duration::from_secs(15);
+    /// The longest any command runs. Every wait has its own deadline but
+    /// one: a write to the pipe blocks for as long as the helper reads
+    /// nothing, so a helper that never drops such a client would hang the
+    /// tool, and CI with it, instead of failing it.
+    const WATCHDOG: Duration = Duration::from_secs(10 * 60);
 
     /// What the GUI opens the pipe with, and everything the pipe's DACL
     /// grants interactive users: `GENERIC_WRITE` would include
@@ -175,6 +180,10 @@ as a standard account:
                 return USAGE_ERROR;
             }
         };
+        watchdog(
+            WATCHDOG,
+            format!("service_smoke {command}: FAILED: still running after {WATCHDOG:?}"),
+        );
         let result = match command.as_str() {
             "hello" => hello(&options),
             "refused" => refused(),
@@ -201,6 +210,16 @@ as a standard account:
                 FAILED
             }
         }
+    }
+
+    /// End the process as failed, saying `message`, unless it has ended by
+    /// `after`.
+    fn watchdog(after: Duration, message: String) {
+        thread::spawn(move || {
+            thread::sleep(after);
+            eprintln!("{message}");
+            std::process::exit(FAILED);
+        });
     }
 
     // ---- The command line ----
@@ -1131,6 +1150,14 @@ as a standard account:
         let one = encode_request(&Request::Status, &conn.limits)
             .map_err(|error| format!("encoding status: {error}"))?;
         let flood = one.repeat(FLOOD);
+        // The write below blocks until the helper either reads it all or
+        // drops this client; neither within a minute is the failure.
+        watchdog(
+            Duration::from_secs(60),
+            "service_smoke write-deadline: FAILED: a write to a client that stopped reading \
+             still blocks after 60s: the helper neither reads nor drops it"
+                .to_owned(),
+        );
         let began = Instant::now();
         match conn.pipe.0.write_all(&flood) {
             Ok(()) => println!(
