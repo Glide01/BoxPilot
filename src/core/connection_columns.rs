@@ -174,9 +174,10 @@ impl ColumnId {
             ColumnId::Inbound => 50.,
             ColumnId::Rule => 60.,
             ColumnId::Chain => 80.,
-            ColumnId::Speed => 72.,
-            ColumnId::Traffic => 64.,
-            ColumnId::Duration => 48.,
+            // The figures never get cut short: these only grow.
+            ColumnId::Speed => 96.,
+            ColumnId::Traffic => 84.,
+            ColumnId::Duration => 56.,
         }
     }
 }
@@ -865,10 +866,15 @@ mod tests {
         // Chain | Speed, dragged left: Speed grows from its left edge.
         let dragged = drag_and_check(&settings, WIDE_1280, 2, -40.);
         assert_eq!(dragged.width(ColumnId::Speed), 136.);
-        // Speed | Traffic, dragged right: Traffic narrows, Speed moves.
-        let dragged = drag_and_check(&settings, WIDE_1280, 3, 10.);
-        assert_eq!(dragged.width(ColumnId::Traffic), 74.);
+        // Speed | Traffic, dragged left: Traffic grows, Speed moves.
+        let dragged = drag_and_check(&settings, WIDE_1280, 3, -10.);
+        assert_eq!(dragged.width(ColumnId::Traffic), 94.);
         assert_eq!(dragged.width(ColumnId::Speed), 96.);
+        // Not below its minimum, which for the figures is where they
+        // start.
+        let layout = layout_columns(&settings, WIDE_1280);
+        let narrowed = drag_boundary(&settings, &layout, 3, 30.);
+        assert_eq!(narrowed.width(ColumnId::Traffic), 84.);
         // The last column's right edge has no handle.
         let layout = layout_columns(&settings, WIDE_1280);
         assert_eq!(boundary_target(&layout, 5), None);

@@ -226,6 +226,9 @@ pub static EN: Strings = Strings {
         col_speed: "Speed",
         col_traffic: "Traffic",
         col_duration: "Duration",
+        columns: "Columns",
+        reset_columns: "Reset columns",
+        keep_basic_column: "Keep at least one of Host or Chain",
     },
     connection_details: ConnectionDetails {
         close_panel: "Close details (Esc)",

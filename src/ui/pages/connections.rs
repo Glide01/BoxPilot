@@ -15,6 +15,10 @@
 //! 连接没有速率)、存活时长;另有网络(徽标 + 嗅探到的协议)、目标地址、
 //! 进程、来源、入站、规则可以打开 —— 网络或进程有了自己的列,主机格里就
 //! 不再重复徽标或进程名。最后是关闭按钮(仅打开的连接),它不是一列,总在。
+//! 控制行最右的 Columns 按钮(右键表头也一样)打开列菜单:勾选显示 / 隐藏
+//! 各列,另有 Reset columns 恢复默认的列和宽度;主机和出站链(基本信息)
+//! 至少留一列,只剩一列时它的菜单项不可点,悬停说明原因。排序与列显示无关,
+//! 隐藏的列照样能当排序键。
 //!
 //! 列宽(`layout_columns`,列表宽度在绘制时量出,变了下一帧重排):其余列
 //! 用用户给的宽度,主机和出站链按权重(默认 5 : 4)分剩下的宽度,不小于各自
@@ -79,6 +83,7 @@ use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
+    menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     scroll::ScrollableElement,
     theme::Theme,
     tooltip::Tooltip,
@@ -702,20 +707,26 @@ fn connection_row(
                         time.child(div().text_color(muted).child(fraction))
                     })
             }
-            // The badge, then the sniffed protocol if there was one.
+            // The badge, then the sniffed protocol if there was one and
+            // it fits whole (a lone ellipsis says nothing).
             ColumnId::Network => div()
                 .h_flex()
                 .items_center()
                 .gap_1p5()
                 .overflow_hidden()
                 .child(badge())
-                .when(!connection.protocol.is_empty(), |cell| {
-                    cell.child(
-                        clipped(connection.protocol.clone())
-                            .text_xs()
-                            .text_color(muted),
-                    )
-                }),
+                .when(
+                    !connection.protocol.is_empty()
+                        && room(width - NETWORK_BADGE_WIDTH - 6., SMALL_LETTER)
+                            >= connection.protocol.len(),
+                    |cell| {
+                        cell.child(
+                            clipped(connection.protocol.clone())
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                    },
+                ),
             // The host, after its network's badge and before the process
             // that opened it, unless those have columns of their own.
             ColumnId::Host => {
@@ -942,7 +953,12 @@ fn right_aligned(id: ColumnId) -> bool {
 /// The list's column headings, on the rows' columns, with a handle on
 /// each boundary between two of them: drag it to resize (see
 /// `drag_boundary`), double-click it for the default width.
-fn column_header(layout: &ColumnLayout, page: &WeakEntity<ConnectionsPage>, theme: &Theme) -> Div {
+fn column_header(
+    layout: &ColumnLayout,
+    page: &WeakEntity<ConnectionsPage>,
+    app_state: &Entity<AppState>,
+    theme: &Theme,
+) -> impl IntoElement {
     let mut header = div()
         .flex_none()
         .h(px(HEADER_HEIGHT))
@@ -968,7 +984,63 @@ fn column_header(layout: &ColumnLayout, page: &WeakEntity<ConnectionsPage>, them
             });
         header = header.child(cell);
     }
-    header.child(div().flex_none().w(px(CLOSE_WIDTH)))
+    // A right-click on the headings opens the Columns menu too.
+    let app_state = app_state.clone();
+    header
+        .child(div().flex_none().w(px(CLOSE_WIDTH)))
+        .context_menu(move |menu, _, cx| columns_menu(menu, &app_state, cx))
+}
+
+/// The Columns menu: every column, the shown ones checked — a click shows
+/// or hides it — and Reset columns. The last basic column (Host or Chain)
+/// still showing can't be unchecked; its item says why on hover.
+fn columns_menu(menu: PopupMenu, app_state: &Entity<AppState>, cx: &App) -> PopupMenu {
+    let t = &s().connections;
+    let columns = app_state.read(cx).settings.connections_columns.clone();
+    let menu = ColumnId::ALL
+        .into_iter()
+        .fold(menu.min_w(px(160.)), |menu, id| {
+            let title = column_title(id);
+            let shown = columns.is_visible(id);
+            if !columns.can_hide(id) {
+                return menu.item(
+                    PopupMenuItem::element(move |_, _| {
+                        div()
+                            .id(SharedString::from(format!("conn-col-keep-{}", id.key())))
+                            .w_full()
+                            .child(title)
+                            .tooltip(|window, cx| {
+                                Tooltip::new(s().connections.keep_basic_column).build(window, cx)
+                            })
+                    })
+                    .checked(true)
+                    .disabled(true),
+                );
+            }
+            let app_state = app_state.clone();
+            menu.item(
+                PopupMenuItem::new(title)
+                    .checked(shown)
+                    .on_click(move |_, _, cx| {
+                        app_state.update(cx, |state, cx| {
+                            let mut columns = state.settings.connections_columns.clone();
+                            if columns.toggle(id) {
+                                state.set_connections_columns(columns, cx);
+                            }
+                        });
+                    }),
+            )
+        });
+    let app_state = app_state.clone();
+    menu.separator().item(
+        PopupMenuItem::new(t.reset_columns)
+            .disabled(columns == ColumnSettings::default())
+            .on_click(move |_, _, cx| {
+                app_state.update(cx, |state, cx| {
+                    state.set_connections_columns(ColumnSettings::default(), cx)
+                });
+            }),
+    )
 }
 
 /// The grab band on the boundary after column `boundary`: the gap to the
@@ -1222,6 +1294,22 @@ impl Render for ConnectionsPage {
                 ),
         );
 
+        // Which columns show (and Reset columns); the headings' right-click
+        // opens the same menu.
+        let columns_app_state = self.app_state.clone();
+        controls = controls.child(
+            div().flex_none().child(
+                Button::new("connections-columns")
+                    .outline()
+                    .small()
+                    .icon(Icon::empty().path("icons/columns-3.svg"))
+                    .tooltip(t.columns)
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                        columns_menu(menu, &columns_app_state, cx)
+                    }),
+            ),
+        );
+
         let mut head = page_header(theme, ActivePage::Connections);
         if has_any {
             let pause_page = page.clone();
@@ -1271,7 +1359,7 @@ impl Render for ConnectionsPage {
             let layout = layout_columns(&self.columns(cx), self.list_width());
             let overflows = layout.overflows(self.list_width());
             let min_row_width = layout.min_width;
-            let header = column_header(&layout, &page, theme);
+            let header = column_header(&layout, &page, &self.app_state, theme);
             let row_columns = Rc::new(RowColumns::new(layout));
             let list = uniform_list("connections-list", rows.len(), move |range, _, cx| {
                 let networks = NetworkColors::new(cx.theme());

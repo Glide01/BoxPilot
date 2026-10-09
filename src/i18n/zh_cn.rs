@@ -210,6 +210,9 @@ pub static ZH_CN: Strings = Strings {
         col_speed: "速度",
         col_traffic: "流量",
         col_duration: "时长",
+        columns: "列",
+        reset_columns: "重置列",
+        keep_basic_column: "主机和出站链至少保留一列",
     },
     connection_details: ConnectionDetails {
         close_panel: "关闭详情（Esc）",

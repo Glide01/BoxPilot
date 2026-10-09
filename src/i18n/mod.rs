@@ -415,6 +415,11 @@ pub struct Connections {
     pub col_speed: &'static str,
     pub col_traffic: &'static str,
     pub col_duration: &'static str,
+    /// The Columns button's tooltip, its menu's Reset columns, and why the
+    /// last of Host and Chain can't be hidden.
+    pub columns: &'static str,
+    pub reset_columns: &'static str,
+    pub keep_basic_column: &'static str,
 }
 
 /// The Connections page's details panel (one connection).
