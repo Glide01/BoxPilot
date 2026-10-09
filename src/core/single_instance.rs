@@ -318,18 +318,15 @@ fn current_user_sid() -> Option<String> {
 /// (see the module docs).
 #[cfg(target_os = "windows")]
 fn pipe_server_loop(pipe_path: &str, on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
-    use windows::core::{HRESULT, PCWSTR};
-    use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-    // ReadFile/ConnectNamedPipe 走 `Win32_System_IO` feature;
     // PIPE_ACCESS_INBOUND(FILE_FLAGS_AND_ATTRIBUTES)定义在 FileSystem,不在 Pipes。
-    use windows::Win32::Storage::FileSystem::{
-        ReadFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND,
-    };
+    use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND};
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
 
     const SDDL_REVISION_1: u32 = 1;
@@ -407,39 +404,65 @@ fn pipe_server_loop(pipe_path: &str, on_attempt: Box<dyn Fn(LaunchAttempt) + Sen
             continue;
         };
 
-        // ERROR_PIPE_CONNECTED = the client connected between create and
-        // this call; that's a success for our purposes.
-        let connected = match unsafe { ConnectNamedPipe(pipe, None) } {
-            Ok(()) => true,
-            Err(e) => e.code() == HRESULT::from_win32(ERROR_PIPE_CONNECTED.0),
-        };
+        let connected = wait_for_client(pipe);
         next = create(false);
 
         if connected {
-            let mut data = Vec::new();
-            let mut overflowed = false;
-            let mut buf = [0u8; 4096];
-            loop {
-                let mut read: u32 = 0;
-                match unsafe { ReadFile(pipe, Some(&mut buf), Some(&mut read), None) } {
-                    Ok(()) if read > 0 => {
-                        // Past the cap: stop reading; disconnecting drops
-                        // the rest.
-                        if data.len() + read as usize > MAX_PAYLOAD {
-                            overflowed = true;
-                            break;
-                        }
-                        data.extend_from_slice(&buf[..read as usize]);
-                    }
-                    // 0-byte read or broken pipe — client is done.
-                    _ => break,
-                }
-            }
+            let (data, overflowed) = read_payload(pipe);
             let _ = unsafe { DisconnectNamedPipe(pipe) };
             on_attempt(attempt_from_payload(&data, overflowed));
         }
         unsafe {
             let _ = CloseHandle(pipe);
+        }
+    }
+}
+
+/// Wait on `pipe`, an instance of the server's, for a client; `false` if
+/// none came. One may have come already, between the instance's creation
+/// and this call: still connected (`ERROR_PIPE_CONNECTED`), or connected,
+/// written and gone (`ERROR_NO_DATA`), as a sender that writes one link and
+/// closes does whenever it reaches the next instance while the server is
+/// still passing on the previous link. What it wrote is still there to
+/// read then.
+#[cfg(target_os = "windows")]
+fn wait_for_client(pipe: windows::Win32::Foundation::HANDLE) -> bool {
+    use windows::core::HRESULT;
+    use windows::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_CONNECTED};
+    use windows::Win32::System::Pipes::ConnectNamedPipe;
+
+    // SAFETY: a pipe instance handle the caller made and still owns.
+    match unsafe { ConnectNamedPipe(pipe, None) } {
+        Ok(()) => true,
+        Err(e) => [ERROR_PIPE_CONNECTED, ERROR_NO_DATA]
+            .into_iter()
+            .any(|code| e.code() == HRESULT::from_win32(code.0)),
+    }
+}
+
+/// What the client on `pipe` sent, read to its end: at most
+/// [`MAX_PAYLOAD`] bytes, and whether it sent more (disconnecting drops the
+/// rest).
+#[cfg(target_os = "windows")]
+fn read_payload(pipe: windows::Win32::Foundation::HANDLE) -> (Vec<u8>, bool) {
+    // ReadFile 走 `Win32_System_IO` feature。
+    use windows::Win32::Storage::FileSystem::ReadFile;
+
+    let mut data = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let mut read: u32 = 0;
+        // SAFETY: a connected pipe instance of the caller's; `buf` and
+        // `read` outlive this synchronous read.
+        match unsafe { ReadFile(pipe, Some(&mut buf), Some(&mut read), None) } {
+            Ok(()) if read > 0 => {
+                if data.len() + read as usize > MAX_PAYLOAD {
+                    return (data, true);
+                }
+                data.extend_from_slice(&buf[..read as usize]);
+            }
+            // 0-byte read or broken pipe — client is done.
+            _ => return (data, false),
         }
     }
 }
@@ -1040,6 +1063,22 @@ mod pipe_tests {
         );
         close(squatter);
         deliver(&path, "boxpilot://after", &attempts);
+    }
+
+    /// A sender that connects, writes and closes before the server waits
+    /// on that instance, as one does that reaches the next instance while
+    /// the previous link is being passed on, is still read.
+    #[test]
+    fn a_sender_gone_before_the_wait_is_still_read() {
+        let path = test_pipe("early");
+        let pipe = first_instance(&path).expect("a fresh name");
+        assert!(try_forward_to(&path, Some("boxpilot://early")));
+        assert!(
+            wait_for_client(pipe),
+            "the sender that already left wasn't counted"
+        );
+        assert_eq!(read_payload(pipe), (b"boxpilot://early".to_vec(), false));
+        close(pipe);
     }
 
     #[test]
