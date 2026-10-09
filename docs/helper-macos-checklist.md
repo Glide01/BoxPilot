@@ -56,9 +56,12 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   name (`AssociatedBundleIdentifiers`). Turning it off there unloads it;
   the GUI then treats it as not installed (see "GUI" below; **CI** checks
   the GUI's reading of an unloaded job, after `launchctl bootout`).
-- Installing from a downloaded, quarantined DMG: the installed helper and
-  sing-box run (the install clears their quarantine flag), and Gatekeeper
-  shows nothing for them.
+- Installing from a downloaded, quarantined DMG, opened with "Open
+  Anyway" (which leaves the app's quarantine flag): no installed file
+  carries the flag, nor an ACL from the app's files (**CI**, from a copy
+  whose payload has both); launchd loads the plist (macOS 27 refuses a
+  quarantined one: `Bootstrap failed: 5: Input/output error`), the helper
+  and sing-box run, and Gatekeeper shows nothing for them.
 - `ls -lde` of every directory from `/` to each installed path (**CI**
   prints it): no ACL entry grants a non-administrator anything. The helper
   judges owners and mode bits only; only root or an administrator can add
@@ -78,6 +81,13 @@ unit-tested on Linux and, by the job's Test step, on macOS.
 - launchd starts it for the first client (**CI**), as root; it exits after
   60 s with no connection and no sing-box, with code 0, and says so in its
   log (**CI**); the next client starts it again (**CI**).
+- After a restart, launchd has loaded it at boot: the socket is there
+  before BoxPilot starts, and TUN starts without a reinstall. Reports say
+  Background Task Management (Login Items › Allow in the Background) can
+  keep a daemon whose executable has no Developer ID from loading at boot
+  on recent macOS, as this ad hoc signed helper is. If it isn't loaded,
+  note the item's state there and in `sudo sfltool dumpbtm`, and what
+  brought it back.
 - `launchctl bootout` (and shutdown) sends SIGTERM: the helper stops its
   sing-box first, then exits 0 (**CI**: `launchctl kill SIGTERM` after each
   broken-install recovery, last exit code 0).

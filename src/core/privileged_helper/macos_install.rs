@@ -151,33 +151,44 @@ impl PromptError {
 }
 
 /// What a failed `osascript` run means. A cancelled prompt is AppleScript's
-/// error -128 ("User canceled."). Anything else is the first line osascript
-/// wrote, which for a script that refused is the script's own
-/// `helper-install: …`, without AppleScript's `0:123: execution error: `
-/// prefix and `(1)` error number; or, with no words, the exit code.
+/// error -128 ("User canceled."). Anything else is what the script wrote,
+/// without AppleScript's `0:123: execution error: ` prefix and `(1)` error
+/// number: `do shell script` turns its line breaks into carriage returns,
+/// so the lines are split at those too. Of them, the script's own last
+/// `helper-install: …` (or `helper-uninstall: …`) says why it stopped;
+/// without one, the first line, a command's own error; with no words, the
+/// exit code.
 pub fn prompt_error(code: Option<i32>, stderr: &str) -> PromptError {
     if stderr.contains("(-128)") {
         return PromptError::Dismissed;
     }
-    let line = stderr.lines().map(str::trim).find(|line| !line.is_empty());
-    let detail = line.map(|line| {
-        let text = line
-            .split_once("execution error: ")
-            .map_or(line, |(_, rest)| rest);
-        match text.rsplit_once(" (") {
-            Some((words, number))
-                if number
-                    .strip_suffix(')')
-                    .is_some_and(|n| n.parse::<i32>().is_ok()) =>
-            {
-                words
-            }
-            _ => text,
+    let text = stderr.trim();
+    let text = text
+        .split_once("execution error: ")
+        .map_or(text, |(_, rest)| rest);
+    let text = match text.rsplit_once(" (") {
+        Some((words, number))
+            if number
+                .strip_suffix(')')
+                .is_some_and(|n| n.parse::<i32>().is_ok()) =>
+        {
+            words
         }
-    });
+        _ => text,
+    };
+    let lines: Vec<&str> = text
+        .split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let detail = lines
+        .iter()
+        .rev()
+        .find(|line| line.starts_with("helper-install: ") || line.starts_with("helper-uninstall: "))
+        .or(lines.first());
     let h = &s().helper;
     PromptError::Failed(match (detail, code) {
-        (Some(detail), _) => detail.to_string(),
+        (Some(detail), _) => (*detail).to_string(),
         (None, Some(code)) => (h.exit_unknown)(&code.to_string()),
         (None, None) => h.prompt_terminated.to_string(),
     })
@@ -388,6 +399,42 @@ mod tests {
         assert_eq!(
             prompt_error(Some(1), "launchctl bootstrap failed (try again)\n"),
             PromptError::Failed("launchctl bootstrap failed (try again)".into())
+        );
+        // `do shell script` joins the script's lines with carriage returns:
+        // the script's own last line says why, once, whatever came before.
+        assert_eq!(
+            prompt_error(
+                Some(1),
+                "0:298: execution error: Bootstrap failed: 5: Input/output error\r\
+                 Bootstrap failed: 5: Input/output error\r\
+                 helper-install: launchctl bootstrap system \
+                 /Library/LaunchDaemons/io.github.glide01.boxpilot.helper.plist failed (1)\n"
+            ),
+            PromptError::Failed(
+                "helper-install: launchctl bootstrap system \
+                 /Library/LaunchDaemons/io.github.glide01.boxpilot.helper.plist failed"
+                    .into()
+            )
+        );
+        assert_eq!(
+            prompt_error(
+                Some(1),
+                "0:310: execution error: rm: /x: Operation not permitted\r\
+                 helper-uninstall: the helper is still loaded after launchctl bootout (1)\n"
+            ),
+            PromptError::Failed(
+                "helper-uninstall: the helper is still loaded after launchctl bootout".into()
+            )
+        );
+        // A command that stopped the script before it could say why: its
+        // own error, the first line.
+        assert_eq!(
+            prompt_error(
+                Some(1),
+                "0:298: execution error: chown: /x: Operation not permitted\r\
+                 mv: /y: No such file or directory (1)\n"
+            ),
+            PromptError::Failed("chown: /x: Operation not permitted".into())
         );
         assert_eq!(
             prompt_error(Some(3), "\n  \n"),

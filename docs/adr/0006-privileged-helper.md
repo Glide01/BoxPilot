@@ -808,6 +808,13 @@ not from a BoxPilot setting:
     manifest in `bin`, the state in `state` beside it (0700, with the
     owner record), so nothing written as state lands among the binaries;
   - the plist in `/Library/LaunchDaemons/`.
+
+  Each file is its source's bytes and nothing else: not `install(1)`,
+  whose Apple version copies the source's extended attributes and ACL
+  too. A downloaded app's files carry the quarantine flag ("Open Anyway"
+  leaves it there), and since macOS 27 launchd refuses to load a plist
+  that has it; an ACL would grant on root's copy whatever it grants on
+  the user's file.
 - **Login Items.** macOS 13+ lists the helper under Login Items. If the
   user turns it off there, BoxPilot treats it as not installed: launchd no
   longer serves its socket, so TUN can't be chosen, and Settings › TUN

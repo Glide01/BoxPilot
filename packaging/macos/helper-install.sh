@@ -12,7 +12,8 @@
 # account the owner; the last account an administrator authorized holds it.
 #
 # From BoxPilot.app it copies, all root:wheel, nothing writable by anyone
-# else, into fixed paths (boxpilot_protocol::endpoint::macos):
+# else, into fixed paths (boxpilot_protocol::endpoint::macos), each file's
+# bytes and nothing else of it (copy_in: no extended attribute, no ACL):
 #
 #   Contents/MacOS/boxpilot-helper
 #       -> /Library/PrivilegedHelperTools/io.github.glide01.boxpilot.helper  0755
@@ -61,6 +62,41 @@ umask 022
 die() {
     printf 'helper-install: %s\n' "$*" >&2
     exit 1
+}
+
+# copy_in's file before its rename, removed if the script stops first.
+tmp=
+trap '[ -z "$tmp" ] || /bin/rm -f "$tmp"' EXIT
+
+# copy_in <source> <destination> <mode>: the source's bytes, and nothing
+# else of it, as a new root:wheel file renamed over the destination, so a
+# running helper keeps the file it started from. Not install(1): Apple's
+# copies the source's extended attributes and ACL too. A downloaded app's
+# files carry the quarantine flag ("Open Anyway" leaves it there), and
+# since macOS 27 launchd refuses a plist that has it; an ACL would grant
+# on root's copy whatever it grants on the user's file.
+copy_in() {
+    tmp=$(/usr/bin/mktemp "${2%/*}/.boxpilot-install.XXXXXX") || die "can't create a file beside $2"
+    /bin/cat "$1" >"$tmp" || die "can't copy $1"
+    /usr/sbin/chown root:wheel "$tmp"
+    /bin/chmod "$3" "$tmp"
+    # Nor an ACL it inherited from its directory.
+    /bin/chmod -N "$tmp"
+    /usr/bin/xattr -d com.apple.quarantine "$tmp" 2>/dev/null || :
+    if /usr/bin/xattr -p com.apple.quarantine "$tmp" >/dev/null 2>&1; then
+        die "can't clear the quarantine flag of $2"
+    fi
+    /bin/mv -f "$tmp" "$2"
+    tmp=
+}
+
+# launchd's last words on the label in the system log, if it said any:
+# launchctl's own are mostly "5: Input/output error", whatever the cause.
+launchd_says() {
+    /usr/bin/log show --last 2m --info --style compact \
+        --predicate "process == \"launchd\" AND eventMessage CONTAINS \"$LABEL\"" 2>/dev/null |
+        /usr/bin/grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} ' | /usr/bin/grep -F "$LABEL" |
+        /usr/bin/tail -n 1 | /usr/bin/sed 's/^[^]]*] //' | /usr/bin/cut -c 1-300
 }
 
 [ "$#" -eq 2 ] || die "usage: helper-install.sh <BoxPilot.app/Contents> <owner uid>"
@@ -122,16 +158,12 @@ fi
 /usr/bin/install -d -o root -g wheel -m 0755 "$BIN_DIR"
 /usr/bin/install -d -o root -g wheel -m 0700 "$STATE_DIR"
 
-# The files. install replaces a file with a new one rather than writing
-# into it, so a running helper keeps the binary it started from.
-/usr/bin/install -o root -g wheel -m 0755 "$helper" "$HELPER_PATH"
-/usr/bin/install -o root -g wheel -m 0755 "$sing_box" "$SING_BOX_PATH"
-/usr/bin/install -o root -g wheel -m 0644 "$manifest" "$MANIFEST_PATH"
-# The administrator vetted this payload with the prompt: a quarantine flag
-# copied from the download must not stop launchd from running it.
-for file in "$HELPER_PATH" "$SING_BOX_PATH"; do
-    /usr/bin/xattr -d com.apple.quarantine "$file" 2>/dev/null || :
-done
+# The files, each a new one (copy_in). The administrator vetted this
+# payload with the prompt: a quarantine flag from the download mustn't
+# stop launchd from loading or running it.
+copy_in "$helper" "$HELPER_PATH" 0755
+copy_in "$sing_box" "$SING_BOX_PATH" 0755
+copy_in "$manifest" "$MANIFEST_PATH" 0644
 
 # The owner, written beside and renamed: the helper, which reads it for
 # each connection, sees the old record or the new one, never half.
@@ -145,13 +177,18 @@ owner_new=$STATE_DIR/owner.new
 /bin/chmod 0600 "$owner_new"
 /bin/mv -f "$owner_new" "$OWNER_FILE"
 
-/usr/bin/install -o root -g wheel -m 0644 "$plist" "$PLIST_PATH"
+copy_in "$plist" "$PLIST_PATH" 0644
 # An administrator may have disabled it before (launchctl disable persists).
 /bin/launchctl enable "system/$LABEL"
+# launchctl says the same on every try: its words once, with launchd's.
 tries=0
-until /bin/launchctl bootstrap system "$PLIST_PATH"; do
+until said=$(/bin/launchctl bootstrap system "$PLIST_PATH" 2>&1); do
     tries=$((tries + 1))
-    [ "$tries" -le 5 ] || die "launchctl bootstrap system $PLIST_PATH failed"
+    if [ "$tries" -gt 5 ]; then
+        said=$(printf '%s' "$said" | /usr/bin/tr '\n' ' ')
+        why=$(launchd_says)
+        die "launchctl bootstrap system $PLIST_PATH failed${said:+: ${said% }}${why:+ (launchd: $why)}"
+    fi
     /bin/sleep 1
 done
 /bin/launchctl print "system/$LABEL" >/dev/null 2>&1 || die "the helper is not loaded"

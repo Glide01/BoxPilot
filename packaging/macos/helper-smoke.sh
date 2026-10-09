@@ -23,7 +23,10 @@
 #
 #   install          copy BoxPilot.app out of the DMG and run its
 #                    helper-install.sh with sudo, standing in for the
-#                    administrator prompt; the runner's account is the owner
+#                    administrator prompt; the runner's account is the owner.
+#                    Then from a copy whose payload carries the quarantine
+#                    flag and an ACL, neither of which the installed files
+#                    may carry
 #   inspect          the installed paths' owners and modes, the files against
 #                    the app's, the manifest's hash, the launchd-created
 #                    socket, launchctl print
@@ -472,6 +475,32 @@ step_install() {
     fi
     launchd_print >/dev/null || fail "the refused installs unloaded the helper"
     ok "installed, twice, and malformed arguments were refused"
+
+    # From a downloaded copy: its files carry the quarantine flag ("Open
+    # Anyway" leaves it there) and here an ACL too, both of which Apple's
+    # install(1) would copy. Neither may reach the installed files: since
+    # macOS 27 launchd refuses a quarantined plist (this runner's macOS
+    # still loads one, so the check is on the flag itself), and an ACL
+    # would grant on root's copy what it grants on the user's file.
+    downloaded=$WORK/Downloaded.app
+    ditto "$APP" "$downloaded"
+    quarantine="0083;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)"
+    for file in MacOS/boxpilot-helper MacOS/sing-box "$BUNDLE_PAYLOAD_DIR/manifest.json" \
+        "$BUNDLE_PAYLOAD_DIR/$LABEL.plist"; do
+        xattr -w com.apple.quarantine "$quarantine" "$downloaded/Contents/$file"
+        chmod +a "everyone allow write" "$downloaded/Contents/$file"
+    done
+    sudo /bin/sh "$downloaded/Contents/$BUNDLE_PAYLOAD_DIR/$INSTALL_SCRIPT" "$downloaded/Contents" "$(id -u)" ||
+        fail "$INSTALL_SCRIPT failed from a quarantined copy (above)"
+    for path in "$HELPER_PATH" "$SING_BOX_PATH" "$MANIFEST_PATH" "$PLIST_PATH"; do
+        if sudo xattr -p com.apple.quarantine "$path" >/dev/null 2>&1; then
+            fail "$path carries the quarantine flag of the app it was installed from"
+        fi
+        acl=$(sudo ls -led "$path" | sed 1d)
+        [ -z "$acl" ] || fail "$path carries an ACL: $acl"
+    done
+    launchd_print >/dev/null || fail "launchctl print system/$LABEL fails after the install from a quarantined copy"
+    ok "installed from a quarantined copy with ACLs: the installed files carry neither"
 }
 
 step_inspect() {
