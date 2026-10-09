@@ -199,7 +199,6 @@ pub static ZH_CN: Strings = Strings {
         no_closed_title: "没有已关闭的连接",
         no_closed_hint: "最近关闭的连接会保留在这里。",
         col_time: "时间",
-        col_network: "网络",
         col_host: "主机",
         col_chain: "出站链",
         col_speed: "速度",

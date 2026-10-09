@@ -404,7 +404,6 @@ pub struct Connections {
     pub no_closed_hint: &'static str,
     /// The list's column headings.
     pub col_time: &'static str,
-    pub col_network: &'static str,
     pub col_host: &'static str,
     pub col_chain: &'static str,
     pub col_speed: &'static str,

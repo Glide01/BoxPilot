@@ -300,15 +300,23 @@ pub fn rule_label(connection: &Connection) -> &str {
     }
 }
 
+/// What separates the hops of a chain as the UI writes it.
+pub const CHAIN_SEPARATOR: &str = " → ";
+
 /// The outbound path in reading order — the group the rule picked first,
 /// the node that carried the traffic last: `节点选择 → auto → 香港-01`.
 /// sing-box reports `chain` the other way round (final outbound first).
 pub fn chain_label(connection: &Connection) -> String {
+    chain_hops(connection).join(CHAIN_SEPARATOR)
+}
+
+/// The hops of `chain_label`, one by one: just the outbound when sing-box
+/// reported no chain.
+pub fn chain_hops(connection: &Connection) -> Vec<&str> {
     if connection.chain.is_empty() {
-        return connection.outbound.clone();
+        return vec![connection.outbound.as_str()];
     }
-    let hops: Vec<&str> = connection.chain.iter().rev().map(String::as_str).collect();
-    hops.join(" → ")
+    connection.chain.iter().rev().map(String::as_str).collect()
 }
 
 /// The executable name behind the connection (`chrome.exe`), when sing-box
@@ -866,10 +874,12 @@ mod tests {
     fn chain_reads_group_to_node() {
         let mut c = conn("a", 1);
         assert_eq!(chain_label(&c), "节点选择 → auto → 香港-01");
+        assert_eq!(chain_hops(&c), ["节点选择", "auto", "香港-01"]);
         c.chain = vec!["direct".into()];
         assert_eq!(chain_label(&c), "direct");
         c.chain.clear();
         assert_eq!(chain_label(&c), "香港-01", "falls back to the outbound");
+        assert_eq!(chain_hops(&c), ["香港-01"]);
     }
 
     #[test]

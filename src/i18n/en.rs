@@ -215,7 +215,6 @@ pub static EN: Strings = Strings {
         no_closed_title: "No closed connections",
         no_closed_hint: "Recently closed connections are kept here.",
         col_time: "Time",
-        col_network: "Network",
         col_host: "Host",
         col_chain: "Chain",
         col_speed: "Speed",

@@ -8,10 +8,16 @@
 //! 速率、总流量;暂停时前面加 Paused 徽标)、Pause / Resume 和 Close all
 //! (过滤让一部分打开的连接不显示时变成「Close N matching」,只关闭过滤后
 //! 剩下的打开连接:在一个后台任务里逐个 `close`);下面是带表头的连接表,
-//! 每行一行:建立时间(等宽,毫秒部分淡色)、网络徽标(TCP/UDP,与柱状图
-//! 同色)、主机 + 进程名、出站链(组 → 节点)、实时速率与累计流量(各两行:
-//! 上行在上、下行在下;已关闭的连接没有速率)、存活时长、关闭按钮(仅打开
-//! 的连接)。网络/协议、入站、规则在详情面板里。
+//! 每行一行:建立时间(等宽,毫秒部分淡色)、主机(前面是网络徽标 TCP/UDP,
+//! 与柱状图同色;后面是进程名)、出站链(组 → 节点)、实时速率与累计流量
+//! (各两行:上行在上、下行在下;已关闭的连接没有速率)、存活时长、关闭
+//! 按钮(仅打开的连接)。协议、入站、规则在详情面板里。
+//!
+//! 列宽随列表宽度走(`ColumnLayout`,宽度在绘制时量出,变了下一帧重排):
+//! 其余列定宽,主机和出站链按 5 : 4 分剩下的宽度;窄时建立时间先去掉毫秒,
+//! 再整列让出(详情面板里有),让 880px 窗口展开侧边栏时主机和出站链仍有
+//! 可读的宽度。出站链放不下时前面的组先省略、节点留着(`节点选… → 香港-01`);
+//! 主机和出站链可能被截断时悬停显示全文。
 //!
 //! 列表用 gpui 的 `uniform_list` 虚拟化:只渲染可见行,上千条已关闭 + 大量
 //! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)按
@@ -41,9 +47,9 @@ use crate::actions::{
 use crate::core::bytefmt::{format_bytes, format_speed};
 use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
-    chain_label, close_targets, connection_age_ms, format_elapsed, host_label, process_name,
+    chain_hops, close_targets, connection_age_ms, format_elapsed, host_label, process_name,
     select_connections, summarize, CloseTargets, ConnectionFilter, ConnectionSort, ConnectionView,
-    SortDirection,
+    SortDirection, CHAIN_SEPARATOR,
 };
 use crate::core::singbox_api::{Connection, ConnectionTable};
 use crate::core::timefmt::format_clock_ms;
@@ -52,9 +58,9 @@ use crate::state::{AppState, Connections};
 use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    choice_select, connect_button, empty_state, form_input, full_text_tooltip, page_header,
-    page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, IconLabel,
-    Segment, TextLabel,
+    choice_select, connect_button, empty_state, form_input, full_text_tooltip, may_truncate,
+    page_header, page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange,
+    IconLabel, Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -63,6 +69,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
     scroll::ScrollableElement,
     theme::Theme,
+    tooltip::Tooltip,
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt,
 };
 use std::rc::Rc;
@@ -72,11 +79,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// size, so all rows must match.
 const ROW_HEIGHT: f32 = 36.;
 /// Column widths and the space between columns, shared by the header and
-/// the rows. Sized so the host and chain keep some room in an 880px window
-/// beside the expanded sidebar.
+/// the rows. The fixed columns take what they need; the host and the chain
+/// share the rest, five to four (`HOST_GROW`, `CHAIN_GROW`), and the time
+/// gives up its milliseconds, then its column, on a narrow list
+/// (`TimeColumn::for_width`) so they keep some room even in an 880px
+/// window beside the expanded sidebar.
 const COLUMN_GAP: f32 = 8.;
-const TIME_WIDTH: f32 = 104.;
-const NETWORK_WIDTH: f32 = 56.;
+/// The rows' horizontal padding and border, either side together.
+const ROW_INSET: f32 = 26.;
+/// `HH:MM:SS.mmm` and `HH:MM:SS` in the small mono font.
+const TIME_FULL_WIDTH: f32 = 104.;
+const TIME_CLOCK_WIDTH: f32 = 70.;
+/// The TCP / UDP badge in front of the host.
+const NETWORK_BADGE_WIDTH: f32 = 34.;
 /// The rate and traffic cells stack up over down, so they fit the widest
 /// figure (`↑ 1023.9 KB/s`, `↑ 1023.9 MB`) in the mono font, not a pair.
 const RATE_WIDTH: f32 = 96.;
@@ -85,6 +100,18 @@ const TRAFFIC_WIDTH: f32 = 84.;
 const STACKED_LINE: f32 = 14.;
 const AGE_WIDTH: f32 = 56.;
 const CLOSE_WIDTH: f32 = 28.;
+/// How the host and the chain split what the fixed columns leave.
+const HOST_GROW: f32 = 5.;
+const CHAIN_GROW: f32 = 4.;
+/// What the host and the chain together should keep before the time
+/// column takes room from them: its seconds, then its milliseconds.
+const TEXT_ROOM_FOR_CLOCK: f32 = 300.;
+const TEXT_ROOM_FOR_FULL_TIME: f32 = 420.;
+/// Generous average advance of one Latin letter (a CJK one counts two,
+/// see `widgets::may_truncate`) in the host's and the chain's font, to
+/// tell from a column's width whether its text may be cut short.
+const HOST_LETTER: f32 = 8.5;
+const CHAIN_LETTER: f32 = 7.;
 /// The details panel's width; on a narrow window it takes most of the list
 /// (`DETAILS_MAX_FRACTION`), leaving the selected row's start in view.
 const DETAILS_WIDTH: f32 = 380.;
@@ -107,6 +134,75 @@ struct Frozen {
     table: Rc<ConnectionTable>,
     now_ms: i64,
     pause: u64,
+}
+
+/// What the Time column shows, by how wide the list is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TimeColumn {
+    /// `HH:MM:SS.mmm`, the milliseconds faded.
+    Full,
+    /// `HH:MM:SS`.
+    Clock,
+    /// No Time column: the details panel has the time, and Duration says
+    /// how long ago.
+    Hidden,
+}
+
+impl TimeColumn {
+    /// The column and the gap before the next, or nothing.
+    fn room(self) -> f32 {
+        match self {
+            TimeColumn::Full => TIME_FULL_WIDTH + COLUMN_GAP,
+            TimeColumn::Clock => TIME_CLOCK_WIDTH + COLUMN_GAP,
+            TimeColumn::Hidden => 0.,
+        }
+    }
+
+    /// The fullest form that still leaves the host and the chain the room
+    /// they ask for (`TEXT_ROOM_FOR_*`) in a list `list_width` wide.
+    fn for_width(list_width: f32) -> Self {
+        let text = shared_width(list_width, TimeColumn::Hidden);
+        if text - TimeColumn::Full.room() >= TEXT_ROOM_FOR_FULL_TIME {
+            TimeColumn::Full
+        } else if text - TimeColumn::Clock.room() >= TEXT_ROOM_FOR_CLOCK {
+            TimeColumn::Clock
+        } else {
+            TimeColumn::Hidden
+        }
+    }
+}
+
+/// What the host and the chain columns share in a list `list_width` wide
+/// with `time` in front.
+fn shared_width(list_width: f32, time: TimeColumn) -> f32 {
+    // Host, chain, rate, traffic, duration, close: five gaps between.
+    let fixed = RATE_WIDTH + TRAFFIC_WIDTH + AGE_WIDTH + CLOSE_WIDTH + 5. * COLUMN_GAP;
+    (list_width - ROW_INSET - fixed - time.room()).max(0.)
+}
+
+/// The list's columns at its current width, shared by the header and the
+/// rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ColumnLayout {
+    time: TimeColumn,
+    /// Latin letters of host and of chain that surely fit their columns
+    /// (`widgets::may_truncate`'s `room`): longer ones get a tooltip.
+    host_room: usize,
+    chain_room: usize,
+}
+
+impl ColumnLayout {
+    fn for_width(list_width: f32) -> Self {
+        let time = TimeColumn::for_width(list_width);
+        let text = shared_width(list_width, time) / (HOST_GROW + CHAIN_GROW);
+        let host = text * HOST_GROW - NETWORK_BADGE_WIDTH - COLUMN_GAP;
+        let chain = text * CHAIN_GROW;
+        Self {
+            time,
+            host_room: (host / HOST_LETTER).max(0.) as usize,
+            chain_room: (chain / CHAIN_LETTER).max(0.) as usize,
+        }
+    }
 }
 
 /// What the cached row order was derived from.
@@ -150,6 +246,9 @@ pub struct ConnectionsPage {
     frozen: Option<Frozen>,
     /// Pauses so far.
     pauses: u64,
+    /// The list's width as last drawn (`None` before the first frame),
+    /// which decides its columns (`ColumnLayout`).
+    list_width: Option<Pixels>,
     /// The connection the details panel shows; `None` = panel closed.
     selected: Option<SharedString>,
     /// Where `selected` last was in `rows`, so Up / Down carry on from there
@@ -214,6 +313,7 @@ impl ConnectionsPage {
             targets_key: None,
             frozen: None,
             pauses: 0,
+            list_width: None,
             selected: None,
             selected_ix: None,
             details_opened: 0,
@@ -401,15 +501,11 @@ pub(super) fn unix_millis_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Single-line text that ellipsizes instead of wrapping.
-/// Letters of a host the narrowest row shows whole; longer ones get a
-/// tooltip with all of it.
-const HOST_ROOM: usize = 24;
-
 /// Flex-shrink factor for the part of a line that should give way first
 /// when it runs short (gpui shrinks in proportion to factor × width).
 const SHRINK_FIRST: f32 = 100.;
 
+/// Single-line text that ellipsizes instead of wrapping.
 fn clipped(text: impl Into<SharedString>) -> Div {
     div()
         .min_w_0()
@@ -457,6 +553,7 @@ fn connection_row(
     connections: &Entity<Connections>,
     page: &WeakEntity<ConnectionsPage>,
     selected: bool,
+    layout: ColumnLayout,
     networks: NetworkColors,
     theme: &Theme,
 ) -> Stateful<Div> {
@@ -468,22 +565,26 @@ fn connection_row(
         (theme.foreground, theme.muted_foreground)
     };
 
-    let (clock, fraction) = format_clock_ms(connection.created_at);
-    let time = div()
-        .flex_none()
-        .w(px(TIME_WIDTH))
-        .h_flex()
-        .text_sm()
-        .font_family(theme.mono_font_family.clone())
-        .child(div().text_color(fg).child(clock))
-        .child(div().text_color(muted).child(fraction));
+    let time = (layout.time != TimeColumn::Hidden).then(|| {
+        let (clock, fraction) = format_clock_ms(connection.created_at);
+        div()
+            .flex_none()
+            .w(px(layout.time.room() - COLUMN_GAP))
+            .h_flex()
+            .text_sm()
+            .font_family(theme.mono_font_family.clone())
+            .child(div().text_color(fg).child(clock))
+            .when(layout.time == TimeColumn::Full, |time| {
+                time.child(div().text_color(muted).child(fraction))
+            })
+    });
 
+    // The host, after its network's badge, and the process that opened it.
     let network = connection.network.to_lowercase();
     let badge_color = networks.of(&network, theme);
     let badge = div()
         .flex_none()
-        .w(px(NETWORK_WIDTH))
-        .h_flex()
+        .w(px(NETWORK_BADGE_WIDTH))
         .child(tag_badge(
             theme,
             if network.is_empty() {
@@ -497,15 +598,14 @@ fn connection_row(
                 badge_color
             },
         ));
-
-    // Host and chain share what the fixed columns leave, two to one.
     let mut host = div()
         .h_flex()
-        .flex_grow(2.)
+        .flex_grow(HOST_GROW)
         .flex_basis(px(0.))
-        .min_w(px(80.))
+        .min_w_0()
         .items_center()
-        .gap_2()
+        .gap(px(COLUMN_GAP))
+        .child(badge)
         .child(full_text_tooltip(
             div()
                 .min_w_0()
@@ -517,7 +617,7 @@ fn connection_row(
                 .text_color(fg),
             SharedString::from(format!("conn-host-{}", connection.id)),
             host_label(connection),
-            HOST_ROOM,
+            layout.host_room,
         ));
     if let Some(process) = process_name(connection) {
         host = host.child(
@@ -530,12 +630,35 @@ fn connection_row(
         );
     }
 
-    // Clipped short of room; the details panel has it in full.
-    let chain = clipped(chain_label(connection))
-        .flex_grow(1.)
+    // Group → … → node. Short of room, the groups give way and the node
+    // stays: `节点选… → 香港-01`. The tooltip has it all.
+    let hops = chain_hops(connection);
+    let label = hops.join(CHAIN_SEPARATOR);
+    let chain = div()
+        .id(SharedString::from(format!("conn-chain-{}", connection.id)))
+        .h_flex()
+        .flex_grow(CHAIN_GROW)
         .flex_basis(px(0.))
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
         .text_xs()
-        .text_color(muted);
+        .text_color(muted)
+        .map(|chain| match hops.split_last() {
+            Some((node, groups)) if !groups.is_empty() => chain
+                .child(
+                    clipped(groups.join(CHAIN_SEPARATOR))
+                        .flex_shrink(SHRINK_FIRST)
+                        .min_w(px(12.)),
+                )
+                .child(div().flex_none().child(CHAIN_SEPARATOR))
+                .child(clipped(node.to_string())),
+            _ => chain.child(clipped(label.clone())),
+        })
+        .when(may_truncate(&label, layout.chain_room), |chain| {
+            let label = SharedString::from(label);
+            chain.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+        });
 
     // The current rate, up over down; a line that is idle this second
     // fades, and a closed connection has none.
@@ -620,8 +743,7 @@ fn connection_row(
             page.update(cx, |page, cx| page.select(id.clone(), window, cx))
                 .ok();
         })
-        .child(time)
-        .child(badge)
+        .children(time)
         .child(host)
         .child(chain)
         .child(rate)
@@ -645,7 +767,7 @@ fn stacked_cell(width: f32, theme: &Theme) -> Div {
 }
 
 /// The list's column headings, on the rows' columns.
-fn column_header(theme: &Theme) -> Div {
+fn column_header(layout: ColumnLayout, theme: &Theme) -> Div {
     let t = &s().connections;
     let heading = |text: &'static str| div().whitespace_nowrap().child(text);
     div()
@@ -653,7 +775,7 @@ fn column_header(theme: &Theme) -> Div {
         .h(px(32.))
         .w_full()
         // The rows' padding and their (transparent) border.
-        .px(px(13.))
+        .px(px(ROW_INSET / 2.))
         .h_flex()
         .items_center()
         .gap(px(COLUMN_GAP))
@@ -662,17 +784,23 @@ fn column_header(theme: &Theme) -> Div {
         .text_color(theme.muted_foreground)
         .border_b_1()
         .border_color(theme.border)
-        .child(heading(t.col_time).flex_none().w(px(TIME_WIDTH)))
-        .child(heading(t.col_network).flex_none().w(px(NETWORK_WIDTH)))
+        .when(layout.time != TimeColumn::Hidden, |header| {
+            header.child(
+                heading(t.col_time)
+                    .flex_none()
+                    .w(px(layout.time.room() - COLUMN_GAP)),
+            )
+        })
         .child(
             heading(t.col_host)
-                .flex_grow(2.)
+                .flex_grow(HOST_GROW)
                 .flex_basis(px(0.))
-                .min_w(px(80.)),
+                .min_w_0()
+                .overflow_hidden(),
         )
         .child(
             heading(t.col_chain)
-                .flex_grow(1.)
+                .flex_grow(CHAIN_GROW)
                 .flex_basis(px(0.))
                 .min_w_0()
                 .overflow_hidden(),
@@ -941,6 +1069,9 @@ impl Render for ConnectionsPage {
             let list_page = page.clone();
             let selected = self.selected.clone();
             let frozen = frozen.clone();
+            // Before the first frame has measured the list: as wide as it
+            // gets, corrected on the next frame.
+            let layout = ColumnLayout::for_width(self.list_width.map_or(f32::MAX, f32::from));
             let list = uniform_list("connections-list", rows.len(), move |range, _, cx| {
                 let networks = NetworkColors::new(cx.theme());
                 let theme = cx.theme();
@@ -962,6 +1093,7 @@ impl Render for ConnectionsPage {
                             &list_connections,
                             &list_page,
                             selected.as_deref() == Some(rows[ix].as_str()),
+                            layout,
                             networks,
                             theme,
                         )
@@ -975,11 +1107,38 @@ impl Render for ConnectionsPage {
             .track_scroll(&self.scroll)
             .size_full();
 
+            // Measures the list as it paints: a width that changes the
+            // columns lays the list out again on the next frame (gpui
+            // ignores a notify sent while it draws).
+            let measure_page = page.clone();
+            let measure = canvas(
+                move |bounds, window, cx| {
+                    let Some(page) = measure_page.upgrade() else {
+                        return;
+                    };
+                    let width = bounds.size.width;
+                    let relayout = page.update(cx, |this, _| {
+                        let before = this.list_width.map(|w| ColumnLayout::for_width(w.into()));
+                        this.list_width = Some(width);
+                        before != Some(ColumnLayout::for_width(width.into()))
+                    });
+                    if relayout {
+                        window.on_next_frame(move |_, cx| page.update(cx, |_, cx| cx.notify()));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
             let list = div()
+                .relative()
                 .v_flex()
                 .flex_1()
                 .min_h_0()
-                .child(column_header(theme))
+                .child(measure)
+                .child(column_header(layout, theme))
                 .child(
                     div()
                         .relative()
@@ -1042,5 +1201,34 @@ impl Render for ConnectionsPage {
             .children(empty)
             .child(body);
         page_layout(head, body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ColumnLayout, TimeColumn};
+
+    /// The list's width in an 880px window beside the expanded and the
+    /// collapsed sidebar, and in the 1000px window BoxPilot opens at.
+    const EXPANDED_880: f32 = 606.;
+    const COLLAPSED_880: f32 = 750.;
+    const COLLAPSED_1000: f32 = 870.;
+
+    #[test]
+    fn time_gives_way_on_a_narrow_list() {
+        assert_eq!(TimeColumn::for_width(EXPANDED_880), TimeColumn::Hidden);
+        assert_eq!(TimeColumn::for_width(COLLAPSED_880), TimeColumn::Clock);
+        assert_eq!(TimeColumn::for_width(COLLAPSED_1000), TimeColumn::Full);
+        assert_eq!(TimeColumn::for_width(0.), TimeColumn::Hidden);
+    }
+
+    #[test]
+    fn host_and_chain_keep_room_in_the_narrowest_window() {
+        let layout = ColumnLayout::for_width(EXPANDED_880);
+        // `127.0.0.1:8000`, `节点选择 → 香港-01`.
+        assert!(layout.host_room >= 12, "{layout:?}");
+        assert!(layout.chain_room >= 16, "{layout:?}");
+        let wide = ColumnLayout::for_width(1200.);
+        assert!(wide.host_room > layout.host_room && wide.chain_room > layout.chain_room);
     }
 }
