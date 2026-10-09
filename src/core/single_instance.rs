@@ -686,10 +686,11 @@ mod unix {
             }
         }
 
-        /// A fresh base directory for [`private_dir`] tests.
+        /// A fresh base directory for [`private_dir`] tests. Short: a
+        /// socket goes in one, and macOS's `$TMPDIR` is long already, with
+        /// 104 bytes for a socket's whole path.
         fn temp_base(tag: &str) -> PathBuf {
-            let base = std::env::temp_dir()
-                .join(format!("boxpilot-si-private-{}-{tag}", std::process::id()));
+            let base = std::env::temp_dir().join(format!("bp-si-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             std::fs::create_dir_all(&base).unwrap();
             base
@@ -791,7 +792,7 @@ mod unix {
         #[test]
         fn a_refused_dir_gets_neither_a_link_nor_the_lock() {
             let base = temp_base("unused");
-            let theirs = base.join("boxpilot-theirs");
+            let theirs = base.join("theirs");
             std::fs::create_dir(&theirs).unwrap();
             let paths = InstancePaths {
                 lock: theirs.join("boxpilot.lock"),
