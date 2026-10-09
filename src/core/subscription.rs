@@ -1,6 +1,7 @@
 use crate::core::atomic_write::{
     stage_atomic, unique_suffix, write_atomic, FileAccess, StagedFile,
 };
+use crate::core::jsonc;
 use crate::core::paths::create_private_dir;
 use crate::core::settings::{AppSettings, HTTP_TIMEOUT_SECS, PROXY_PORT};
 use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi};
@@ -82,9 +83,11 @@ pub struct Fetched {
 /// whole `experimental` (clash_api, v2ray_api, cache_file), which
 /// `prepare_config` merges into rather than replaces (ADR 0002). A `services`
 /// array left empty is removed, so strip ∘ prepare gives back the canonical
-/// form, short of the `cache_file.enabled` that prepare forces on.
+/// form, short of the `cache_file.enabled` that prepare forces on. The input
+/// may carry what sing-box tolerates beyond JSON — comments, trailing commas
+/// (`jsonc`) — the output is plain JSON.
 pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
-    let mut json: Value = serde_json::from_str(config_data)
+    let mut json: Value = jsonc::parse(config_data)
         .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
     let obj = json
         .as_object_mut()
@@ -174,7 +177,7 @@ impl Default for RuntimeOptions {
 /// on it (`is_api_bind_failure`), and `AppState` starts once more, which
 /// picks again (`ApiPortRetry`).
 pub fn pick_api_port(config_data: &str, proxy_port: u16) -> Result<u16, String> {
-    let json: Value = serde_json::from_str(config_data)
+    let json: Value = jsonc::parse(config_data)
         .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
     let mut excluded = config_listen_ports(&json);
     excluded.push(proxy_port);
@@ -219,7 +222,7 @@ fn object_entry<'a>(parent: &'a mut Value, key: &str) -> &'a mut Value {
 /// controllers included (ADR 0002). sing-box may set the system proxy here:
 /// it runs as the user.
 pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String, String> {
-    let mut json: Value = serde_json::from_str(config_data)
+    let mut json: Value = jsonc::parse(config_data)
         .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
     let root = json
         .as_object_mut()
@@ -1164,6 +1167,44 @@ mod tests {
         assert_eq!(json["experimental"], parse(SUB_CONFIG)["experimental"]);
         assert_eq!(json["outbounds"], parse(SUB_CONFIG)["outbounds"]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// sing-box runs a config with comments and trailing commas, so it
+    /// imports; the snapshot is plain JSON, which a start reads back.
+    #[test]
+    fn import_local_accepts_comments_and_trailing_commas() {
+        let dir = sub_temp_dir("import_jsonc");
+        let src = dir.join("source.json");
+        let commented = r#"
+            // exported from another client
+            {
+              "log": {"level": "warn"}, # quiet
+              /* the nodes */
+              "outbounds": [
+                {"type": "direct", "tag": "direct"},
+              ],
+            }
+        "#;
+        fs::write(&src, commented).unwrap();
+        let config_path = dir.join("configs").join("p1.json");
+        let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
+        assert_eq!(outcome.commit(), Ok(true));
+        let saved = fs::read_to_string(&config_path).unwrap();
+        assert_eq!(
+            parse(&saved),
+            serde_json::json!({"log": {"level": "warn"}, "outbounds": [{"type": "direct", "tag": "direct"}]})
+        );
+        assert!(prepare_config(&saved, proxy_opts()).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A canonical config edited by hand to carry a comment still starts.
+    #[test]
+    fn prepare_accepts_a_commented_config() {
+        let commented = "{\n  // hand-edited\n  \"outbounds\": [{\"type\": \"direct\", \"tag\": \"direct\"}],\n}";
+        assert!(pick_api_port(commented, PROXY_PORT).is_ok());
+        let prepared = parse(&prepare_config(commented, proxy_opts()).unwrap());
+        assert_eq!(prepared["outbounds"][0]["tag"], "direct");
     }
 
     #[test]
