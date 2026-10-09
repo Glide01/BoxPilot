@@ -8,16 +8,24 @@
 //! 速率、总流量;暂停时前面加 Paused 徽标)、Pause / Resume 和 Close all
 //! (过滤让一部分打开的连接不显示时变成「Close N matching」,只关闭过滤后
 //! 剩下的打开连接:在一个后台任务里逐个 `close`);下面是带表头的连接表,
-//! 每行一行:建立时间(等宽,毫秒部分淡色)、主机(前面是网络徽标 TCP/UDP,
-//! 与柱状图同色;后面是进程名)、出站链(组 → 节点)、实时速率与累计流量
-//! (各两行:上行在上、下行在下;已关闭的连接没有速率)、存活时长、关闭
-//! 按钮(仅打开的连接)。协议、入站、规则在详情面板里。
+//! 每行一行,列由 `core::connection_columns` 决定(列的取舍和宽度记在设置
+//! `connections_columns` 里)。默认六列:建立时间(等宽,毫秒部分淡色)、
+//! 主机(前面是网络徽标 TCP/UDP,与柱状图同色;后面是进程名)、出站链
+//! (组 → 节点)、实时速率与累计流量(各两行:上行在上、下行在下;已关闭的
+//! 连接没有速率)、存活时长;另有网络(徽标 + 嗅探到的协议)、目标地址、
+//! 进程、来源、入站、规则可以打开 —— 网络或进程有了自己的列,主机格里就
+//! 不再重复徽标或进程名。最后是关闭按钮(仅打开的连接),它不是一列,总在。
 //!
-//! 列宽随列表宽度走(`ColumnLayout`,宽度在绘制时量出,变了下一帧重排):
-//! 其余列定宽,主机和出站链按 5 : 4 分剩下的宽度;窄时建立时间先去掉毫秒,
-//! 再整列让出(详情面板里有),让 880px 窗口展开侧边栏时主机和出站链仍有
-//! 可读的宽度。出站链放不下时前面的组先省略、节点留着(`节点选… → 香港-01`);
-//! 主机和出站链可能被截断时悬停显示全文。
+//! 列宽(`layout_columns`,列表宽度在绘制时量出,变了下一帧重排):其余列
+//! 用用户给的宽度,主机和出站链按权重(默认 5 : 4)分剩下的宽度,不小于各自
+//! 的最小宽度;不够时建立时间先去掉毫秒(只按宽度决定格式,不会自己藏起
+//! 来),再让其余列向各自的最小宽度收,还不够才整表横向滚动(表头和行一起
+//! 滚)。主机和出站链在两帧之间按比例跟着窗口宽度走,表头和行用同一份宽度,
+//! 始终对齐。表头相邻两列之间的缝是拖动手柄(`drag_boundary`):拖动时缝
+//! 跟着指针走,远离主机 / 出站链那一侧的列变宽变窄,另一侧最近的主机或出站
+//! 链让出 / 收回宽度;双击手柄恢复那一列的默认宽度。拖动中的宽度只画在页面
+//! 上(`ColumnDrag`),松开鼠标才写进设置。出站链放不下时前面的组先省略、
+//! 节点留着(`节点选… → 香港-01`);文字列可能被截断时悬停显示全文。
 //!
 //! 列表用 gpui 的 `uniform_list` 虚拟化:只渲染可见行,上千条已关闭 + 大量
 //! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)按
@@ -45,11 +53,15 @@ use crate::actions::{
     CONNECTION_DETAILS_CONTEXT,
 };
 use crate::core::bytefmt::{format_bytes, format_speed};
+use crate::core::connection_columns::{
+    boundary_target, drag_boundary, layout_columns, time_shows_millis, ColumnId, ColumnLayout,
+    ColumnSettings, PlacedColumn, CLOSE_WIDTH, COLUMN_GAP, ROW_INSET,
+};
 use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
-    chain_hops, close_targets, connection_age_ms, format_elapsed, host_label, process_name,
-    select_connections, summarize, CloseTargets, ConnectionFilter, ConnectionSort, ConnectionView,
-    SortDirection, CHAIN_SEPARATOR,
+    chain_hops, close_targets, connection_age_ms, format_elapsed, host_label, inbound_label,
+    process_name, rule_label, select_connections, summarize, CloseTargets, ConnectionFilter,
+    ConnectionSort, ConnectionView, SortDirection, CHAIN_SEPARATOR,
 };
 use crate::core::singbox_api::{Connection, ConnectionTable};
 use crate::core::timefmt::format_clock_ms;
@@ -78,40 +90,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Fixed row height — `uniform_list` lays every row out at the first row's
 /// size, so all rows must match.
 const ROW_HEIGHT: f32 = 36.;
-/// Column widths and the space between columns, shared by the header and
-/// the rows. The fixed columns take what they need; the host and the chain
-/// share the rest, five to four (`HOST_GROW`, `CHAIN_GROW`), and the time
-/// gives up its milliseconds, then its column, on a narrow list
-/// (`TimeColumn::for_width`) so they keep some room even in an 880px
-/// window beside the expanded sidebar.
-const COLUMN_GAP: f32 = 8.;
-/// The rows' horizontal padding and border, either side together.
-const ROW_INSET: f32 = 26.;
-/// `HH:MM:SS.mmm` and `HH:MM:SS` in the small mono font.
-const TIME_FULL_WIDTH: f32 = 104.;
-const TIME_CLOCK_WIDTH: f32 = 70.;
-/// The TCP / UDP badge in front of the host.
+/// The column headings' row.
+const HEADER_HEIGHT: f32 = 32.;
+/// Before the first frame has measured the list: about the list in the
+/// window BoxPilot opens at, corrected on the next frame.
+const GUESSED_LIST_WIDTH: f32 = 870.;
+/// The grab band of a column boundary in the header: the gap between two
+/// headings.
+const RESIZE_HANDLE_WIDTH: f32 = COLUMN_GAP;
+/// The TCP / UDP badge (in front of the host while the Network column is
+/// hidden).
 const NETWORK_BADGE_WIDTH: f32 = 34.;
-/// The rate and traffic cells stack up over down, so they fit the widest
-/// figure (`↑ 1023.9 KB/s`, `↑ 1023.9 MB`) in the mono font, not a pair.
-const RATE_WIDTH: f32 = 96.;
-const TRAFFIC_WIDTH: f32 = 84.;
 /// Line height in the stacked cells: two lines inside `ROW_HEIGHT`.
 const STACKED_LINE: f32 = 14.;
-const AGE_WIDTH: f32 = 56.;
-const CLOSE_WIDTH: f32 = 28.;
-/// How the host and the chain split what the fixed columns leave.
-const HOST_GROW: f32 = 5.;
-const CHAIN_GROW: f32 = 4.;
-/// What the host and the chain together should keep before the time
-/// column takes room from them: its seconds, then its milliseconds.
-const TEXT_ROOM_FOR_CLOCK: f32 = 300.;
-const TEXT_ROOM_FOR_FULL_TIME: f32 = 420.;
 /// Generous average advance of one Latin letter (a CJK one counts two,
-/// see `widgets::may_truncate`) in the host's and the chain's font, to
-/// tell from a column's width whether its text may be cut short.
+/// see `widgets::may_truncate`) in the host's font and in the small one of
+/// the other text columns, to tell from a column's width whether its text
+/// may be cut short.
 const HOST_LETTER: f32 = 8.5;
-const CHAIN_LETTER: f32 = 7.;
+const SMALL_LETTER: f32 = 7.;
 /// The details panel's width; on a narrow window it takes most of the list
 /// (`DETAILS_MAX_FRACTION`), leaving the selected row's start in view.
 const DETAILS_WIDTH: f32 = 380.;
@@ -136,73 +133,66 @@ struct Frozen {
     pause: u64,
 }
 
-/// What the Time column shows, by how wide the list is.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum TimeColumn {
-    /// `HH:MM:SS.mmm`, the milliseconds faded.
-    Full,
-    /// `HH:MM:SS`.
-    Clock,
-    /// No Time column: the details panel has the time, and Duration says
-    /// how long ago.
-    Hidden,
+/// A column boundary being dragged: which one, where the pointer went
+/// down, the columns and their layout then (each step is computed from
+/// those, so nothing drifts), and the columns as the drag has them now —
+/// drawn, but only saved to the settings when the button comes up.
+struct ColumnDrag {
+    boundary: usize,
+    start_x: Pixels,
+    settings: ColumnSettings,
+    layout: ColumnLayout,
+    current: ColumnSettings,
 }
 
-impl TimeColumn {
-    /// The column and the gap before the next, or nothing.
-    fn room(self) -> f32 {
-        match self {
-            TimeColumn::Full => TIME_FULL_WIDTH + COLUMN_GAP,
-            TimeColumn::Clock => TIME_CLOCK_WIDTH + COLUMN_GAP,
-            TimeColumn::Hidden => 0.,
-        }
-    }
+/// The value gpui carries while a column boundary is dragged; it draws
+/// nothing (the columns themselves follow the pointer).
+struct ColumnResize;
 
-    /// The fullest form that still leaves the host and the chain the room
-    /// they ask for (`TEXT_ROOM_FOR_*`) in a list `list_width` wide.
-    fn for_width(list_width: f32) -> Self {
-        let text = shared_width(list_width, TimeColumn::Hidden);
-        if text - TimeColumn::Full.room() >= TEXT_ROOM_FOR_FULL_TIME {
-            TimeColumn::Full
-        } else if text - TimeColumn::Clock.room() >= TEXT_ROOM_FOR_CLOCK {
-            TimeColumn::Clock
-        } else {
-            TimeColumn::Hidden
-        }
+impl Render for ColumnResize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
     }
 }
 
-/// What the host and the chain columns share in a list `list_width` wide
-/// with `time` in front.
-fn shared_width(list_width: f32, time: TimeColumn) -> f32 {
-    // Host, chain, rate, traffic, duration, close: five gaps between.
-    let fixed = RATE_WIDTH + TRAFFIC_WIDTH + AGE_WIDTH + CLOSE_WIDTH + 5. * COLUMN_GAP;
-    (list_width - ROW_INSET - fixed - time.room()).max(0.)
+/// What every row needs to know about the columns: their layout, and
+/// whether Network and Process have columns of their own (then the host
+/// cell leaves out its badge and the process name).
+struct RowColumns {
+    layout: ColumnLayout,
+    network_column: bool,
+    process_column: bool,
 }
 
-/// The list's columns at its current width, shared by the header and the
-/// rows.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ColumnLayout {
-    time: TimeColumn,
-    /// Latin letters of host and of chain that surely fit their columns
-    /// (`widgets::may_truncate`'s `room`): longer ones get a tooltip.
-    host_room: usize,
-    chain_room: usize,
-}
-
-impl ColumnLayout {
-    fn for_width(list_width: f32) -> Self {
-        let time = TimeColumn::for_width(list_width);
-        let text = shared_width(list_width, time) / (HOST_GROW + CHAIN_GROW);
-        let host = text * HOST_GROW - NETWORK_BADGE_WIDTH - COLUMN_GAP;
-        let chain = text * CHAIN_GROW;
+impl RowColumns {
+    fn new(layout: ColumnLayout) -> Self {
+        let shown = |id| layout.width_of(id).is_some();
         Self {
-            time,
-            host_room: (host / HOST_LETTER).max(0.) as usize,
-            chain_room: (chain / CHAIN_LETTER).max(0.) as usize,
+            network_column: shown(ColumnId::Network),
+            process_column: shown(ColumnId::Process),
+            layout,
         }
     }
+}
+
+/// Size a header or row cell as its column: a fixed column at its width;
+/// Host and Chain share the rest of the row in proportion to their widths,
+/// which come to exactly those widths at the list width they were laid out
+/// for, and stay in step while the window resizes before the next layout.
+fn column_cell(cell: Div, column: PlacedColumn) -> Div {
+    if column.id.is_flexible() {
+        cell.flex_basis(px(0.))
+            .flex_grow(column.width)
+            .flex_shrink_0()
+            .min_w(px(column.id.min_width()))
+    } else {
+        cell.flex_none().w(px(column.width))
+    }
+}
+
+/// Latin letters that surely fit `width` at `letter` px each.
+fn room(width: f32, letter: f32) -> usize {
+    (width / letter).max(0.) as usize
 }
 
 /// What the cached row order was derived from.
@@ -247,8 +237,12 @@ pub struct ConnectionsPage {
     /// Pauses so far.
     pauses: u64,
     /// The list's width as last drawn (`None` before the first frame),
-    /// which decides its columns (`ColumnLayout`).
+    /// which the columns are laid out for (`layout_columns`).
     list_width: Option<Pixels>,
+    /// Sideways, when the shown columns' minimums don't fit the list.
+    h_scroll: ScrollHandle,
+    /// `Some` while a column boundary is being dragged.
+    column_drag: Option<ColumnDrag>,
     /// The connection the details panel shows; `None` = panel closed.
     selected: Option<SharedString>,
     /// Where `selected` last was in `rows`, so Up / Down carry on from there
@@ -316,6 +310,8 @@ impl ConnectionsPage {
             frozen: None,
             pauses: 0,
             list_width: None,
+            h_scroll: ScrollHandle::new(),
+            column_drag: None,
             selected: None,
             selected_ix: None,
             details_opened: 0,
@@ -444,6 +440,77 @@ impl ConnectionsPage {
         cx.notify();
     }
 
+    /// The columns in effect: the settings', or a drag's while it lasts.
+    fn columns(&self, cx: &App) -> ColumnSettings {
+        match &self.column_drag {
+            Some(drag) => drag.current.clone(),
+            None => self.app_state.read(cx).settings.connections_columns.clone(),
+        }
+    }
+
+    fn list_width(&self) -> f32 {
+        self.list_width.map_or(GUESSED_LIST_WIDTH, f32::from)
+    }
+
+    /// The pointer went down on the boundary after column `boundary`: a
+    /// drag may follow, or this is the second click of a double-click,
+    /// which puts the column the boundary resizes back to its default
+    /// width.
+    fn press_column_boundary(
+        &mut self,
+        boundary: usize,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = self.columns(cx);
+        let layout = layout_columns(&settings, self.list_width());
+        if event.click_count >= 2 {
+            self.column_drag = None;
+            if let Some((target, _)) = boundary_target(&layout, boundary) {
+                let mut reset = settings;
+                reset.reset_width(layout.columns[target].id);
+                self.app_state
+                    .update(cx, |state, cx| state.set_connections_columns(reset, cx));
+            }
+            cx.notify();
+            return;
+        }
+        self.column_drag = Some(ColumnDrag {
+            boundary,
+            start_x: event.position.x,
+            current: settings.clone(),
+            settings,
+            layout,
+        });
+        cx.notify();
+    }
+
+    /// The pointer moved during the drag of `boundary`'s handle.
+    fn drag_column_boundary(&mut self, boundary: usize, x: Pixels, cx: &mut Context<Self>) {
+        let Some(drag) = self.column_drag.as_mut().filter(|d| d.boundary == boundary) else {
+            return;
+        };
+        let delta = f32::from(x - drag.start_x);
+        let next = drag_boundary(&drag.settings, &drag.layout, drag.boundary, delta);
+        if next != drag.current {
+            drag.current = next;
+            cx.notify();
+        }
+    }
+
+    /// The button came up: keep what the drag made.
+    fn end_column_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.column_drag.take() else {
+            return;
+        };
+        if drag.current != drag.settings {
+            self.app_state.update(cx, |state, cx| {
+                state.set_connections_columns(drag.current, cx)
+            });
+        }
+        cx.notify();
+    }
+
     /// Recompute the row order only when the data or the view settings
     /// moved, and Close all's targets only when the live data or the filter
     /// did.
@@ -542,7 +609,8 @@ impl NetworkColors {
     }
 }
 
-/// One list row. Every row has the same structure (closed rows keep an
+/// One list row: a cell per shown column (`RowColumns`), then the close
+/// button's slot. Every row has the same structure (closed rows keep an
 /// empty slot where the close button goes) so heights stay uniform.
 /// `closed_since` marks a paused row whose connection has closed since the
 /// pause (its Close button was used, say): it reads as closed, its frozen
@@ -555,7 +623,7 @@ fn connection_row(
     connections: &Entity<Connections>,
     page: &WeakEntity<ConnectionsPage>,
     selected: bool,
-    layout: ColumnLayout,
+    columns: &RowColumns,
     networks: NetworkColors,
     theme: &Theme,
 ) -> Stateful<Div> {
@@ -566,127 +634,216 @@ fn connection_row(
     } else {
         (theme.foreground, theme.muted_foreground)
     };
-
-    let time = (layout.time != TimeColumn::Hidden).then(|| {
-        let (clock, fraction) = format_clock_ms(connection.created_at);
-        div()
-            .flex_none()
-            .w(px(layout.time.room() - COLUMN_GAP))
-            .h_flex()
-            .text_sm()
-            .font_family(theme.mono_font_family.clone())
-            .child(div().text_color(fg).child(clock))
-            .when(layout.time == TimeColumn::Full, |time| {
-                time.child(div().text_color(muted).child(fraction))
-            })
-    });
-
-    // The host, after its network's badge, and the process that opened it.
-    let network = connection.network.to_lowercase();
-    let badge_color = networks.of(&network, theme);
-    let badge = div()
-        .flex_none()
-        .w(px(NETWORK_BADGE_WIDTH))
-        .child(tag_badge(
-            theme,
-            if network.is_empty() {
-                "—".to_string()
-            } else {
-                network.to_uppercase()
-            },
-            if closed {
-                badge_color.opacity(0.6)
-            } else {
-                badge_color
-            },
-        ));
-    let mut host = div()
-        .h_flex()
-        .flex_grow(HOST_GROW)
-        .flex_basis(px(0.))
-        .min_w_0()
-        .items_center()
-        .gap(px(COLUMN_GAP))
-        .child(badge)
-        .child(full_text_tooltip(
+    let cell_id = |column: &str| SharedString::from(format!("conn-{column}-{}", connection.id));
+    // A line of small muted text that ellipsizes, its whole text in a
+    // tooltip when it may not fit.
+    let small_text = |column: &str, text: String, width: f32| {
+        full_text_tooltip(
             div()
                 .min_w_0()
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
-                .flex_shrink(1.)
-                .text_sm()
-                .text_color(fg),
-            SharedString::from(format!("conn-host-{}", connection.id)),
-            host_label(connection),
-            layout.host_room,
-        ));
-    if let Some(process) = process_name(connection) {
-        host = host.child(
-            // Gives way before the host does.
-            clipped(process.to_string())
-                .flex_shrink(SHRINK_FIRST)
-                .max_w(px(140.))
                 .text_xs()
                 .text_color(muted),
-        );
-    }
-
-    // Group → … → node. Short of room, the groups give way and the node
-    // stays: `节点选… → 香港-01`. The tooltip has it all.
-    let hops = chain_hops(connection);
-    let label = hops.join(CHAIN_SEPARATOR);
-    let chain = div()
-        .id(SharedString::from(format!("conn-chain-{}", connection.id)))
-        .h_flex()
-        .flex_grow(CHAIN_GROW)
-        .flex_basis(px(0.))
-        .min_w_0()
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_xs()
-        .text_color(muted)
-        .map(|chain| match hops.split_last() {
-            Some((node, groups)) if !groups.is_empty() => chain
-                .child(
-                    clipped(groups.join(CHAIN_SEPARATOR))
-                        .flex_shrink(SHRINK_FIRST)
-                        .min_w(px(12.)),
-                )
-                .child(div().flex_none().child(CHAIN_SEPARATOR))
-                .child(clipped(node.to_string())),
-            _ => chain.child(clipped(label.clone())),
-        })
-        .when(may_truncate(&label, layout.chain_room), |chain| {
-            let label = SharedString::from(label);
-            chain.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
-        });
-
-    // The current rate, up over down; a line that is idle this second
-    // fades, and a closed connection has none.
-    let idle = muted.opacity(0.5);
-    let rate_line = |arrow: &str, rate: u64| {
-        div()
-            .text_color(if rate == 0 { idle } else { fg })
-            .child(format!("{arrow} {}", format_speed(rate)))
+            cell_id(column),
+            text,
+            room(width, SMALL_LETTER),
+        )
     };
-    let rate = stacked_cell(RATE_WIDTH, theme).when(!closed, |cell| {
-        cell.child(rate_line("↑", connection.uplink))
-            .child(rate_line("↓", connection.downlink))
-    });
 
-    let traffic = stacked_cell(TRAFFIC_WIDTH, theme)
-        .text_color(muted)
-        .child(format!("↑ {}", format_bytes(connection.uplink_total)))
-        .child(format!("↓ {}", format_bytes(connection.downlink_total)));
+    // The network's badge: TCP blue, UDP orange.
+    let network = connection.network.to_lowercase();
+    let badge_color = networks.of(&network, theme);
+    let badge = || {
+        div()
+            .flex_none()
+            .w(px(NETWORK_BADGE_WIDTH))
+            .child(tag_badge(
+                theme,
+                if network.is_empty() {
+                    "—".to_string()
+                } else {
+                    network.to_uppercase()
+                },
+                if closed {
+                    badge_color.opacity(0.6)
+                } else {
+                    badge_color
+                },
+            ))
+    };
 
-    let age = div()
-        .flex_none()
-        .w(px(AGE_WIDTH))
-        .text_right()
-        .text_xs()
-        .text_color(muted)
-        .child(format_elapsed(connection_age_ms(connection, now_ms)));
+    let mut row = div()
+        .id(SharedString::from(format!("conn-row-{}", connection.id)))
+        .relative()
+        .h(px(ROW_HEIGHT))
+        .w_full()
+        .px_3()
+        .h_flex()
+        .items_center()
+        .gap(px(COLUMN_GAP))
+        .rounded(px(8.))
+        .border_1()
+        .cursor_pointer();
+
+    for column in &columns.layout.columns {
+        let width = column.width;
+        let cell = match column.id {
+            ColumnId::Time => {
+                let (clock, fraction) = format_clock_ms(connection.created_at);
+                div()
+                    .h_flex()
+                    .overflow_hidden()
+                    .text_sm()
+                    .font_family(theme.mono_font_family.clone())
+                    .child(div().text_color(fg).child(clock))
+                    .when(time_shows_millis(width), |time| {
+                        time.child(div().text_color(muted).child(fraction))
+                    })
+            }
+            // The badge, then the sniffed protocol if there was one.
+            ColumnId::Network => div()
+                .h_flex()
+                .items_center()
+                .gap_1p5()
+                .overflow_hidden()
+                .child(badge())
+                .when(!connection.protocol.is_empty(), |cell| {
+                    cell.child(
+                        clipped(connection.protocol.clone())
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                }),
+            // The host, after its network's badge and before the process
+            // that opened it, unless those have columns of their own.
+            ColumnId::Host => {
+                let badge_room = if columns.network_column {
+                    0.
+                } else {
+                    NETWORK_BADGE_WIDTH + COLUMN_GAP
+                };
+                let mut host = div()
+                    .h_flex()
+                    .items_center()
+                    .gap(px(COLUMN_GAP))
+                    .when(!columns.network_column, |host| host.child(badge()))
+                    .child(full_text_tooltip(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .flex_shrink(1.)
+                            .text_sm()
+                            .text_color(fg),
+                        cell_id("host"),
+                        host_label(connection),
+                        room(width - badge_room, HOST_LETTER),
+                    ));
+                if let Some(process) = process_name(connection).filter(|_| !columns.process_column)
+                {
+                    host = host.child(
+                        // Gives way before the host does.
+                        clipped(process.to_string())
+                            .flex_shrink(SHRINK_FIRST)
+                            .max_w(px(140.))
+                            .text_xs()
+                            .text_color(muted),
+                    );
+                }
+                host
+            }
+            ColumnId::Destination => div().h_flex().child(small_text(
+                "destination",
+                connection.destination.clone(),
+                width,
+            )),
+            ColumnId::Process => div().h_flex().child(small_text(
+                "process",
+                process_name(connection).unwrap_or_default().to_string(),
+                width,
+            )),
+            ColumnId::Source => {
+                div()
+                    .h_flex()
+                    .child(small_text("source", connection.source.clone(), width))
+            }
+            ColumnId::Inbound => div().h_flex().child(small_text(
+                "inbound",
+                inbound_label(connection).to_string(),
+                width,
+            )),
+            ColumnId::Rule => div().h_flex().child(small_text(
+                "rule",
+                rule_label(connection).to_string(),
+                width,
+            )),
+            // Group → … → node. Short of room, the groups give way and the
+            // node stays: `节点选… → 香港-01`. The tooltip has it all.
+            ColumnId::Chain => {
+                let hops = chain_hops(connection);
+                let label = hops.join(CHAIN_SEPARATOR);
+                let long = may_truncate(&label, room(width, SMALL_LETTER));
+                div().h_flex().child(
+                    div()
+                        .id(cell_id("chain"))
+                        .h_flex()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .text_color(muted)
+                        .map(|chain| match hops.split_last() {
+                            Some((node, groups)) if !groups.is_empty() => chain
+                                .child(
+                                    clipped(groups.join(CHAIN_SEPARATOR))
+                                        .flex_shrink(SHRINK_FIRST)
+                                        .min_w(px(12.)),
+                                )
+                                .child(div().flex_none().child(CHAIN_SEPARATOR))
+                                .child(clipped(node.to_string())),
+                            _ => chain.child(clipped(label.clone())),
+                        })
+                        .when(long, |chain| {
+                            let label = SharedString::from(label);
+                            chain.tooltip(move |window, cx| {
+                                Tooltip::new(label.clone()).build(window, cx)
+                            })
+                        }),
+                )
+            }
+            // The current rate, up over down; a line that is idle this
+            // second fades, and a closed connection has none.
+            ColumnId::Speed => {
+                let idle = muted.opacity(0.5);
+                let rate_line = |arrow: &str, rate: u64| {
+                    stacked_line(format!("{arrow} {}", format_speed(rate)))
+                        .text_color(if rate == 0 { idle } else { fg })
+                };
+                stacked_cell(theme).when(!closed, |cell| {
+                    cell.child(rate_line("↑", connection.uplink))
+                        .child(rate_line("↓", connection.downlink))
+                })
+            }
+            ColumnId::Traffic => stacked_cell(theme)
+                .text_color(muted)
+                .child(stacked_line(format!(
+                    "↑ {}",
+                    format_bytes(connection.uplink_total)
+                )))
+                .child(stacked_line(format!(
+                    "↓ {}",
+                    format_bytes(connection.downlink_total)
+                ))),
+            ColumnId::Duration => clipped(format_elapsed(connection_age_ms(connection, now_ms)))
+                .text_right()
+                .text_xs()
+                .text_color(muted),
+        };
+        row = row.child(column_cell(cell.min_w_0(), *column));
+    }
 
     let close_slot = div().flex_none().w(px(CLOSE_WIDTH)).when(!closed, |slot| {
         let connections = connections.clone();
@@ -708,73 +865,87 @@ fn connection_row(
     let id = SharedString::from(connection.id.clone());
     let page = page.clone();
     let accent = theme.primary;
-    div()
-        .id(SharedString::from(format!("conn-row-{}", connection.id)))
-        .relative()
-        .h(px(ROW_HEIGHT))
-        .w_full()
-        .px_3()
-        .h_flex()
-        .items_center()
-        .gap(px(COLUMN_GAP))
-        .rounded(px(8.))
-        .border_1()
-        .cursor_pointer()
-        .map(|row| {
-            if selected {
-                // Raised like the reference's flagged row: a tinted band,
-                // its outline, and a bar down its leading edge.
-                row.bg(accent.opacity(0.10))
-                    .border_color(accent.opacity(0.45))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(-1.))
-                            .top(px(7.))
-                            .bottom(px(7.))
-                            .w(px(3.))
-                            .rounded_full()
-                            .bg(accent),
-                    )
-            } else {
-                row.border_color(transparent_black())
-                    .hover(move |style| style.bg(hover_bg))
-            }
-        })
-        .on_click(move |_, window, cx| {
-            page.update(cx, |page, cx| page.select(id.clone(), window, cx))
-                .ok();
-        })
-        .children(time)
-        .child(host)
-        .child(chain)
-        .child(rate)
-        .child(traffic)
-        .child(age)
-        .child(close_slot)
+    row.map(|row| {
+        if selected {
+            // Raised like the reference's flagged row: a tinted band,
+            // its outline, and a bar down its leading edge.
+            row.bg(accent.opacity(0.10))
+                .border_color(accent.opacity(0.45))
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(-1.))
+                        .top(px(7.))
+                        .bottom(px(7.))
+                        .w(px(3.))
+                        .rounded_full()
+                        .bg(accent),
+                )
+        } else {
+            row.border_color(transparent_black())
+                .hover(move |style| style.bg(hover_bg))
+        }
+    })
+    .on_click(move |_, window, cx| {
+        page.update(cx, |page, cx| page.select(id.clone(), window, cx))
+            .ok();
+    })
+    .child(close_slot)
 }
 
-/// A fixed-width, right-aligned cell of two small mono lines (up over
-/// down).
-fn stacked_cell(width: f32, theme: &Theme) -> Div {
+/// A right-aligned cell of two small mono lines (up over down).
+fn stacked_cell(theme: &Theme) -> Div {
     div()
-        .flex_none()
-        .w(px(width))
         .v_flex()
-        .items_end()
-        .whitespace_nowrap()
+        .overflow_hidden()
         .text_xs()
         .line_height(px(STACKED_LINE))
         .font_family(theme.mono_font_family.clone())
 }
 
-/// The list's column headings, on the rows' columns.
-fn column_header(layout: ColumnLayout, theme: &Theme) -> Div {
-    let t = &s().connections;
-    let heading = |text: &'static str| div().whitespace_nowrap().child(text);
+/// One line of a `stacked_cell`, ellipsized if the column was made too
+/// narrow for it.
+fn stacked_line(text: String) -> Div {
     div()
+        .w_full()
+        .text_right()
+        .overflow_hidden()
+        .text_ellipsis()
+        .whitespace_nowrap()
+        .child(text)
+}
+
+/// The heading of `id`'s column.
+fn column_title(id: ColumnId) -> &'static str {
+    let t = &s().connections;
+    match id {
+        ColumnId::Time => t.col_time,
+        ColumnId::Network => t.col_network,
+        ColumnId::Host => t.col_host,
+        ColumnId::Destination => t.col_destination,
+        ColumnId::Process => t.col_process,
+        ColumnId::Source => t.col_source,
+        ColumnId::Inbound => t.col_inbound,
+        ColumnId::Rule => t.col_rule,
+        ColumnId::Chain => t.col_chain,
+        ColumnId::Speed => t.col_speed,
+        ColumnId::Traffic => t.col_traffic,
+        ColumnId::Duration => t.col_duration,
+    }
+}
+
+/// The figures' headings sit over their right-aligned figures.
+fn right_aligned(id: ColumnId) -> bool {
+    matches!(id, ColumnId::Speed | ColumnId::Traffic | ColumnId::Duration)
+}
+
+/// The list's column headings, on the rows' columns, with a handle on
+/// each boundary between two of them: drag it to resize (see
+/// `drag_boundary`), double-click it for the default width.
+fn column_header(layout: &ColumnLayout, page: &WeakEntity<ConnectionsPage>, theme: &Theme) -> Div {
+    let mut header = div()
         .flex_none()
-        .h(px(32.))
+        .h(px(HEADER_HEIGHT))
         .w_full()
         // The rows' padding and their (transparent) border.
         .px(px(ROW_INSET / 2.))
@@ -785,47 +956,73 @@ fn column_header(layout: ColumnLayout, theme: &Theme) -> Div {
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.muted_foreground)
         .border_b_1()
-        .border_color(theme.border)
-        .when(layout.time != TimeColumn::Hidden, |header| {
-            header.child(
-                heading(t.col_time)
-                    .flex_none()
-                    .w(px(layout.time.room() - COLUMN_GAP)),
-            )
+        .border_color(theme.border);
+    for (ix, column) in layout.columns.iter().enumerate() {
+        let heading = clipped(column_title(column.id))
+            .w_full()
+            .when(right_aligned(column.id), |heading| heading.text_right());
+        let cell = column_cell(div().relative().h_full().h_flex().items_center(), *column)
+            .child(heading)
+            .when(boundary_target(layout, ix).is_some(), |cell| {
+                cell.child(resize_handle(ix, page, theme))
+            });
+        header = header.child(cell);
+    }
+    header.child(div().flex_none().w(px(CLOSE_WIDTH)))
+}
+
+/// The grab band on the boundary after column `boundary`: the gap to the
+/// next heading, with a hairline that lights up under the pointer.
+fn resize_handle(
+    boundary: usize,
+    page: &WeakEntity<ConnectionsPage>,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let group = SharedString::from(format!("conn-col-resize-{boundary}"));
+    let (press, drag, up, up_out) = (page.clone(), page.clone(), page.clone(), page.clone());
+    div()
+        .id(ElementId::NamedInteger(
+            "conn-col-resize".into(),
+            boundary as u64,
+        ))
+        .group(group.clone())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(px(-(COLUMN_GAP + RESIZE_HANDLE_WIDTH) / 2.))
+        .w(px(RESIZE_HANDLE_WIDTH))
+        .h_flex()
+        .justify_center()
+        .items_center()
+        .cursor_col_resize()
+        .child(
+            div()
+                .w(px(1.))
+                .h(px(14.))
+                .bg(theme.border)
+                .group_hover(group, |line| line.h_full().bg(theme.primary)),
+        )
+        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            cx.stop_propagation();
+            press
+                .update(cx, |this, cx| {
+                    this.press_column_boundary(boundary, event, cx)
+                })
+                .ok();
         })
-        .child(
-            heading(t.col_host)
-                .flex_grow(HOST_GROW)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .overflow_hidden(),
-        )
-        .child(
-            heading(t.col_chain)
-                .flex_grow(CHAIN_GROW)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .overflow_hidden(),
-        )
-        .child(
-            heading(t.col_speed)
-                .flex_none()
-                .w(px(RATE_WIDTH))
-                .text_right(),
-        )
-        .child(
-            heading(t.col_traffic)
-                .flex_none()
-                .w(px(TRAFFIC_WIDTH))
-                .text_right(),
-        )
-        .child(
-            heading(t.col_duration)
-                .flex_none()
-                .w(px(AGE_WIDTH))
-                .text_right(),
-        )
-        .child(div().flex_none().w(px(CLOSE_WIDTH)))
+        .on_drag(ColumnResize, |_, _, _, cx| cx.new(|_| ColumnResize))
+        .on_drag_move(move |event: &DragMoveEvent<ColumnResize>, _, cx| {
+            drag.update(cx, |this, cx| {
+                this.drag_column_boundary(boundary, event.event.position.x, cx)
+            })
+            .ok();
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            up.update(cx, |this, cx| this.end_column_drag(cx)).ok();
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+            up_out.update(cx, |this, cx| this.end_column_drag(cx)).ok();
+        })
 }
 
 impl Render for ConnectionsPage {
@@ -1071,9 +1268,11 @@ impl Render for ConnectionsPage {
             let list_page = page.clone();
             let selected = self.selected.clone();
             let frozen = frozen.clone();
-            // Before the first frame has measured the list: as wide as it
-            // gets, corrected on the next frame.
-            let layout = ColumnLayout::for_width(self.list_width.map_or(f32::MAX, f32::from));
+            let layout = layout_columns(&self.columns(cx), self.list_width());
+            let overflows = layout.overflows(self.list_width());
+            let min_row_width = layout.min_width;
+            let header = column_header(&layout, &page, theme);
+            let row_columns = Rc::new(RowColumns::new(layout));
             let list = uniform_list("connections-list", rows.len(), move |range, _, cx| {
                 let networks = NetworkColors::new(cx.theme());
                 let theme = cx.theme();
@@ -1095,7 +1294,7 @@ impl Render for ConnectionsPage {
                             &list_connections,
                             &list_page,
                             selected.as_deref() == Some(rows[ix].as_str()),
-                            layout,
+                            &row_columns,
                             networks,
                             theme,
                         )
@@ -1109,9 +1308,9 @@ impl Render for ConnectionsPage {
             .track_scroll(&self.scroll)
             .size_full();
 
-            // Measures the list as it paints: a width that changes the
-            // columns lays the list out again on the next frame (gpui
-            // ignores a notify sent while it draws).
+            // Measures the list as it paints: a new width lays the columns
+            // out again on the next frame (gpui ignores a notify sent
+            // while it draws). Host and Chain follow the width in between.
             let measure_page = page.clone();
             let measure = canvas(
                 move |bounds, window, cx| {
@@ -1120,9 +1319,8 @@ impl Render for ConnectionsPage {
                     };
                     let width = bounds.size.width;
                     let relayout = page.update(cx, |this, _| {
-                        let before = this.list_width.map(|w| ColumnLayout::for_width(w.into()));
-                        this.list_width = Some(width);
-                        before != Some(ColumnLayout::for_width(width.into()))
+                        let before = this.list_width.replace(width);
+                        before.is_none_or(|before| (before - width).abs() >= px(0.5))
                     });
                     if relayout {
                         window.on_next_frame(move |_, cx| page.update(cx, |_, cx| cx.notify()));
@@ -1134,22 +1332,59 @@ impl Render for ConnectionsPage {
             .top_0()
             .left_0()
             .size_full();
+            // The header and the rows scroll sideways together, when the
+            // columns' minimums don't fit; the rows scroll down on their
+            // own, their scrollbar kept in view over the list's right edge.
+            let table = div()
+                .id("connections-table")
+                .size_full()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .track_scroll(&self.h_scroll)
+                .child(
+                    div()
+                        .v_flex()
+                        .h_full()
+                        .w_full()
+                        .min_w(px(min_row_width))
+                        .child(header)
+                        .child(div().flex_1().min_h_0().pt_1().child(list)),
+                );
+            // While a boundary is dragged: the resize cursor everywhere
+            // over the list, no row hovering under it, and the drag ends
+            // wherever the button comes up.
+            let drag_cover = self.column_drag.is_some().then(|| {
+                let end_page = page.clone();
+                div()
+                    .id("connections-column-drag")
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .cursor_col_resize()
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        end_page
+                            .update(cx, |this, cx| this.end_column_drag(cx))
+                            .ok();
+                    })
+            });
             let list = div()
                 .relative()
                 .v_flex()
                 .flex_1()
                 .min_h_0()
                 .child(measure)
-                .child(column_header(layout, theme))
+                .child(table)
                 .child(
                     div()
-                        .relative()
-                        .flex_1()
-                        .min_h_0()
-                        .pt_1()
-                        .child(list)
+                        .absolute()
+                        .top(px(HEADER_HEIGHT + 4.))
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
                         .vertical_scrollbar(&self.scroll),
-                );
+                )
+                .when(overflows, |list| list.horizontal_scrollbar(&self.h_scroll))
+                .children(drag_cover);
             (None, Some(list))
         };
 
@@ -1203,34 +1438,5 @@ impl Render for ConnectionsPage {
             .children(empty)
             .child(body);
         page_layout(head, body)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ColumnLayout, TimeColumn};
-
-    /// The list's width in an 880px window beside the expanded and the
-    /// collapsed sidebar, and in the 1000px window BoxPilot opens at.
-    const EXPANDED_880: f32 = 606.;
-    const COLLAPSED_880: f32 = 750.;
-    const COLLAPSED_1000: f32 = 870.;
-
-    #[test]
-    fn time_gives_way_on_a_narrow_list() {
-        assert_eq!(TimeColumn::for_width(EXPANDED_880), TimeColumn::Hidden);
-        assert_eq!(TimeColumn::for_width(COLLAPSED_880), TimeColumn::Clock);
-        assert_eq!(TimeColumn::for_width(COLLAPSED_1000), TimeColumn::Full);
-        assert_eq!(TimeColumn::for_width(0.), TimeColumn::Hidden);
-    }
-
-    #[test]
-    fn host_and_chain_keep_room_in_the_narrowest_window() {
-        let layout = ColumnLayout::for_width(EXPANDED_880);
-        // `127.0.0.1:8000`, `节点选择 → 香港-01`.
-        assert!(layout.host_room >= 12, "{layout:?}");
-        assert!(layout.chain_room >= 16, "{layout:?}");
-        let wide = ColumnLayout::for_width(1200.);
-        assert!(wide.host_room > layout.host_room && wide.chain_room > layout.chain_room);
     }
 }

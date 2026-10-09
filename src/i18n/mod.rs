@@ -404,7 +404,13 @@ pub struct Connections {
     pub no_closed_hint: &'static str,
     /// The list's column headings.
     pub col_time: &'static str,
+    pub col_network: &'static str,
     pub col_host: &'static str,
+    pub col_destination: &'static str,
+    pub col_process: &'static str,
+    pub col_source: &'static str,
+    pub col_inbound: &'static str,
+    pub col_rule: &'static str,
     pub col_chain: &'static str,
     pub col_speed: &'static str,
     pub col_traffic: &'static str,
