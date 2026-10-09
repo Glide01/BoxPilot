@@ -13,7 +13,6 @@ pub static EN: Strings = Strings {
         copy: "Copy",
         copied: "Copied",
         search: "Search",
-        live: "Live",
         start: "Start",
         stop: "Stop",
         unknown: "Unknown",

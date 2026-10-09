@@ -26,8 +26,8 @@ use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, live_badge, page_header, page_layout, row_hover_bg,
-    segmented, tag_badge, toolbar_search, warn_orange, Segment, TextLabel,
+    connect_button, empty_state, form_input, page_header, page_layout, row_hover_bg, segmented,
+    tag_badge, toolbar_search, warn_orange, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -430,7 +430,6 @@ impl Render for LogsPage {
         let t = &s().logs;
 
         let total = logs.entries().len();
-        let running = self.app_state.read(cx).process.read(cx).is_running();
         let stopped = self.app_state.read(cx).process.read(cx).is_stopped();
 
         // No lines yet: nothing to search, filter, copy or clear.
@@ -513,11 +512,6 @@ impl Render for LogsPage {
                         app_state_entity.update(cx, |state, cx| state.clear_logs(cx));
                     }),
             );
-        let head = if running {
-            head.action(live_badge(theme))
-        } else {
-            head
-        };
 
         // How many lines the table shows ("3 of 10" when filtered), then
         // how many errors and warnings the buffer holds, whatever is shown.

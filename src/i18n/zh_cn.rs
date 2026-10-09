@@ -15,7 +15,6 @@ pub static ZH_CN: Strings = Strings {
         copy: "复制",
         copied: "已复制",
         search: "搜索",
-        live: "实时",
         start: "开始",
         stop: "停止",
         unknown: "未知",

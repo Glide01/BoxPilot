@@ -156,9 +156,6 @@ pub struct Common {
     pub copy: &'static str,
     pub copied: &'static str,
     pub search: &'static str,
-    /// The badge saying a list follows sing-box as it happens (Connections,
-    /// Logs).
-    pub live: &'static str,
     pub start: &'static str,
     pub stop: &'static str,
     pub unknown: &'static str,

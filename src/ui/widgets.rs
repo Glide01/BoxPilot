@@ -684,37 +684,6 @@ pub fn tag_badge(theme: &Theme, text: impl Into<SharedString>, color: Hsla) -> D
         .child(text.into())
 }
 
-/// "● Live": the list beside it follows sing-box as it happens.
-pub fn live_badge(theme: &Theme) -> Div {
-    let green = theme.success;
-    div()
-        .flex_none()
-        .h(px(28.))
-        .px_2p5()
-        .h_flex()
-        .items_center()
-        .gap_1p5()
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.border)
-        .text_xs()
-        .font_weight(FontWeight::MEDIUM)
-        .child(
-            div()
-                .size(px(7.))
-                .rounded_full()
-                .bg(green)
-                .shadow(vec![gpui::BoxShadow {
-                    color: green.opacity(0.6),
-                    offset: gpui::point(px(0.), px(0.)),
-                    blur_radius: px(6.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }]),
-        )
-        .child(s().common.live)
-}
-
 /// One choice of a [`segmented`] control.
 pub struct Segment {
     pub label: SharedString,

@@ -35,9 +35,8 @@ use crate::state::{AppState, Connections};
 use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, full_text_tooltip, live_badge, page_header,
-    page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Segment,
-    TextLabel,
+    connect_button, empty_state, form_input, full_text_tooltip, page_header, page_layout,
+    row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -650,9 +649,6 @@ impl Render for ConnectionsPage {
         let mut head = page_header(theme, ActivePage::Connections);
         if has_any {
             head = head.context(summary_items).action(close_all);
-        }
-        if live {
-            head = head.action(live_badge(theme));
         }
 
         // The empty state goes on the page's root (see `empty_state`), the
