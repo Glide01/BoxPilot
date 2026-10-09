@@ -241,6 +241,7 @@ pub static EN: Strings = Strings {
         inbound: "Inbound",
         rule: "Rule",
         chain: "Chain",
+        switch_node: "Switch this group's node",
         outbound: "Outbound",
         from_outbound: "Detoured from",
         source_address: "Address",

@@ -5,9 +5,9 @@
 
 use crate::core::bytefmt::{format_bytes, format_speed};
 use crate::core::connections_view::{
-    chain_label, connection_age_ms, format_elapsed, process_name, rule_label,
+    chain_hops, chain_label, connection_age_ms, format_elapsed, process_name, rule_label,
 };
-use crate::core::singbox_api::Connection;
+use crate::core::singbox_api::{Connection, GroupKind, ProxyGroup};
 use crate::i18n::s;
 
 /// A group of fields, in panel order.
@@ -262,6 +262,33 @@ fn process_user(name: &str, uid: i32) -> String {
         (true, uid) if uid > 0 => uid.to_string(),
         (true, _) => String::new(),
     }
+}
+
+/// One hop of a connection's chain, as the panel's Route section shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainHop {
+    pub tag: String,
+    /// A selector group the user can switch from the panel: it opens the
+    /// group's nodes. The other hops (urltest groups, which pick for
+    /// themselves, and the final outbound) are plain text.
+    pub switchable: bool,
+}
+
+/// `connection`'s chain in reading order (`chain_hops`), each hop marked
+/// switchable when `groups` has a selector group of that tag — the same
+/// rule as the Groups page. `groups` is the live group list: empty while
+/// sing-box is stopped or its API hasn't answered, so nothing is
+/// switchable then, nor when the group is gone from the running config.
+pub fn chain_switches(connection: &Connection, groups: &[ProxyGroup]) -> Vec<ChainHop> {
+    chain_hops(connection)
+        .into_iter()
+        .map(|tag| ChainHop {
+            tag: tag.to_string(),
+            switchable: groups
+                .iter()
+                .any(|group| group.name == tag && group.kind == GroupKind::Selector),
+        })
+        .collect()
 }
 
 /// Which way Up / Down moves the selection.
@@ -529,6 +556,55 @@ mod tests {
         assert_eq!(ip_version_label(4), "IPv4");
         assert_eq!(ip_version_label(6), "IPv6");
         assert_eq!(ip_version_label(0), "");
+    }
+
+    fn group(name: &str, kind: GroupKind, all: &[&str]) -> ProxyGroup {
+        ProxyGroup {
+            name: name.into(),
+            now: all[0].into(),
+            all: all.iter().map(|s| s.to_string()).collect(),
+            kind,
+            group_type: String::new(),
+            expanded: false,
+        }
+    }
+
+    fn switchable(hops: &[ChainHop]) -> Vec<(&str, bool)> {
+        hops.iter()
+            .map(|hop| (hop.tag.as_str(), hop.switchable))
+            .collect()
+    }
+
+    #[test]
+    fn only_live_selector_groups_in_the_chain_switch() {
+        let c = sample();
+        let groups = [
+            group("节点选择", GroupKind::Selector, &["auto", "direct"]),
+            group("auto", GroupKind::UrlTest, &["香港-01", "日本-01"]),
+            group("Media", GroupKind::Selector, &["香港-01"]),
+        ];
+        assert_eq!(
+            switchable(&chain_switches(&c, &groups)),
+            [("节点选择", true), ("auto", false), ("香港-01", false)]
+        );
+        // A selector this time; the node is never one.
+        let groups = [
+            group("节点选择", GroupKind::Selector, &["auto", "direct"]),
+            group("auto", GroupKind::Selector, &["香港-01", "日本-01"]),
+        ];
+        assert_eq!(
+            switchable(&chain_switches(&c, &groups)),
+            [("节点选择", true), ("auto", true), ("香港-01", false)]
+        );
+        // sing-box stopped (no live groups), or the group is gone.
+        assert_eq!(
+            switchable(&chain_switches(&c, &[])),
+            [("节点选择", false), ("auto", false), ("香港-01", false)]
+        );
+        let groups = [group("Other", GroupKind::Selector, &["香港-01"])];
+        assert!(chain_switches(&c, &groups)
+            .iter()
+            .all(|hop| !hop.switchable));
     }
 
     #[test]

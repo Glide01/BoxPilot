@@ -125,6 +125,7 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.connection_details.traffic_section,
         t.connection_details.destination,
         t.connection_details.chain,
+        t.connection_details.switch_node,
         t.connection_details.from_outbound,
         t.connection_details.opened_at,
         t.connection_details.duration,

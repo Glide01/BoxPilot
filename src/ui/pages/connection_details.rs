@@ -8,18 +8,29 @@
 //! changed (it observes `Connections` itself and compares). It follows the
 //! connection live — rates, totals, duration, then "closed" — and says so
 //! when sing-box no longer has it at all.
+//!
+//! In the Route section each selector group of the chain is a quiet button
+//! that opens the group's nodes, the current one checked; picking one
+//! switches the group (`ProxyGroups::select`, whose failures toast) as the
+//! Groups page does. Which hops switch is `chain_switches`, against the
+//! live groups of `ProxyGroups` (also observed): while sing-box is stopped,
+//! or for a group the running config no longer has, the chain is text.
 
 use super::connections::unix_millis_now;
-use crate::core::connection_details::{connection_details, DetailField, DetailGroup};
-use crate::core::connections_view::host_label;
+use crate::core::connection_details::{
+    chain_switches, connection_details, ChainHop, DetailField, DetailGroup,
+};
+use crate::core::connections_view::{host_label, CHAIN_SEPARATOR};
 use crate::core::timefmt::format_local_datetime;
 use crate::i18n::s;
+use crate::state::proxy_groups::{GroupSource, ProxyGroups};
 use crate::state::Connections;
-use crate::ui::widgets::{status_label, TextLabel};
+use crate::ui::widgets::{shorten, status_label, TextLabel};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
+    menu::{DropdownMenu, PopupMenu, PopupMenuItem},
     scroll::ScrollableElement,
     ActiveTheme, Icon, IconName, Sizable, StyledExt,
 };
@@ -29,6 +40,10 @@ use std::time::Duration;
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 /// Width of the label column.
 const LABEL_WIDTH: f32 = 84.;
+/// A group's node menu: about this many Latin letters of a node's name,
+/// and no taller than this before it scrolls.
+const NODE_MENU_NAME_ROOM: usize = 36;
+const NODE_MENU_MAX_HEIGHT: f32 = 320.;
 
 /// The panel asks the page to close it (its ✕).
 pub struct DetailsDismissed;
@@ -41,6 +56,8 @@ enum Shown {
         title: String,
         closed: bool,
         groups: Vec<DetailGroup>,
+        /// The chain hop by hop, for the Route section's switchers.
+        hops: Vec<ChainHop>,
     },
     /// Selected, but sing-box no longer has it (evicted from the closed list).
     Gone { title: String },
@@ -48,6 +65,7 @@ enum Shown {
 
 pub struct ConnectionDetailsPanel {
     connections: Entity<Connections>,
+    proxy_groups: Entity<ProxyGroups>,
     /// Id of the connection shown; `None` while the panel is closed.
     selected: Option<String>,
     shown: Option<Shown>,
@@ -60,17 +78,19 @@ pub struct ConnectionDetailsPanel {
 impl EventEmitter<DetailsDismissed> for ConnectionDetailsPanel {}
 
 impl ConnectionDetailsPanel {
-    pub fn new(connections: Entity<Connections>, cx: &mut Context<Self>) -> Self {
-        cx.observe(&connections, |this: &mut Self, _, cx| {
-            let next = this.compute(cx);
-            if next != this.shown {
-                this.shown = next;
-                cx.notify();
-            }
-        })
-        .detach();
+    pub fn new(
+        connections: Entity<Connections>,
+        proxy_groups: Entity<ProxyGroups>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.observe(&connections, |this: &mut Self, _, cx| this.refresh(cx))
+            .detach();
+        // Groups come and go with sing-box: the chain's switchers too.
+        cx.observe(&proxy_groups, |this: &mut Self, _, cx| this.refresh(cx))
+            .detach();
         Self {
             connections,
+            proxy_groups,
             selected: None,
             shown: None,
             copied: None,
@@ -92,6 +112,15 @@ impl ConnectionDetailsPanel {
         cx.notify();
     }
 
+    /// Re-render only when what is shown moved.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let next = self.compute(cx);
+        if next != self.shown {
+            self.shown = next;
+            cx.notify();
+        }
+    }
+
     fn compute(&self, cx: &App) -> Option<Shown> {
         let id = self.selected.as_ref()?;
         let shown = match self.connections.read(cx).table.get(id) {
@@ -99,6 +128,14 @@ impl ConnectionDetailsPanel {
                 title: host_label(connection),
                 closed: connection.is_closed(),
                 groups: connection_details(connection, unix_millis_now(), format_local_datetime),
+                hops: {
+                    let groups = self.proxy_groups.read(cx);
+                    let live = match groups.source {
+                        GroupSource::Api => groups.groups.as_slice(),
+                        GroupSource::Inactive => &[],
+                    };
+                    chain_switches(connection, live)
+                },
             },
             None => Shown::Gone {
                 title: match &self.shown {
@@ -169,7 +206,7 @@ impl ConnectionDetailsPanel {
             )
     }
 
-    fn section(&self, group: &DetailGroup, cx: &mut Context<Self>) -> Div {
+    fn section(&self, group: &DetailGroup, hops: &[ChainHop], cx: &mut Context<Self>) -> Div {
         let theme = cx.theme();
         let heading = div()
             .text_xs()
@@ -178,17 +215,74 @@ impl ConnectionDetailsPanel {
             .child(group.section.label());
         let mut section = div().v_flex().gap_1().child(heading);
         for row in &group.rows {
-            section = section.child(self.field_row(row.field, &row.value, cx));
+            let switchable = row.field == DetailField::Chain && hops.iter().any(|h| h.switchable);
+            let value = if switchable {
+                self.chain_value(hops, cx).into_any_element()
+            } else {
+                row.value.clone().into_any_element()
+            };
+            section = section.child(self.field_row(row.field, &row.value, value, cx));
         }
         section
     }
 
-    /// Label, value (wrapping, never clipped) and the value's copy button.
-    fn field_row(&self, field: DetailField, value: &str, cx: &mut Context<Self>) -> Div {
+    /// The chain with each switchable group as a button that opens its
+    /// nodes, the current one checked. The menu is filled when it opens,
+    /// from the groups as they are then.
+    fn chain_value(&self, hops: &[ChainHop], cx: &mut Context<Self>) -> Div {
+        let muted = cx.theme().muted_foreground;
+        let t = &s().connection_details;
+        // Each later hop keeps its arrow on its line when the chain wraps.
+        let mut value = div().h_flex().flex_wrap().items_center().gap_x_1p5();
+        for (ix, hop) in hops.iter().enumerate() {
+            let name = if hop.switchable {
+                let groups = self.proxy_groups.clone();
+                let group = hop.tag.clone();
+                // Pulled left by its padding, so its name sits where the
+                // text would, and a little closer to the next arrow.
+                div()
+                    .ml(px(-8.))
+                    .mr(px(-4.))
+                    .child(
+                        Button::new(SharedString::from(format!("conn-hop-{ix}")))
+                            .ghost()
+                            .small()
+                            .dropdown_caret(true)
+                            .text_label(hop.tag.clone())
+                            .tooltip(t.switch_node)
+                            .dropdown_menu(move |menu, _, cx| node_menu(menu, &groups, &group, cx)),
+                    )
+                    .into_any_element()
+            } else {
+                div().child(hop.tag.clone()).into_any_element()
+            };
+            value = value.child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .when(ix > 0, |hop| {
+                        hop.child(div().text_color(muted).child(CHAIN_SEPARATOR.trim()))
+                    })
+                    .child(name),
+            );
+        }
+        value
+    }
+
+    /// Label, value (wrapping, never clipped) and the copy button of the
+    /// value's text, `text`.
+    fn field_row(
+        &self,
+        field: DetailField,
+        text: &str,
+        value: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let theme = cx.theme();
         let copied = self.copied == Some(field);
         let common = &s().common;
-        let copy_value = value.to_string();
+        let copy_value = text.to_string();
         let button = Button::new(SharedString::from(format!("conn-copy-{field:?}")))
             .ghost()
             .xsmall()
@@ -245,7 +339,7 @@ impl ConnectionDetailsPanel {
                     .pt(px(2.))
                     .text_sm()
                     .text_color(theme.foreground)
-                    .child(value.to_string()),
+                    .child(value),
             )
             .child(
                 div()
@@ -255,6 +349,32 @@ impl ConnectionDetailsPanel {
                     .children(feedback),
             )
     }
+}
+
+/// `group`'s nodes, the current one checked; picking one switches the
+/// group. Built as the menu opens, from the groups as they are then.
+fn node_menu(menu: PopupMenu, groups: &Entity<ProxyGroups>, group: &str, cx: &App) -> PopupMenu {
+    let menu = menu
+        .min_w(px(160.))
+        .max_h(px(NODE_MENU_MAX_HEIGHT))
+        .scrollable(true);
+    let Some(entry) = groups.read(cx).groups.iter().find(|g| g.name == group) else {
+        return menu;
+    };
+    entry.all.iter().fold(menu, |menu, node| {
+        let groups = groups.clone();
+        let group = group.to_string();
+        let node = node.clone();
+        menu.item(
+            PopupMenuItem::new(shorten(&node, NODE_MENU_NAME_ROOM))
+                .checked(node == entry.now)
+                .on_click(move |_, _, cx| {
+                    groups.update(cx, |groups, cx| {
+                        groups.select(group.clone(), node.clone(), cx)
+                    });
+                }),
+        )
+    })
 }
 
 impl Render for ConnectionDetailsPanel {
@@ -308,11 +428,12 @@ impl Render for ConnectionDetailsPanel {
                 title,
                 closed,
                 groups,
+                hops,
             } => {
                 let header = self.header(&title, Some(closed), cx);
                 let mut content = div().v_flex().gap_4().px_4().py_3();
                 for group in &groups {
-                    content = content.child(self.section(group, cx));
+                    content = content.child(self.section(group, &hops, cx));
                 }
                 let body = div()
                     .relative()

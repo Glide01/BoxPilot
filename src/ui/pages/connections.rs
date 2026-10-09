@@ -278,7 +278,9 @@ impl ConnectionsPage {
         })
         .detach();
 
-        let details = cx.new(|cx| ConnectionDetailsPanel::new(connections.clone(), cx));
+        let proxy_groups = app_state.read(cx).proxy_groups.clone();
+        let details =
+            cx.new(|cx| ConnectionDetailsPanel::new(connections.clone(), proxy_groups, cx));
         cx.subscribe(&details, |this, _, _: &DetailsDismissed, cx| {
             this.close_details(cx)
         })

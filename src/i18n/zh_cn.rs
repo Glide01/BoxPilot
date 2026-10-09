@@ -225,6 +225,7 @@ pub static ZH_CN: Strings = Strings {
         inbound: "入站",
         rule: "规则",
         chain: "出站链",
+        switch_node: "切换该分组的节点",
         outbound: "出站",
         from_outbound: "转发自",
         source_address: "地址",

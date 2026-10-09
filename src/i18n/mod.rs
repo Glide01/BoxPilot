@@ -435,6 +435,8 @@ pub struct ConnectionDetails {
     pub inbound: &'static str,
     pub rule: &'static str,
     pub chain: &'static str,
+    /// Tooltip of a selector group in the chain, which opens its nodes.
+    pub switch_node: &'static str,
     pub outbound: &'static str,
     /// `from_outbound`: the outbound that handed the connection back to the
     /// router.
