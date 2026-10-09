@@ -526,11 +526,15 @@ exit 3"#,
         let extra = fs::File::open("/dev/null").unwrap();
         // SAFETY: clears FD_CLOEXEC on a descriptor this test owns.
         unsafe { libc::fcntl(extra.as_raw_fd(), libc::F_SETFD, 0) };
+        // Each descriptor is looked up in /dev/fd rather than redirected
+        // to: the extra one is often 10 or above when other tests hold
+        // descriptors, where dash refuses a redirection outright and bash
+        // keeps the ones it saves while redirecting.
         let program = script(
             &temp.0,
             r#"cat
 for fd in 3 4 5 6 7 8 9 "$1"; do
-  if { true >&"$fd"; } 2>/dev/null; then echo "open:$fd"; fi
+  if [ -e "/dev/fd/$fd" ]; then echo "open:$fd"; fi
 done
 exit 0"#,
         );
