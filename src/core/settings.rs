@@ -1,5 +1,6 @@
 use crate::core::atomic_write::{write_atomic, FileAccess};
 use crate::core::connection_columns::ColumnSettings;
+use crate::core::log_columns::LogColumnWidths;
 use crate::core::sub_usage::SubscriptionUsage;
 use crate::core::timefmt::to_unix_secs;
 use serde::{Deserialize, Serialize};
@@ -269,6 +270,10 @@ pub struct AppSettings {
     /// default columns at their default widths.
     #[serde(default)]
     pub connections_columns: ColumnSettings,
+    /// How wide the user made the Logs table's columns
+    /// (`log_columns::LogColumnWidths`). Absent: the default widths.
+    #[serde(default)]
+    pub logs_columns: LogColumnWidths,
 }
 
 /// Appearance setting. Unknown values (from a newer release) load as
@@ -333,6 +338,7 @@ impl Default for AppSettings {
             connections_hide_direct: false,
             close_connections_on_switch: false,
             connections_columns: ColumnSettings::default(),
+            logs_columns: LogColumnWidths::default(),
         };
         settings.normalize_profiles();
         settings
@@ -529,6 +535,7 @@ fn back_up_bad_file(path: &Path) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::core::connection_columns::ColumnId;
+    use crate::core::log_columns::LogColumn;
 
     /// A first run starts in TUN mode, except on macOS, where TUN waits
     /// for the privileged helper's install.
@@ -572,6 +579,7 @@ mod tests {
         assert!(!settings.connections_hide_direct);
         assert!(!settings.close_connections_on_switch);
         assert_eq!(settings.connections_columns, ColumnSettings::default());
+        assert_eq!(settings.logs_columns, LogColumnWidths::default());
         let saved = serde_json::to_value(&settings).unwrap();
         assert!(saved.get("skipped_update_version").is_none(), "{}", saved);
     }
@@ -977,6 +985,7 @@ mod tests {
                 r#"{"visible": ["host", "rule"], "widths": {"rule": 210}}"#,
             )
             .unwrap(),
+            logs_columns: serde_json::from_str(r#"{"widths": {"source": 240}}"#).unwrap(),
         };
         original.save(&dir);
         let loaded = AppSettings::load(&dir).settings;
@@ -997,6 +1006,8 @@ mod tests {
         assert_eq!(loaded.connections_columns, original.connections_columns);
         assert!(!loaded.connections_columns.is_visible(ColumnId::Time));
         assert_eq!(loaded.connections_columns.width(ColumnId::Rule), 210.);
+        assert_eq!(loaded.logs_columns, original.logs_columns);
+        assert_eq!(loaded.logs_columns.width(LogColumn::Source), 240.);
         let _ = fs::remove_dir_all(&dir);
     }
 

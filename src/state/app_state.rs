@@ -1,4 +1,5 @@
 use crate::core::connection_columns::ColumnSettings;
+use crate::core::log_columns::LogColumnWidths;
 use crate::core::connections_view::switched_away;
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
 use crate::core::orchestration::{
@@ -1633,6 +1634,17 @@ impl AppState {
             return;
         }
         self.settings.connections_columns = columns;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// The Logs table's column widths, remembered across launches. The page
+    /// calls this once a drag ends, not for each step of it.
+    pub fn set_logs_columns(&mut self, columns: LogColumnWidths, cx: &mut Context<Self>) {
+        if self.settings.logs_columns == columns {
+            return;
+        }
+        self.settings.logs_columns = columns;
         self.save_settings();
         cx.notify();
     }

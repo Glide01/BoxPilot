@@ -139,6 +139,7 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.connection_details.opened_at,
         t.connection_details.duration,
         t.logs.configured_level,
+        t.logs.reset_columns,
         t.tools.nat_unsupported,
         t.tools.nat_full_cone_hint,
         t.tailscale.waiting_approval,

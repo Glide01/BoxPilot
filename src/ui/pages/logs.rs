@@ -7,6 +7,10 @@
 //! 点一行选中它(再点取消):表格下方的卡片显示整行原文,可复制。复制按钮
 //! 复制表里显示的全部行(按时间顺序)。
 //!
+//! 列宽:时间、级别、来源可拖动表头里两列之间的缝调宽窄,消息占剩下的
+//! 宽度(`core::log_columns`);拖动时只画在页面上的副本(`ColumnDrag`),
+//! 松开鼠标才写进设置。双击缝恢复那一列的默认宽度,右键表头可全部重置。
+//!
 //! 搜索:空白分隔的词都要出现(不区分大小写),`-词` 排除含它的行
 //! (`core::log_merge::LogQuery`)。级别:默认跟随 sing-box 配置的
 //! `log.level`(API 报告),用户可放宽到 Debug/Trace 或收紧;选回配置级别即
@@ -17,6 +21,10 @@
 //! 上方不会把正在看的行挤走:滚动位置随之下移。页面不在前台时不渲染,也就
 //! 不重算。
 
+use crate::core::log_columns::{
+    drag_boundary, layout_columns, time_shows_millis, LogColumn, LogColumnWidths, LogLayout,
+    COLUMN_GAP, ROW_INSET,
+};
 use crate::core::log_merge::{LogEntry, LogQuery};
 use crate::core::presentation::log_count_label;
 use crate::core::settings::StatusLevel;
@@ -34,6 +42,7 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
+    menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     scroll::ScrollableElement,
     theme::Theme,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
@@ -55,10 +64,14 @@ const LEVEL_CHOICES: [(&str, &str, LogLevel); 5] = [
 /// Fixed row height — `uniform_list` lays every row out at the first row's
 /// size, so all rows must match.
 const ROW_HEIGHT: f32 = 32.;
-/// Column widths shared by the header and the rows.
-const TIME_WIDTH: f32 = 104.;
-const LEVEL_WIDTH: f32 = 64.;
-const SOURCE_WIDTH: f32 = 168.;
+/// The column headings' row.
+const HEADER_HEIGHT: f32 = 32.;
+/// Before the first frame has measured the list: about the list in the
+/// window BoxPilot opens at, corrected on the next frame.
+const GUESSED_LIST_WIDTH: f32 = 870.;
+/// The grab band of a column boundary in the header: the gap between two
+/// headings.
+const RESIZE_HANDLE_WIDTH: f32 = COLUMN_GAP;
 /// The selected line's card grows with its text up to this, then scrolls.
 const DETAIL_MAX_HEIGHT: f32 = 132.;
 
@@ -74,6 +87,29 @@ struct RowsKey {
     query: String,
 }
 
+/// A column boundary being dragged: the column on its left, where the
+/// pointer went down, the widths and their layout then (each step is
+/// computed from those, so nothing drifts), and the widths as the drag has
+/// them now — drawn, but only saved to the settings when the button comes
+/// up.
+struct ColumnDrag {
+    column: LogColumn,
+    start_x: Pixels,
+    settings: LogColumnWidths,
+    layout: LogLayout,
+    current: LogColumnWidths,
+}
+
+/// The value gpui carries while a column boundary is dragged; it draws
+/// nothing (the columns themselves follow the pointer).
+struct ColumnResize;
+
+impl Render for ColumnResize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 pub struct LogsPage {
     app_state: Entity<AppState>,
     /// AppState 的 LogBuffer(固定不变)。
@@ -85,6 +121,11 @@ pub struct LogsPage {
     rows_key: Option<RowsKey>,
     /// The line whose full text the card under the table shows.
     selected: Option<u64>,
+    /// The list's width at the last paint: what the columns are laid out
+    /// in.
+    list_width: Option<Pixels>,
+    /// `Some` while a column boundary is being dragged.
+    column_drag: Option<ColumnDrag>,
 }
 
 impl LogsPage {
@@ -119,7 +160,77 @@ impl LogsPage {
             rows: Rc::new(Vec::new()),
             rows_key: None,
             selected: None,
+            list_width: None,
+            column_drag: None,
         }
+    }
+
+    /// The column widths in effect: the settings', or a drag's while it
+    /// lasts.
+    fn columns(&self, cx: &App) -> LogColumnWidths {
+        match &self.column_drag {
+            Some(drag) => drag.current.clone(),
+            None => self.app_state.read(cx).settings.logs_columns.clone(),
+        }
+    }
+
+    fn list_width(&self) -> f32 {
+        self.list_width.map_or(GUESSED_LIST_WIDTH, f32::from)
+    }
+
+    /// The pointer went down on `column`'s right edge: a drag may follow,
+    /// or this is the second click of a double-click, which puts the
+    /// column back to its default width.
+    fn press_column_boundary(
+        &mut self,
+        column: LogColumn,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = self.columns(cx);
+        if event.click_count >= 2 {
+            self.column_drag = None;
+            let mut reset = settings;
+            reset.reset_width(column);
+            self.app_state
+                .update(cx, |state, cx| state.set_logs_columns(reset, cx));
+            cx.notify();
+            return;
+        }
+        let layout = layout_columns(&settings, self.list_width());
+        self.column_drag = Some(ColumnDrag {
+            column,
+            start_x: event.position.x,
+            current: settings.clone(),
+            settings,
+            layout,
+        });
+        cx.notify();
+    }
+
+    /// The pointer moved during the drag of `column`'s right edge.
+    fn drag_column_boundary(&mut self, column: LogColumn, x: Pixels, cx: &mut Context<Self>) {
+        let Some(drag) = self.column_drag.as_mut().filter(|d| d.column == column) else {
+            return;
+        };
+        let delta = f32::from(x - drag.start_x);
+        let next = drag_boundary(&drag.settings, &drag.layout, drag.column, delta);
+        if next != drag.current {
+            drag.current = next;
+            cx.notify();
+        }
+    }
+
+    /// The button came up: keep what the drag made.
+    fn end_column_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.column_drag.take() else {
+            return;
+        };
+        if drag.current != drag.settings {
+            self.app_state
+                .update(cx, |state, cx| state.set_logs_columns(drag.current, cx));
+        }
+        cx.notify();
     }
 
     /// Recompute the rows only when the buffer or the filters moved. New
@@ -238,22 +349,27 @@ fn clipped(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// The arrival time, its milliseconds quieter.
-fn clock(at_ms: i64, fg: Hsla, muted: Hsla, theme: &Theme) -> Div {
+/// The arrival time, its milliseconds quieter — left out when `millis` is
+/// false (a Time column too narrow for them).
+fn clock(at_ms: i64, millis: bool, fg: Hsla, muted: Hsla, theme: &Theme) -> Div {
     let (time, fraction) = format_clock_ms(at_ms);
     div()
         .flex_none()
         .h_flex()
+        .overflow_hidden()
         .text_sm()
         .font_family(theme.mono_font_family.clone())
         .child(div().text_color(fg).child(time))
-        .child(div().text_color(muted).child(fraction))
+        .when(millis, |clock| {
+            clock.child(div().text_color(muted).child(fraction))
+        })
 }
 
 /// One table row.
 fn log_row(
     entry: &LogEntry,
     selected: bool,
+    layout: &LogLayout,
     page: &WeakEntity<LogsPage>,
     theme: &Theme,
 ) -> Stateful<Div> {
@@ -288,7 +404,7 @@ fn log_row(
         .px_3()
         .h_flex()
         .items_center()
-        .gap_3()
+        .gap(px(COLUMN_GAP))
         .rounded(px(8.))
         .border_1()
         .cursor_pointer()
@@ -317,46 +433,132 @@ fn log_row(
             page.update(cx, |page, cx| page.toggle_selected(id, cx))
                 .ok();
         })
-        .child(clock(entry.at_ms, fg, muted, theme).w(px(TIME_WIDTH)))
+        .child({
+            let width = layout.width(LogColumn::Time);
+            clock(entry.at_ms, time_shows_millis(width), fg, muted, theme).w(px(width))
+        })
         .child(
             div()
                 .flex_none()
-                .w(px(LEVEL_WIDTH))
+                .w(px(layout.width(LogColumn::Level)))
                 .h_flex()
+                .overflow_hidden()
                 .child(level_badge(entry.level, theme)),
         )
         .child(
             clipped(parts.source.unwrap_or_default().to_string())
                 .flex_none()
-                .w(px(SOURCE_WIDTH))
+                .w(px(layout.width(LogColumn::Source)))
                 .text_sm()
                 .text_color(muted),
         )
         .child(message)
 }
 
-/// The table's column headings, on the rows' columns.
-fn column_header(theme: &Theme) -> Div {
+/// The table's column headings, on the rows' columns, with a handle on the
+/// right edge of each but Message: drag it to resize (see `drag_boundary`),
+/// double-click it for the default width. A right-click resets them all.
+fn column_header(
+    layout: &LogLayout,
+    page: &WeakEntity<LogsPage>,
+    app_state: &Entity<AppState>,
+    theme: &Theme,
+) -> impl IntoElement {
     let t = &s().logs;
-    let heading = |text: &'static str| div().whitespace_nowrap().child(text);
-    div()
+    let mut header = div()
         .flex_none()
-        .h(px(32.))
+        .h(px(HEADER_HEIGHT))
         .w_full()
         // The rows' padding and their (transparent) border.
-        .px(px(13.))
+        .px(px(ROW_INSET / 2.))
         .h_flex()
         .items_center()
-        .gap_3()
+        .gap(px(COLUMN_GAP))
         .text_xs()
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.muted_foreground)
         .border_b_1()
-        .border_color(theme.border)
-        .child(heading(t.col_time).flex_none().w(px(TIME_WIDTH)))
-        .child(heading(t.col_level).flex_none().w(px(LEVEL_WIDTH)))
-        .child(heading(t.col_source).flex_none().w(px(SOURCE_WIDTH)))
-        .child(heading(t.col_message).flex_1().min_w_0())
+        .border_color(theme.border);
+    for (column, title) in LogColumn::ALL
+        .into_iter()
+        .zip([t.col_time, t.col_level, t.col_source])
+    {
+        header = header.child(
+            div()
+                .relative()
+                .flex_none()
+                .w(px(layout.width(column)))
+                .h_full()
+                .h_flex()
+                .items_center()
+                .child(clipped(title))
+                .child(resize_handle(column, page, theme)),
+        );
+    }
+    let app_state = app_state.clone();
+    header
+        .child(clipped(t.col_message).flex_1())
+        .context_menu(move |menu, _, cx| reset_menu(menu, &app_state, cx))
+}
+
+/// The headings' right-click menu: Reset column widths.
+fn reset_menu(menu: PopupMenu, app_state: &Entity<AppState>, cx: &App) -> PopupMenu {
+    let untouched = app_state.read(cx).settings.logs_columns == LogColumnWidths::default();
+    let app_state = app_state.clone();
+    menu.item(
+        PopupMenuItem::new(s().logs.reset_columns)
+            .disabled(untouched)
+            .on_click(move |_, _, cx| {
+                app_state.update(cx, |state, cx| {
+                    state.set_logs_columns(LogColumnWidths::default(), cx)
+                });
+            }),
+    )
+}
+
+/// The grab band on `column`'s right edge: the gap to the next heading,
+/// with a hairline that lights up under the pointer.
+fn resize_handle(column: LogColumn, page: &WeakEntity<LogsPage>, theme: &Theme) -> Stateful<Div> {
+    let group = SharedString::from(format!("log-col-resize-{}", column.key()));
+    let (press, drag, up, up_out) = (page.clone(), page.clone(), page.clone(), page.clone());
+    div()
+        .id(ElementId::Name(group.clone()))
+        .group(group.clone())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(px(-(COLUMN_GAP + RESIZE_HANDLE_WIDTH) / 2.))
+        .w(px(RESIZE_HANDLE_WIDTH))
+        .h_flex()
+        .justify_center()
+        .items_center()
+        .cursor_col_resize()
+        .child(
+            div()
+                .w(px(1.))
+                .h(px(14.))
+                .bg(theme.border)
+                .group_hover(group, |line| line.h_full().bg(theme.primary)),
+        )
+        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            cx.stop_propagation();
+            press
+                .update(cx, |this, cx| this.press_column_boundary(column, event, cx))
+                .ok();
+        })
+        .on_drag(ColumnResize, |_, _, _, cx| cx.new(|_| ColumnResize))
+        .on_drag_move(move |event: &DragMoveEvent<ColumnResize>, _, cx| {
+            drag.update(cx, |this, cx| {
+                this.drag_column_boundary(column, event.event.position.x, cx)
+            })
+            .ok();
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            up.update(cx, |this, cx| this.end_column_drag(cx)).ok();
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+            up_out.update(cx, |this, cx| this.end_column_drag(cx)).ok();
+        })
 }
 
 /// The selected line in full, under the table: its level, time and source,
@@ -378,6 +580,7 @@ fn detail_card(entry: &LogEntry, page: &WeakEntity<LogsPage>, theme: &Theme) -> 
                 .child(level_badge(entry.level, theme))
                 .child(clock(
                     entry.at_ms,
+                    true,
                     theme.foreground,
                     theme.muted_foreground,
                     theme,
@@ -561,13 +764,18 @@ impl Render for LogsPage {
             let list_logs = logs_entity.clone();
             let list_page = page.clone();
             let selected = self.selected;
+            let layout = layout_columns(&self.columns(cx), self.list_width());
+            let header = column_header(&layout, &page, &self.app_state, theme);
+            let layout = Rc::new(layout);
             let list = uniform_list("logs-list", rows.len(), move |range, _, cx| {
                 let theme = cx.theme();
                 let entries = list_logs.read(cx).entries();
                 range
                     .map(|ix| match entry(entries, rows[ix]) {
-                        Some(e) => log_row(e, selected == Some(rows[ix]), &list_page, theme)
-                            .into_any_element(),
+                        Some(e) => {
+                            log_row(e, selected == Some(rows[ix]), &layout, &list_page, theme)
+                                .into_any_element()
+                        }
                         // Rows are refreshed with the buffer before the list
                         // renders, so this is only a defensive blank.
                         None => div().h(px(ROW_HEIGHT)).into_any_element(),
@@ -576,11 +784,54 @@ impl Render for LogsPage {
             })
             .track_scroll(&self.scroll)
             .size_full();
+            // Measures the list as it paints: a new width lays the columns
+            // out again on the next frame (gpui ignores a notify sent while
+            // it draws). Message follows the width in between.
+            let measure_page = page.clone();
+            let measure = canvas(
+                move |bounds, window, cx| {
+                    let Some(page) = measure_page.upgrade() else {
+                        return;
+                    };
+                    let width = bounds.size.width;
+                    let relayout = page.update(cx, |this, _| {
+                        let before = this.list_width.replace(width);
+                        before.is_none_or(|before| (before - width).abs() >= px(0.5))
+                    });
+                    if relayout {
+                        window.on_next_frame(move |_, cx| page.update(cx, |_, cx| cx.notify()));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            // While a boundary is dragged: the resize cursor everywhere over
+            // the table, no row hovering under it, and the drag ends
+            // wherever the button comes up.
+            let drag_cover = self.column_drag.is_some().then(|| {
+                let end_page = page.clone();
+                div()
+                    .id("logs-column-drag")
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .cursor_col_resize()
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        end_page
+                            .update(cx, |this, cx| this.end_column_drag(cx))
+                            .ok();
+                    })
+            });
             let table = div()
+                .relative()
                 .v_flex()
                 .flex_1()
                 .min_h_0()
-                .child(column_header(theme))
+                .child(measure)
+                .child(header)
                 .child(
                     div()
                         .relative()
@@ -589,7 +840,8 @@ impl Render for LogsPage {
                         .pt_1()
                         .child(list)
                         .vertical_scrollbar(&self.scroll),
-                );
+                )
+                .children(drag_cover);
             (None, Some(table))
         };
         let detail = self

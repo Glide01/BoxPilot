@@ -489,6 +489,8 @@ pub struct Logs {
     pub col_message: &'static str,
     /// Tooltip of the selected line's close button.
     pub close_line: &'static str,
+    /// The column headings' right-click menu.
+    pub reset_columns: &'static str,
 }
 
 pub struct Tools {

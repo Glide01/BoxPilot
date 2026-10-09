@@ -7,6 +7,7 @@ pub mod connections_view;
 pub mod deeplink;
 pub mod groups_view;
 pub mod lan;
+pub mod log_columns;
 #[cfg(target_os = "linux")]
 pub mod desktop_integration;
 pub mod log_merge;

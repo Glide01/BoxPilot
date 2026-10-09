@@ -267,6 +267,7 @@ pub static ZH_CN: Strings = Strings {
         col_source: "来源",
         col_message: "消息",
         close_line: "关闭",
+        reset_columns: "重置列宽",
     },
     tools: Tools {
         not_running_title: "sing-box 未运行",

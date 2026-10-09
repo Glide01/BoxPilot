@@ -289,6 +289,7 @@ pub static EN: Strings = Strings {
         col_source: "Source",
         col_message: "Message",
         close_line: "Close",
+        reset_columns: "Reset column widths",
     },
     tools: Tools {
         not_running_title: "sing-box is not running",
