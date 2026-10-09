@@ -52,14 +52,14 @@ use crate::i18n::s;
 use boxpilot_policy::{attach, local_file_fields};
 use boxpilot_protocol::endpoint::exit;
 use boxpilot_protocol::{ErrorCode, RefusalCode, StartRequest, TunOptions, WireRefusal};
-use boxpilot_runconfig::{inject, ApiService, Inject};
+use boxpilot_runconfig::{inject, reject_loopback, ApiService, Inject};
 use futures_channel::mpsc::UnboundedReceiver;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 pub use client::{start_session, HelperConnection, HelperEvent, HelperFailure, HelperIo};
@@ -175,15 +175,67 @@ pub struct RunningStart {
     pub events: UnboundedReceiver<HelperEvent>,
 }
 
+/// Ends a start through the helper from another thread: a stop while the
+/// start is under way (`ProcessSession::stop`). Closing its connection ends
+/// the `hello` or `start` waiting on it at once, and the helper stops
+/// whatever that start ran when it sees the connection end (rule 6).
+/// Connecting itself isn't cut short; a start cancelled meanwhile closes
+/// its connection as soon as it has one.
+#[derive(Clone, Default)]
+pub struct StartCancel(Arc<Mutex<CancelState>>);
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    /// The start's connection, once open. Weak: the helper sees the end of
+    /// a connection once its last owner drops it, which this one mustn't
+    /// put off.
+    io: Option<Weak<dyn HelperIo>>,
+}
+
+impl StartCancel {
+    pub fn cancel(&self) {
+        let io = {
+            let mut state = self.lock();
+            state.cancelled = true;
+            state.io.take()
+        };
+        if let Some(io) = io.and_then(|io| io.upgrade()) {
+            io.close();
+        }
+    }
+
+    /// The start's connection is open. `false`, and the connection closed,
+    /// if the start was cancelled meanwhile.
+    fn attach(&self, io: &Arc<dyn HelperIo>) -> bool {
+        let mut state = self.lock();
+        if state.cancelled {
+            drop(state);
+            io.close();
+            return false;
+        }
+        state.io = Some(Arc::downgrade(io));
+        true
+    }
+
+    fn lock(&self) -> MutexGuard<'_, CancelState> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// Start the active profile through the helper: read its canonical config,
 /// [`prepare_start`] it (its local files read as the user, against
 /// `app_dir` as sing-box would resolve them; the policy run here first),
-/// write the running view, then connect and start. Blocking: run it off
-/// the UI thread. `Err` is the message for the user.
+/// write the running view, then connect and start, unless `cancel` ends it
+/// first. Blocking: run it off the UI thread. `Err` is the message for the
+/// user.
 pub fn start_profile(
     config_path: &Path,
     app_dir: &Path,
     options: TunOptions,
+    cancel: &StartCancel,
 ) -> Result<RunningStart, String> {
     let canonical = fs::read_to_string(config_path).map_err(|e| {
         (s().errors.read_failed)(&config_path.display().to_string(), &e.to_string())
@@ -199,6 +251,9 @@ pub fn start_profile(
         eprintln!("Failed to write {}: {e}", runtime.display());
     }
     let io = open().map_err(|e| e.message())?;
+    if !cancel.attach(&io) {
+        return Err(HelperFailure::Lost.message());
+    }
     let (connection, api, events) =
         start_session(io, prepared.request).map_err(|failure| failure.message())?;
     Ok(RunningStart {
@@ -387,9 +442,11 @@ pub fn prepare_start(
 /// The running config as BoxPilot knows it for a helper start: the config
 /// the policy passed (control planes and helper-owned fields dropped,
 /// local files as attachment references) with BoxPilot's inbounds for
-/// `options` injected. Without the helper's own `api` service: its secret
-/// never touches disk on this side. What the helper runs differs only in
-/// where it put the attachments and the cache file, and that service.
+/// `options` injected and the rule that rejects loopback destinations put
+/// first, as the helper does (`runcfg::build`). Without the helper's own
+/// `api` service: its secret never touches disk on this side. What the
+/// helper runs differs only in where it put the attachments and the cache
+/// file, and that service.
 pub fn running_view(checked: &Value, options: &TunOptions) -> String {
     let mut config = checked.clone();
     if let Some(root) = config.as_object_mut() {
@@ -409,8 +466,26 @@ pub fn running_view(checked: &Value, options: &TunOptions) -> String {
         // The checked config has no `services` of its own (the policy drops
         // them), so the only one is the placeholder.
         root.remove("services");
+        reject_loopback(root);
     }
     serde_json::to_string_pretty(&config).expect("a JSON value serializes")
+}
+
+/// What a start through the helper would run now, as Settings ›
+/// Troubleshooting previews it while sing-box is stopped: the running view
+/// of [`prepare_start`], the profile's local files read as for a start.
+/// `Err`: why that start wouldn't reach the helper, in the user's words.
+/// Blocking.
+pub fn preview_start(
+    canonical: &str,
+    app_dir: &Path,
+    options: TunOptions,
+) -> Result<String, String> {
+    prepare_start(canonical, options, |path, limit| {
+        read_as_user(app_dir, path, limit)
+    })
+    .map(|prepared| prepared.running_view)
+    .map_err(|e| e.message())
 }
 
 // ---- Reaching the helper ----

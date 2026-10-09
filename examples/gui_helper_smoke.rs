@@ -31,7 +31,7 @@ fn main() {
 mod smoke {
     use box_pilot_gui::core::privileged_helper::macos_status::{probe, HelperStatus};
     use box_pilot_gui::core::privileged_helper::{
-        open, start_profile, HelperConnection, HelperEvent, HelperIo, RunningStart,
+        open, start_profile, HelperConnection, HelperEvent, HelperIo, RunningStart, StartCancel,
     };
     use box_pilot_gui::core::settings::RUNTIME_CONFIG_FILENAME;
     use boxpilot_protocol::TunOptions;
@@ -296,7 +296,7 @@ as the helper's owner:
             connection,
             api,
             mut events,
-        } = start_profile(&config, app_dir, options)?;
+        } = start_profile(&config, app_dir, options, &StartCancel::default())?;
         println!(
             "started in {} ms: proxy 127.0.0.1:{}, API 127.0.0.1:{}",
             began.elapsed().as_millis(),

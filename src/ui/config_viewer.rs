@@ -10,6 +10,9 @@
 
 use crate::core::config_view::{load, ConfigRequest, ConfigSource, ConfigView, ConfigViewError};
 use crate::core::paths::profile_config_path;
+use crate::core::privileged_helper::{
+    process_is_elevated, start_route, StartRoute, HELPER_PLATFORM,
+};
 use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::widgets::{status_label, IconLabel};
@@ -153,6 +156,11 @@ impl ConfigViewer {
                     .active_profile()
                     .map(|profile| profile_config_path(&state.app_dir, &profile.id)),
                 settings: state.settings.clone(),
+                through_helper: start_route(
+                    HELPER_PLATFORM,
+                    state.settings.proxy_mode,
+                    process_is_elevated(),
+                ) == StartRoute::Helper,
             }
         };
         self.loaded_for = Some(key);

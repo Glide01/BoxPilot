@@ -185,6 +185,96 @@ fn the_running_view_is_what_the_helper_runs_minus_its_own_parts() {
     assert!(view["experimental"].get("clash_api").is_none());
     assert_eq!(view["experimental"]["cache_file"]["enabled"], true);
     assert!(!prepared.running_view.contains("secret"));
+    // The helper's own rule comes first, as in what it runs.
+    assert_eq!(
+        view["route"]["rules"][0],
+        boxpilot_runconfig::loopback_rule()
+    );
+}
+
+/// The preview while stopped is the running view a start would get, or why
+/// that start wouldn't reach the helper.
+#[test]
+fn a_preview_is_the_running_view_a_start_would_get() {
+    let config = json!({
+        "outbounds": [{"type": "direct", "tag": "direct"}],
+        "route": {"rules": [{"domain": ["example.com"], "outbound": "direct"}]}
+    })
+    .to_string();
+    let dir = std::env::temp_dir();
+    let preview = preview_start(&config, &dir, options()).unwrap();
+    assert_eq!(
+        preview,
+        prepare_start(&config, options(), |_, _| unreachable!())
+            .unwrap()
+            .running_view
+    );
+    let view: Value = serde_json::from_str(&preview).unwrap();
+    assert_eq!(
+        view["route"]["rules"][0],
+        boxpilot_runconfig::loopback_rule()
+    );
+    assert_eq!(view["route"]["rules"][1]["domain"][0], "example.com");
+
+    let refused = json!({"outbounds": [{"type": "tor", "tag": "tor"}]}).to_string();
+    assert_eq!(
+        preview_start(&refused, &dir, options()).unwrap_err(),
+        "The privileged helper won't run this profile in TUN mode: \
+         /outbounds/0/type runs a program. Proxy mode runs it as written."
+    );
+}
+
+/// A stream that only counts its closes.
+#[derive(Default)]
+struct Closes(std::sync::atomic::AtomicUsize);
+
+impl HelperIo for Closes {
+    fn read(&self, _: &mut [u8]) -> io::Result<usize> {
+        Ok(0)
+    }
+
+    fn write_all(&self, _: &[u8], _: Instant) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn close(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Closes {
+    fn closes(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A stop ends a helper start's connection whenever it comes: before the
+/// connection opens (it is closed as soon as it does), or while the start
+/// waits on it. It never keeps the connection alive itself.
+#[test]
+fn a_cancel_closes_the_start_connection_whenever_it_comes() {
+    let early = StartCancel::default();
+    early.cancel();
+    let io = Arc::new(Closes::default());
+    let shared: Arc<dyn HelperIo> = io.clone();
+    assert!(!early.attach(&shared));
+    assert_eq!(io.closes(), 1);
+
+    let during = StartCancel::default();
+    let io = Arc::new(Closes::default());
+    let shared: Arc<dyn HelperIo> = io.clone();
+    assert!(during.attach(&shared));
+    assert_eq!(io.closes(), 0);
+    during.clone().cancel();
+    assert_eq!(io.closes(), 1);
+
+    let after = StartCancel::default();
+    let shared: Arc<dyn HelperIo> = Arc::new(Closes::default());
+    assert!(after.attach(&shared));
+    let weak = Arc::downgrade(&shared);
+    drop(shared);
+    assert!(weak.upgrade().is_none(), "the cancel holds the connection");
+    after.cancel();
 }
 
 #[test]

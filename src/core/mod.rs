@@ -18,6 +18,7 @@ pub mod presentation;
 pub mod privilege;
 pub mod privileged_helper;
 pub mod profile_draft;
+pub mod proxy_marker;
 pub mod settings;
 pub mod single_instance;
 pub mod singbox_api;

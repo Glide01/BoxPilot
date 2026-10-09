@@ -254,11 +254,6 @@ pub struct AppState {
     /// starts through the helper, and other changes, meanwhile; a stop
     /// doesn't cancel it.
     helper_job: Option<(HelperChange, Task<()>)>,
-    /// A config change arrived while sing-box was `Preparing` with the old
-    /// one: that start was abandoned (`ConfigChangeAction::RedoStart`), and
-    /// the process observer starts again once it is back to `Stopped`.
-    /// Cleared by `stop_process`.
-    restart_pending: bool,
     /// The one automatic redo of a start that lost its API port; the
     /// process observer runs it once sing-box has stopped. Re-armed by
     /// every other start, and by `stop_process`.
@@ -404,7 +399,8 @@ impl AppState {
         let logs = cx.new(|_| LogBuffer::new(api));
         let process = cx.new({
             let logs = logs.clone();
-            move |_| ProcessSession::new(logs)
+            let app_dir = app_dir.clone();
+            move |cx| ProcessSession::new(logs, app_dir, cx)
         });
 
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
@@ -480,12 +476,7 @@ impl AppState {
                         }
                     }
                 }
-                // The start abandoned for a config change has finished its
-                // prep: start again, with the new config.
-                if this.restart_pending && stopped {
-                    this.restart_pending = false;
-                    this.start_process(cx);
-                } else if stopped {
+                if stopped {
                     this.redo_start_if_api_port_lost(cx);
                 }
             })
@@ -775,7 +766,6 @@ impl AppState {
                 app_bundle: None,
                 helper_probe: None,
                 helper_job: None,
-                restart_pending: false,
                 api_port_retry: ApiPortRetry::default(),
                 fetch_seq: 0,
                 latest_fetch: HashMap::new(),
@@ -1194,7 +1184,8 @@ impl AppState {
         let resume = then_start || (change == HelperChange::Install && was_running);
         let job = cx.spawn(async move |this, cx| {
             if let Some(stopped) = stopped {
-                stopped.await;
+                // `Err`: the cleanup was dropped with the session: done.
+                let _ = stopped.await;
             }
             let (result, (bundle, status)) = cx
                 .background_executor()
@@ -1264,15 +1255,17 @@ impl AppState {
         }
     }
 
-    /// Stop a run through the helper before its install changes: its
-    /// cleanup (the helper's `stopped`), to wait for. `None` if sing-box
-    /// isn't the helper's.
-    fn stop_helper_run_first(&mut self, cx: &mut Context<Self>) -> Option<Task<()>> {
-        if !self.process.read(cx).runs_helper() {
-            return None;
+    /// Stop a run through the helper before its install changes, and say
+    /// when what was stopped is done: that stop's cleanup (the helper's
+    /// `stopped`), or one an earlier stop, or a stopped start, still has
+    /// under way. Starts in either mode wait for it too
+    /// (`ProcessSession::watch_cleanup`). `None`: nothing to wait for.
+    fn stop_helper_run_first(&mut self, cx: &mut Context<Self>) -> Option<oneshot::Receiver<()>> {
+        if self.process.read(cx).runs_helper() {
+            self.stop_process(cx);
         }
-        self.stop_process(cx);
-        self.process.update(cx, |process, _| process.take_cleanup())
+        self.process
+            .update(cx, |process, cx| process.watch_cleanup(cx))
     }
 
     /// Hand a TUN start through the privileged helper to `ProcessSession`.
@@ -1404,7 +1397,6 @@ impl AppState {
     /// Stop sing-box, or the start in progress: a pending TUN gate is
     /// dropped, a `Preparing` start is abandoned (`ProcessSession::stop`).
     pub fn stop_process(&mut self, cx: &mut Context<Self>) {
-        self.restart_pending = false;
         self.api_port_retry = ApiPortRetry::Armed;
         self.tun_gate = None;
         self.process.update(cx, |p, cx| p.stop(cx));
@@ -1423,14 +1415,14 @@ impl AppState {
         }
     }
 
+    /// Connect, or disconnect: a start in progress (a TUN gate, or
+    /// sing-box `Preparing`) is cancelled, as a stop would (`stop_process`).
     pub fn toggle_process(&mut self, cx: &mut Context<Self>) {
-        let process = self.process.read(cx);
-        if process.is_running() {
+        if self.is_starting(cx) || self.process.read(cx).is_running() {
             self.stop_process(cx);
-        } else if process.is_stopped() {
+        } else {
             self.start_process(cx);
         }
-        // If currently `Preparing`, ignore — let it complete.
     }
 
     /// The Logs page's Clear: empty the view, and while sing-box runs empty
@@ -1502,18 +1494,14 @@ impl AppState {
     }
 
     /// Make a change to the runtime config's inputs take effect: restart a
-    /// running sing-box, and redo a start that is still preparing with the
-    /// old runtime config (it would otherwise come up with stale values).
+    /// running sing-box, or a start that is still preparing with the old
+    /// runtime config (it would otherwise come up with stale values).
     fn restart_if_running(&mut self, cx: &mut Context<Self>) {
         match config_change_action(self.start_phase(cx)) {
             ConfigChangeAction::Nothing => {}
             ConfigChangeAction::Restart => {
                 self.stop_process(cx);
                 self.start_process(cx);
-            }
-            ConfigChangeAction::RedoStart => {
-                self.process.update(cx, |p, _| p.abandon_start());
-                self.restart_pending = true;
             }
         }
     }

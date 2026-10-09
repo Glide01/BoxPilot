@@ -256,6 +256,18 @@ administrator account and a standard account:
   and the system proxy the helper set is off (the helper unsets it after
   the run; if the helper itself was killed too, its next start resets
   it). The next BoxPilot starts TUN again without a prompt.
+- **BoxPilot crashing in Proxy mode, then TUN:** kill BoxPilot (`kill -9`)
+  while Proxy mode runs: its sing-box keeps running. Open BoxPilot again,
+  choose TUN and connect: that sing-box is stopped first, and TUN starts
+  (no "address already in use").
+- **Cancelling a start:** click the power button (or the tray's "Cancel
+  connecting") while Starting…: Disconnected at once, and nothing runs
+  afterwards. A Proxy-mode start right after a Reinstall that stopped TUN
+  waits until the helper's sing-box has stopped, and its system proxy
+  stays on.
+- **Tray, TUN chosen without the helper:** after Remove, with TUN still
+  chosen, the tray's Proxy Mode submenu stays (TUN selected), and picking
+  Proxy there switches; then the submenu goes, as on first run.
 - **Quitting BoxPilot** while TUN runs stops sing-box, as above.
 - **As root** (`sudo` BoxPilot's binary): TUN runs the bundled sing-box
   directly, as written, with no helper and no prompt.

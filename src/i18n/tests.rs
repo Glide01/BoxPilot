@@ -70,6 +70,7 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.status.connected,
         t.status.connect,
         t.status.disconnect,
+        t.status.cancel_start,
         t.time.just_now,
         t.nav.home,
         t.nav.groups,

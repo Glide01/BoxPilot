@@ -1036,7 +1036,11 @@ any of them.
 - **Windows system proxy cleanup** is now conservative, as on Linux and
   macOS: only a manual proxy still on `127.0.0.1` is cleared. If the GUI
   crashes in helper TUN mode, sing-box stops with the connection, but the
-  user's proxy keeps pointing at it until BoxPilot's next start or stop.
+  user's proxy keeps pointing at it until BoxPilot's next launch clears
+  it: the GUI notes the port in its data directory before it sets the
+  proxy and removes the note once it has cleared it, and a launch that
+  finds the note clears a proxy still on exactly that port, before any
+  start.
 - **Settings › Clear cache** clears the user's own `cache.db`, not the
   one in `HelperState` that helper TUN mode uses.
 - **The MSI is about 33 MB larger:** the helper's own sing-box and

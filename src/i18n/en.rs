@@ -28,6 +28,7 @@ pub static EN: Strings = Strings {
         connected: "Connected",
         connect: "Connect",
         disconnect: "Disconnect",
+        cancel_start: "Cancel connecting",
     },
     time: Time {
         just_now: "just now",

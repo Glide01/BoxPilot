@@ -52,14 +52,8 @@ impl ConnectionStatus {
         }
     }
 
-    /// Whether the power button takes a click. Only a start in progress
-    /// holds it off (`AppState::toggle_process` ignores one anyway); a
-    /// subscription fetch doesn't.
-    pub fn can_toggle(self) -> bool {
-        self != ConnectionStatus::Starting
-    }
-
-    /// The power button's tooltip: what a click does.
+    /// The power button's tooltip, and the tray's item: what a click does.
+    /// While starting, it cancels the start (`AppState::toggle_process`).
     pub fn power_action_label(self) -> &'static str {
         self.power_action_label_in(s())
     }
@@ -67,7 +61,7 @@ impl ConnectionStatus {
     pub fn power_action_label_in(self, t: &'static Strings) -> &'static str {
         match self {
             ConnectionStatus::Disconnected => t.status.connect,
-            ConnectionStatus::Starting => t.status.starting,
+            ConnectionStatus::Starting => t.status.cancel_start,
             ConnectionStatus::Connected => t.status.disconnect,
         }
     }
@@ -478,10 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn power_button_is_only_held_off_while_starting() {
-        assert!(ConnectionStatus::Disconnected.can_toggle());
-        assert!(ConnectionStatus::Connected.can_toggle());
-        assert!(!ConnectionStatus::Starting.can_toggle());
+    fn power_button_says_what_a_click_does() {
         assert_eq!(
             ConnectionStatus::Disconnected.power_action_label(),
             "Connect"
@@ -490,7 +481,10 @@ mod tests {
             ConnectionStatus::Connected.power_action_label(),
             "Disconnect"
         );
-        assert_eq!(ConnectionStatus::Starting.power_action_label(), "Starting…");
+        assert_eq!(
+            ConnectionStatus::Starting.power_action_label(),
+            "Cancel connecting"
+        );
     }
 
     fn profile(source: ProfileSource, checked_ago: Option<u64>) -> Profile {

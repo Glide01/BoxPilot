@@ -30,6 +30,7 @@ pub static ZH_CN: Strings = Strings {
         connected: "已连接",
         connect: "连接",
         disconnect: "断开",
+        cancel_start: "取消连接",
     },
     time: Time {
         just_now: "刚刚",

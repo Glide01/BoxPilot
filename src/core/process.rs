@@ -95,6 +95,28 @@ pub fn enable_system_proxy(_port: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// Undo the system proxy `enable_system_proxy` set on `port`, if it is
+/// still exactly that: for a launch after BoxPilot ended without clearing it
+/// (`core::proxy_marker`). Stricter than `disable_system_proxy`, which a
+/// stop runs right after its own run: by the next launch, the user or
+/// another program may have set a loopback proxy of their own.
+#[cfg(target_os = "windows")]
+pub fn disable_system_proxy_on(port: u16) -> Result<(), String> {
+    let Some((enabled, server)) = wininet::current() else {
+        return Ok(());
+    };
+    if !is_windows_proxy_on(enabled, &server, port) {
+        return Ok(());
+    }
+    wininet::set_direct().map_err(|e| (s().errors.disable_proxy)(&e.message()))
+}
+
+/// Never needed off Windows, like `enable_system_proxy`.
+#[cfg(not(target_os = "windows"))]
+pub fn disable_system_proxy_on(_port: u16) -> Result<(), String> {
+    Ok(())
+}
+
 /// What the system proxy BoxPilot sets leaves alone: loopback and local
 /// (dotless) names.
 #[cfg(target_os = "windows")]
@@ -416,6 +438,14 @@ fn is_our_windows_proxy(enabled: bool, server: &str) -> bool {
             let address = entry.rsplit(['=', '/']).next().unwrap_or("").trim();
             address.rsplit_once(':').map_or(address, |(host, _)| host) == "127.0.0.1"
         })
+}
+
+/// Whether the Windows proxy is still the one `enable_system_proxy` set on
+/// `port`: a manual proxy on, its server exactly `127.0.0.1:<port>`. Pure
+/// so it is tested on every platform.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_windows_proxy_on(enabled: bool, server: &str, port: u16) -> bool {
+    enabled && server.trim() == format!("127.0.0.1:{port}")
 }
 
 /// Match sing-box's wintun adapter by FriendlyName, case-insensitively. Pulled
@@ -926,6 +956,19 @@ mod tests {
         assert!(!is_our_windows_proxy(true, "proxy.corp.example:3128"));
         assert!(!is_our_windows_proxy(true, "127.0.0.10:7788"));
         assert!(!is_our_windows_proxy(true, ""));
+    }
+
+    /// A launch after a crash clears only the very proxy the lost run set.
+    #[test]
+    fn a_left_windows_proxy_is_cleared_only_on_its_own_port() {
+        assert!(is_windows_proxy_on(true, "127.0.0.1:7788", 7788));
+        assert!(is_windows_proxy_on(true, " 127.0.0.1:7788 ", 7788));
+        assert!(!is_windows_proxy_on(false, "127.0.0.1:7788", 7788));
+        assert!(!is_windows_proxy_on(true, "127.0.0.1:7890", 7788));
+        assert!(!is_windows_proxy_on(true, "127.0.0.1:77880", 7788));
+        assert!(!is_windows_proxy_on(true, "http=127.0.0.1:7788", 7788));
+        assert!(!is_windows_proxy_on(true, "proxy.corp.example:7788", 7788));
+        assert!(!is_windows_proxy_on(true, "", 7788));
     }
 
     /// The native SetupAPI path uninstalls only adapters whose FriendlyName

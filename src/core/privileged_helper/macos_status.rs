@@ -201,13 +201,30 @@ pub fn judge(hello: &HelloReply, shipped: Option<&Shipped>) -> HelperStatus {
     HelperStatus::Ready
 }
 
-/// The state of a helper that didn't answer `hello`. `last_exit`: its last
-/// exit code as launchd recorded it, for a helper that ended the connection
-/// unanswered (`Lost`) or never answered (`TimedOut`): one that refuses to
-/// run turns its waiting clients away and exits with its code, which
-/// `launchctl print` gives any account, root or not (`last_exit_code`).
-/// With no code to show, launchd isn't running it: turned off.
-pub fn failure_status(failure: HelperFailure, last_exit: Option<i32>) -> HelperStatus {
+/// What launchd says of the helper's job (`launchctl print`, which any
+/// account may read, root or not), for a helper that ended the connection
+/// unanswered (`Lost`) or never answered (`TimedOut`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobState {
+    /// It runs: alive, but it didn't answer in time (still cleaning up after
+    /// a crash, say), or turned this connection away (its read-only
+    /// connections all taken).
+    Running,
+    /// It doesn't run, and last exited with this code, if it has exited at
+    /// all.
+    NotRunning(Option<i32>),
+    /// launchctl couldn't say.
+    Unknown,
+}
+
+/// The state of a helper that didn't answer `hello`. `job`: what launchd
+/// says of it, for a helper that ended the connection unanswered (`Lost`)
+/// or never answered (`TimedOut`). One that refuses to run turns its
+/// waiting clients away and exits with its code: broken. Not running, with
+/// no such code, launchd doesn't run it: turned off. Still running, or
+/// launchd can't say: neither, it just didn't answer this time, and the
+/// next look (every TUN start takes one) asks again.
+pub fn failure_status(failure: HelperFailure, job: JobState) -> HelperStatus {
     match failure {
         HelperFailure::Open(OpenError::NotInstalled) => HelperStatus::NotInstalled,
         HelperFailure::Open(OpenError::Disabled) => HelperStatus::TurnedOff,
@@ -220,9 +237,12 @@ pub fn failure_status(failure: HelperFailure, last_exit: Option<i32>) -> HelperS
             ..
         }
         | HelperFailure::BadReply(_) => HelperStatus::Stale,
-        HelperFailure::Lost | HelperFailure::TimedOut => match last_exit {
-            Some(code) if code != exit::OK => HelperStatus::Broken(code),
-            _ => HelperStatus::TurnedOff,
+        HelperFailure::Lost | HelperFailure::TimedOut => match job {
+            JobState::NotRunning(Some(code)) if code != exit::OK => HelperStatus::Broken(code),
+            JobState::NotRunning(_) => HelperStatus::TurnedOff,
+            JobState::Running | JobState::Unknown => {
+                HelperStatus::Unreachable(failure.message_on(HelperOs::MacOs))
+            }
         },
         other => HelperStatus::Unreachable(other.message_on(HelperOs::MacOs)),
     }
@@ -324,9 +344,9 @@ pub fn probe(bundle: Option<&Path>) -> HelperStatus {
     match hello {
         Ok(hello) => judge(&hello, bundle.and_then(shipped).as_ref()),
         Err(failure @ (HelperFailure::Lost | HelperFailure::TimedOut)) => {
-            failure_status(failure, last_exit_code())
+            failure_status(failure, job_state())
         }
-        Err(failure) => failure_status(failure, None),
+        Err(failure) => failure_status(failure, JobState::Unknown),
     }
 }
 
@@ -347,14 +367,13 @@ fn shipped(contents: &Path) -> Option<Shipped> {
     })
 }
 
-/// The helper's last exit code, once it has stopped, from `launchctl
-/// print` (by its absolute path, no shell). It needs no privilege to read:
-/// CI's macOS job reads a broken install's code this way as an account
-/// without root, and fails if it can't.
-/// A helper that refuses to run turns its waiting clients away before it
-/// exits, so this waits for the exit, briefly. `None` if launchctl can't
-/// say, or the helper still runs.
-fn last_exit_code() -> Option<i32> {
+/// The helper's job as launchd has it, from `launchctl print` (by its
+/// absolute path, no shell): running, or not, with its last exit code. It
+/// needs no privilege to read: CI's macOS job reads a broken install's code
+/// this way as an account without root, and fails if it can't. A helper
+/// that refuses to run turns its waiting clients away before it exits, so
+/// this waits for the exit, briefly: still running after that, it is alive.
+fn job_state() -> JobState {
     let deadline = Instant::now() + EXIT_WAIT;
     loop {
         let output = Command::new(LAUNCHCTL)
@@ -362,17 +381,17 @@ fn last_exit_code() -> Option<i32> {
             .arg(format!("system/{LABEL}"))
             .stdin(Stdio::null())
             .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
+            .output();
+        let output = match output {
+            Ok(output) if output.status.success() => output,
+            _ => return JobState::Unknown,
+        };
         let (running, last_exit) = parse_launchctl_print(&String::from_utf8_lossy(&output.stdout));
         if !running {
-            return last_exit;
+            return JobState::NotRunning(last_exit);
         }
         if Instant::now() >= deadline {
-            return None;
+            return JobState::Running;
         }
         thread::sleep(Duration::from_millis(200));
     }
@@ -454,52 +473,83 @@ mod tests {
     #[test]
     fn failures_map_to_states() {
         use HelperFailure::*;
+        use JobState::NotRunning;
+        let unknown = JobState::Unknown;
         assert_eq!(
-            failure_status(Open(OpenError::NotInstalled), None),
+            failure_status(Open(OpenError::NotInstalled), unknown),
             HelperStatus::NotInstalled
         );
         assert_eq!(
-            failure_status(Open(OpenError::Disabled), None),
+            failure_status(Open(OpenError::Disabled), unknown),
             HelperStatus::TurnedOff
         );
         assert_eq!(
-            failure_status(Open(OpenError::ConnectDenied), None),
+            failure_status(Open(OpenError::ConnectDenied), unknown),
             HelperStatus::Unreachable(OpenError::ConnectDenied.message_on(HelperOs::MacOs))
         );
-        assert_eq!(failure_status(NotAllowed, None), HelperStatus::OtherOwner);
+        assert_eq!(
+            failure_status(NotAllowed, unknown),
+            HelperStatus::OtherOwner
+        );
         assert_eq!(
             failure_status(
                 Error {
                     code: ErrorCode::VersionMismatch,
                     message: "x".into()
                 },
-                None
+                unknown
             ),
             HelperStatus::Stale
         );
         assert_eq!(
-            failure_status(BadReply("protocol version 2".into()), None),
+            failure_status(BadReply("protocol version 2".into()), unknown),
             HelperStatus::Stale
         );
         // Turned away: the exit code says why; without one, launchd isn't
         // running it.
         assert_eq!(
-            failure_status(Lost, Some(exit::MANIFEST_REFUSED)),
+            failure_status(Lost, NotRunning(Some(exit::MANIFEST_REFUSED))),
             HelperStatus::Broken(exit::MANIFEST_REFUSED)
         );
         assert_eq!(
-            failure_status(TimedOut, Some(exit::STATE_DIR_REFUSED)),
+            failure_status(TimedOut, NotRunning(Some(exit::STATE_DIR_REFUSED))),
             HelperStatus::Broken(exit::STATE_DIR_REFUSED)
         );
         assert_eq!(
-            failure_status(Lost, Some(exit::OK)),
+            failure_status(Lost, NotRunning(Some(exit::OK))),
             HelperStatus::TurnedOff
         );
-        assert_eq!(failure_status(TimedOut, None), HelperStatus::TurnedOff);
+        assert_eq!(
+            failure_status(TimedOut, NotRunning(None)),
+            HelperStatus::TurnedOff
+        );
         assert!(matches!(
-            failure_status(Io("broken pipe".into()), None),
+            failure_status(Io("broken pipe".into()), unknown),
             HelperStatus::Unreachable(message) if message.contains("broken pipe")
         ));
+    }
+
+    /// A helper that runs but didn't answer (busy cleaning up after a
+    /// crash, or its read-only connections all taken) isn't turned off, nor
+    /// is one launchd can't say anything about: TUN stays available, and
+    /// the next look asks again.
+    #[test]
+    fn a_live_helper_that_did_not_answer_is_not_turned_off() {
+        use HelperFailure::*;
+        for (failure, job) in [
+            (TimedOut, JobState::Running),
+            (Lost, JobState::Running),
+            (TimedOut, JobState::Unknown),
+            (Lost, JobState::Unknown),
+        ] {
+            let status = failure_status(failure.clone(), job);
+            assert_eq!(
+                status,
+                HelperStatus::Unreachable(failure.message_on(HelperOs::MacOs)),
+                "{failure:?} {job:?}"
+            );
+            assert!(status.tun_available(), "{failure:?} {job:?}");
+        }
     }
 
     /// TUN can be chosen unless the helper is known to be missing or off.

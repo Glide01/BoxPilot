@@ -55,7 +55,9 @@ pub struct TraySnapshot {
     /// `AppSettings::proxy_mode`: `true` = Proxy, `false` = TUN.
     pub proxy_mode: bool,
     /// TUN can be chosen here (`AppState::tun_available`). Without it the
-    /// menu has no Proxy Mode submenu: one option is no choice.
+    /// menu has no Proxy Mode submenu, one option being no choice, unless
+    /// TUN is still the saved mode: then Proxy can be picked there, as on
+    /// Home.
     pub tun_available: bool,
     pub system_proxy: bool,
     /// Selectable Clash modes; empty unless switchable right now (running,
@@ -118,7 +120,7 @@ pub fn menu_entries(snapshot: &TraySnapshot) -> Vec<MenuEntry> {
         MenuEntry::Separator,
         MenuEntry::Item {
             label: snapshot.status.power_action_label_in(t).into(),
-            enabled: snapshot.status.can_toggle(),
+            enabled: true,
             command: TrayCommand::ToggleConnection,
         },
         MenuEntry::Check {
@@ -127,7 +129,7 @@ pub fn menu_entries(snapshot: &TraySnapshot) -> Vec<MenuEntry> {
             command: TrayCommand::SetSystemProxy(!snapshot.system_proxy),
         },
     ];
-    if snapshot.tun_available {
+    if snapshot.tun_available || !snapshot.proxy_mode {
         entries.push(MenuEntry::Radio {
             label: t.tray.proxy_mode.into(),
             options: vec![
@@ -242,10 +244,9 @@ mod tests {
             matches!(toggle(&snap), MenuEntry::Item { enabled: true, ref label, .. } if label == "Connect")
         );
         snap.status = ConnectionStatus::Starting;
-        assert!(matches!(
-            toggle(&snap),
-            MenuEntry::Item { enabled: false, .. }
-        ));
+        assert!(
+            matches!(toggle(&snap), MenuEntry::Item { enabled: true, ref label, .. } if label == "Cancel connecting")
+        );
         snap.status = ConnectionStatus::Connected;
         assert!(
             matches!(toggle(&snap), MenuEntry::Item { enabled: true, ref label, .. } if label == "Disconnect")
@@ -305,6 +306,26 @@ mod tests {
                 "Quit BoxPilot"
             ]
         );
+    }
+
+    /// TUN still saved, but not available (macOS, its helper removed): the
+    /// submenu stays, TUN selected, so Proxy can be picked from the tray.
+    #[test]
+    fn a_saved_tun_choice_keeps_the_proxy_mode_submenu() {
+        let mut snap = snapshot();
+        snap.proxy_mode = false;
+        snap.tun_available = false;
+        let entries = menu_entries(&snap);
+        let Some(MenuEntry::Radio {
+            options, selected, ..
+        }) = entries
+            .iter()
+            .find(|e| matches!(e, MenuEntry::Radio { label, .. } if label == "Proxy Mode"))
+        else {
+            panic!("no Proxy Mode submenu");
+        };
+        assert_eq!(*selected, Some(0));
+        assert_eq!(options[1].1, TrayCommand::SetProxyMode(true));
     }
 
     #[test]

@@ -95,20 +95,17 @@ pub enum ConfigChangeAction {
     /// Nothing runs with the old values (or will): the next start, or the
     /// gated one, reads the new ones.
     Nothing,
-    /// Stop sing-box and start it again.
+    /// Stop sing-box, or the start in progress, which was written with the
+    /// old values, and start again. A start stopped before it is up starts
+    /// nothing, and the new one waits for it to finish, with the previous
+    /// run's cleanup it owns (`ProcessSession::stop`).
     Restart,
-    /// The start in progress was written with the old values: let its prep
-    /// finish, but don't spawn sing-box from it, then start again. The prep
-    /// isn't cancelled because it owns the previous run's cleanup (reap,
-    /// system-proxy reset), which must not be cut short.
-    RedoStart,
 }
 
 pub fn config_change_action(phase: StartPhase) -> ConfigChangeAction {
     match phase {
         StartPhase::Idle | StartPhase::Gated => ConfigChangeAction::Nothing,
-        StartPhase::Preparing => ConfigChangeAction::RedoStart,
-        StartPhase::Running => ConfigChangeAction::Restart,
+        StartPhase::Preparing | StartPhase::Running => ConfigChangeAction::Restart,
     }
 }
 
@@ -254,14 +251,14 @@ mod tests {
     }
 
     #[test]
-    fn config_change_restarts_running_and_redoes_preparing() {
+    fn config_change_restarts_running_and_preparing() {
         assert_eq!(
             config_change_action(StartPhase::Running),
             ConfigChangeAction::Restart
         );
         assert_eq!(
             config_change_action(StartPhase::Preparing),
-            ConfigChangeAction::RedoStart
+            ConfigChangeAction::Restart
         );
     }
 

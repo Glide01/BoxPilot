@@ -202,9 +202,17 @@ isn't the GUI.
   `refused` reply is in CI); a restart after a settings change survives
   the helper's idle exit.
 - Stop: sing-box exits, the helper goes idle.
+- Cancel: with the helper service stopped and slow to come up, or a large
+  profile, clicking the power button (or the tray's "Cancel connecting")
+  while Starting… shows Disconnected at once; a Connect right after waits
+  for the cancelled start and then starts.
 - Killing BoxPilot in Task Manager while TUN runs stops sing-box.
 - System proxy in helper TUN mode is set and cleared by the GUI; a proxy
   the user set themselves is left alone; running browsers pick it up.
+  Killed in Task Manager with the system proxy on, the proxy keeps
+  pointing at the stopped sing-box until BoxPilot is opened again, which
+  turns it off before anything starts (a proxy set since, on another
+  port, is left alone).
 - Deep links from a browser reach an unelevated primary and one the user
   elevated themselves; a plain second launch surfaces the window.
 - Helper missing (portable exe), disabled, or a standard account outside

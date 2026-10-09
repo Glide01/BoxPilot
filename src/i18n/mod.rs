@@ -174,6 +174,8 @@ pub struct Status {
     pub connected: &'static str,
     pub connect: &'static str,
     pub disconnect: &'static str,
+    /// The power button and the tray item while a start is under way.
+    pub cancel_start: &'static str,
 }
 
 /// Relative times and compact durations.

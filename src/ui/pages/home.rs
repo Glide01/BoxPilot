@@ -224,10 +224,11 @@ impl Render for HomePage {
         let power_button = match status {
             ConnectionStatus::Starting => power_base
                 // A faint accent wash: blue-50 / blue-200 on white, a dim
-                // navy on the dark background.
+                // navy on the dark background. A click cancels the start.
                 .bg(theme.primary.opacity(0.08))
                 .border_2()
                 .border_color(theme.primary.opacity(0.35))
+                .hover(|style| style.border_color(theme.primary))
                 .child(
                     Spinner::new()
                         .with_size(px(POWER_ICON_SIZE))
@@ -280,9 +281,10 @@ impl Render for HomePage {
                 ),
         };
 
-        // 仅启动中(含 Linux TUN gate)禁用:不挂 on_click,半透明 + 禁止光标
-        // (同 gpui-component Button 的 loading 态)。拉订阅(含后台自动更新)
-        // 不挡开关,与 Ctrl+S 一致。
+        // Always takes a click: connect, disconnect, or, while starting
+        // (the Linux TUN gate and the macOS helper's included), cancel the
+        // start. A subscription fetch (auto-update included) doesn't hold
+        // it off, as with Ctrl+S.
         // A tab stop (Enter / Space press it, like a button); the ring only
         // when the focus came from the keyboard, and a click doesn't take
         // the focus at all.
@@ -291,20 +293,13 @@ impl Render for HomePage {
             .track_focus(&self.power_focus)
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .when(power_focused, |this| this.focus_ring_style(window, cx))
-            .map(|this| {
-                if status.can_toggle() {
-                    this.cursor_pointer().on_click(move |_, _, cx| {
-                        app_state_toggle.update(cx, |state, cx| state.toggle_process(cx));
-                    })
-                } else {
-                    this.opacity(0.8).cursor_not_allowed()
-                }
+            .cursor_pointer()
+            .on_click(move |_, _, cx| {
+                app_state_toggle.update(cx, |state, cx| state.toggle_process(cx));
             })
             .tooltip(move |window, cx| {
                 Tooltip::new(status.power_action_label())
-                    .when(status.can_toggle(), |this| {
-                        this.action(&ToggleProcess, Some(KEY_CONTEXT))
-                    })
+                    .action(&ToggleProcess, Some(KEY_CONTEXT))
                     .build(window, cx)
             });
 

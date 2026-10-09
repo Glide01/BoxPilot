@@ -99,10 +99,13 @@ impl SubscriptionUsage {
 
     /// Whole days until expiry, truncated toward zero: 0 within the last
     /// day before expiry and the first day after it, negative once a whole
-    /// day past. `None` without an expiry.
+    /// day past. `None` without an expiry. Any two `u64` instants, however
+    /// far apart (a server may send `expire=1e30`, which saturates), are
+    /// fewer than `i64::MAX` days apart.
     pub fn days_left(&self, now_secs: u64) -> Option<i64> {
-        self.expire
-            .map(|expire| (expire as i64 - now_secs as i64) / DAY_SECS)
+        self.expire.map(|expire| {
+            ((i128::from(expire) - i128::from(now_secs)) / i128::from(DAY_SECS)) as i64
+        })
     }
 
     fn is_expired(&self, now_secs: u64) -> bool {
@@ -341,6 +344,27 @@ mod tests {
         assert_eq!(left(NOW + day - 1), 0);
         assert_eq!(left(NOW - day + 1), 0);
         assert_eq!(left(NOW - 2 * day - 1), -2);
+    }
+
+    /// A far-off `expire` (`1e30` saturates to `u64::MAX`) is far off, not
+    /// past: no wrap, no overflow.
+    #[test]
+    fn a_huge_expiry_is_far_in_the_future() {
+        let far = parse_userinfo("total=1; expire=1e30", NOW).unwrap();
+        assert_eq!(far.expire, Some(u64::MAX));
+        let days = far.days_left(NOW).unwrap();
+        assert_eq!(days, ((u64::MAX - NOW) / DAY_SECS as u64) as i64);
+        assert_eq!(far.level(NOW), UsageLevel::Normal);
+        assert_eq!(
+            far.expiry_label(NOW),
+            Some(format!("expires in {days} days"))
+        );
+        let past = usage(0, 0, Some(1)).days_left(u64::MAX).unwrap();
+        assert_eq!(past, -(((u64::MAX - 1) / DAY_SECS as u64) as i64));
+        assert_eq!(
+            usage(0, 0, Some(1 << 63)).days_left(0),
+            Some(((1u64 << 63) / DAY_SECS as u64) as i64)
+        );
     }
 
     #[test]

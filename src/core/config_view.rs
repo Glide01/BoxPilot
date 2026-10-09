@@ -1,12 +1,14 @@
 //! What Settings › Troubleshooting › "Running config" shows: the config
 //! sing-box runs with (`running_config.json`), or — while sing-box is
-//! stopped — a preview of what the next start would write, with credentials
-//! masked on request and BoxPilot's per-run API secret masked always.
+//! stopped — a preview of what the next start would run (through the
+//! privileged helper, what the helper would), with credentials masked on
+//! request and BoxPilot's per-run API secret masked always.
 //!
 //! Pure and gpui-free; `load` does blocking file I/O and JSON work, so the
 //! UI runs it on the background executor.
 
 use crate::core::paths::runtime_config_path;
+use crate::core::privileged_helper::{preview_start, tun_options};
 use crate::core::settings::AppSettings;
 use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi};
 use crate::core::subscription::{prepare_config, RuntimeOptions};
@@ -235,6 +237,10 @@ pub struct ConfigRequest {
     /// The active profile's canonical config; `None` without a profile.
     pub profile_config: Option<PathBuf>,
     pub settings: AppSettings,
+    /// The next start goes through the privileged helper
+    /// (`privileged_helper::StartRoute::Helper`): the preview is what the
+    /// helper would run, not the local runtime config.
+    pub through_helper: bool,
 }
 
 /// Read and redact the config to show: `running_config.json` while sing-box
@@ -262,9 +268,19 @@ pub fn load(request: &ConfigRequest) -> Result<ConfigView, ConfigViewError> {
         }
         Err(e) => return Err(read_failed(&path, e)),
     };
-    let preview = preview_config(&profile_json, &request.settings).map_err(|e| {
-        ConfigViewError::Failed((s().config_viewer.profile_unreadable)(&e.to_string()))
-    })?;
+    let preview = if request.through_helper {
+        // A refusal is already in the user's words, naming the profile.
+        preview_start(
+            &profile_json,
+            &request.app_dir,
+            tun_options(&request.settings),
+        )
+        .map_err(ConfigViewError::Failed)?
+    } else {
+        preview_config(&profile_json, &request.settings).map_err(|e| {
+            ConfigViewError::Failed((s().config_viewer.profile_unreadable)(&e.to_string()))
+        })?
+    };
     view(ConfigSource::Preview, path, &preview)
 }
 
@@ -516,6 +532,7 @@ mod tests {
             running,
             profile_config: profile.map(|id| profile_config_path(dir, id)),
             settings: AppSettings::default(),
+            through_helper: false,
         }
     }
 

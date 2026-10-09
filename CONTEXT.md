@@ -106,6 +106,7 @@ durations such as 1小时23分 excepted).
 | System Proxy | 系统代理 | |
 | Allow LAN connections | 允许局域网连接 | |
 | Connect / Disconnect | 连接 / 断开 | Power button and tray menu |
+| Cancel connecting | 取消连接 | The power button and tray item while Starting… |
 | Connected / Disconnected / Starting… | 已连接 / 未连接 / 正在启动… | Connection status |
 | Connection (page, list) | 连接 | Open / closed connections = 活动 / 已关闭 |
 | Logs | 日志 | Level names stay English (Error / Warn / Info / Debug / Trace), as in the log text |
