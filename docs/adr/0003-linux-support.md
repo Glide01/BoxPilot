@@ -26,10 +26,21 @@ user. Only the one thing that needs privilege, sing-box's TUN device, gets it:
 - Before each TUN start, BoxPilot checks that the copy exists, reports the
   same sing-box version as the bundled one, and has `cap_net_admin` in its
   `security.capability` attribute. If any check fails, it asks once, and on
-  confirmation runs `pkexec` to `install` the bundled binary there as
-  owner root, group = the user's primary group, mode 0750, and `setcap` it. That shows the system password prompt. If
-  the user cancels or the grant fails, BoxPilot says so and doesn't start
-  sing-box.
+  confirmation runs `pkexec` to `install` the bundled binary there and
+  `setcap` it. That shows the system password prompt. If the user cancels
+  or the grant fails, BoxPilot says so and doesn't start sing-box.
+- **Only the granting account runs the copy.** It is owner and group root,
+  mode 0700, with an ACL entry that lets the granting account (pkexec's
+  `PKEXEC_UID`) alone run it. Where ACLs can't be set (no `setfacl`, or a
+  filesystem without them), the group is the account's primary group
+  instead, mode 0750, but only if that group is the account's alone
+  (named after it, with no other member and no other account's primary
+  group, per `/etc/passwd` and `/etc/group`); otherwise nothing is
+  granted, and BoxPilot asks for the `acl` package. A copy laid out any
+  other way (granted to a shared primary group, as copies once were) is
+  granted again. The copy stays root's either way: owned by the account,
+  its processes could rewrite it through a shared memory mapping, which,
+  unlike `write`, keeps its file capabilities.
 - **The grant is per sing-box version.** An AppImage update that bundles a
   different sing-box fails the version check, so BoxPilot asks again. The
   privileged copy never drifts from the sing-box the AppImage ships.
@@ -44,10 +55,11 @@ in, to get its own code run with those capabilities.
 
 - **Accepted risk: the capabilities are not tied to BoxPilot.** Any process
   running as the user can start `/usr/local/lib/boxpilot/sing-box` with its
-  own config and get `CAP_NET_ADMIN`. The file is mode 0750 with the
-  granting user's primary group, so other local accounts can't run it. They
-  are offered their own grant, which re-groups the copy to them; on a shared
-  machine the last user to grant holds it. That means it can
+  own config and get `CAP_NET_ADMIN`. Only the granting account can run the
+  file (its ACL entry, or a primary group no one else has), so other local
+  accounts can't, even where all users share one primary group (`users` on
+  openSUSE). They are offered their own grant, which hands the copy to
+  them; on a shared machine the last user to grant holds it. That means it can
   create TUN devices, rewrite routes and firewall rules, and bind low ports. It
   does not give root, and it is the same power the user grants by choosing
   TUN mode at all. We accept it in exchange for one prompt instead of one per
@@ -55,7 +67,9 @@ in, to get its own code run with those capabilities.
   it.
 - **Single instance** uses a lock file and a Unix socket in
   `$XDG_RUNTIME_DIR` (`boxpilot.lock`, `boxpilot.sock`, mode 0600). Without
-  that variable they fall back to a per-UID name in `/tmp`. The lock holder
+  that variable they go in a `boxpilot-<uid>` directory in `/tmp`, made
+  0700 and used only if this user owns it: in a shared `/tmp` another user
+  could make the name first. The lock holder
   removes any stale socket and binds a new one. Later launches connect and
   write one line in **the same wire format as the Windows named pipe**, then
   exit. So `LaunchAttempt` handling and ADR 0001's rule are shared with

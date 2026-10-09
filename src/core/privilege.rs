@@ -1,8 +1,9 @@
 //! TUN permission on Linux. BoxPilot runs as a normal user, but sing-box
 //! needs CAP_NET_ADMIN to open a TUN device. The bundled sing-box can't be
 //! granted it in place — an AppImage is a read-only, nosuid squashfs mount —
-//! so a copy is installed to a root-owned fixed path and given file
-//! capabilities there, once, through the system password prompt (pkexec).
+//! so a copy is installed to a fixed path in a root-owned directory, which
+//! only the granting account can run, and given file capabilities there,
+//! once, through the system password prompt (pkexec).
 //! The copy is re-granted whenever its version stops matching the bundled
 //! sing-box (an AppImage update). Proxy mode never needs any of this.
 //!
@@ -17,8 +18,8 @@ use std::process::Command;
 
 use crate::i18n::s;
 
-/// The granted copy. Root-owned file and directory, so a user process can't
-/// swap a different program in under the capabilities.
+/// The granted copy, in a root-owned directory, so a user process can't
+/// swap a different program in under the capabilities ([`grant_command`]).
 pub const PRIVILEGED_COPY_PATH: &str = "/usr/local/lib/boxpilot/sing-box";
 
 /// The capabilities granted to the copy: TUN + routes (`net_admin`), ports
@@ -52,6 +53,10 @@ pub enum CopyState {
         /// Its `sing-box version`; `None` if the probe failed.
         version: Option<String>,
         has_net_admin: bool,
+        /// Laid out so that only this account can run it
+        /// ([`private_layout`]). One granted to a primary group others
+        /// share, as copies once were, is granted again.
+        private: bool,
     },
 }
 
@@ -73,6 +78,7 @@ pub fn tun_launch_plan(
             CopyState::Present {
                 version: Some(version),
                 has_net_admin: true,
+                private: true,
             },
         ) if version == bundled_version => {
             TunPlan::UsePrivilegedCopy(PathBuf::from(PRIVILEGED_COPY_PATH))
@@ -97,11 +103,87 @@ pub fn evaluate_tun_plan(bundled: &Path, bundled_version: Option<String>) -> Tun
         CopyState::Present {
             version: query_sing_box_version(copy),
             has_net_admin: has_net_admin_cap(copy),
+            private: copy_is_private(copy),
         }
     } else {
         CopyState::Missing
     };
     tun_launch_plan(false, bundled, bundled_version.as_deref(), copy_state)
+}
+
+/// Whether the copy at `path` is laid out so that only this account can run
+/// it ([`private_layout`]). A read error is `false`.
+fn copy_is_private(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|meta| private_layout(meta.mode(), meta.uid(), meta.gid(), own_primary_group()))
+}
+
+/// Whether a copy with `mode`, `owner` and `group` is laid out the way
+/// [`grant_command`] leaves it, so that only the granting account runs it:
+/// root's, with nothing for others, and either group root (run through an
+/// ACL entry for the account, whose working the version probe shows) or
+/// `own_group`, a primary group that is the account's alone. A group
+/// others share (`users` on openSUSE) isn't: any of them could run it.
+fn private_layout(mode: u32, owner: u32, group: u32, own_group: Option<u32>) -> bool {
+    owner == 0 && mode & 0o007 == 0 && (group == 0 || Some(group) == own_group)
+}
+
+/// This account's primary group, if it is the account's alone
+/// ([`private_primary_group`]).
+fn own_primary_group() -> Option<u32> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    let group = std::fs::read_to_string("/etc/group").ok()?;
+    // SAFETY: getuid and getgid have no preconditions and cannot fail.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    private_primary_group(&passwd, &group, uid).filter(|own| *own == gid)
+}
+
+/// Account `uid`'s primary group, if that group is the account's alone:
+/// named after it, with no other member and no other account's primary
+/// group (the user private group most distributions make for each
+/// account; not openSUSE's shared `users`). From `/etc/passwd` and
+/// `/etc/group` text, so an account they don't list (from LDAP, say) has
+/// none.
+fn private_primary_group(passwd: &str, group: &str, uid: u32) -> Option<u32> {
+    let accounts: Vec<(&str, u32, u32)> = passwd
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(':');
+            let name = fields.next()?;
+            let _password = fields.next()?;
+            Some((
+                name,
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+            ))
+        })
+        .collect();
+    let &(name, _, gid) = accounts.iter().find(|(_, account, _)| *account == uid)?;
+    if accounts
+        .iter()
+        .any(|&(_, account, primary)| primary == gid && account != uid)
+    {
+        return None;
+    }
+    let entries: Vec<(&str, &str)> = group
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(':');
+            let group_name = fields.next()?;
+            let _password = fields.next()?;
+            let group_gid: u32 = fields.next()?.parse().ok()?;
+            (group_gid == gid).then(|| (group_name, fields.next().unwrap_or("")))
+        })
+        .collect();
+    let named_after = entries.iter().any(|(group_name, _)| *group_name == name);
+    let no_one_else = entries.iter().all(|(_, members)| {
+        members
+            .split(',')
+            .map(str::trim)
+            .all(|member| member.is_empty() || member == name)
+    });
+    (named_after && no_one_else).then_some(gid)
 }
 
 /// Whether `path`'s file capabilities grant CAP_NET_ADMIN as permitted +
@@ -155,17 +237,32 @@ fn caps_grant_net_admin(data: &[u8]) -> bool {
     permitted & (1 << CAP_NET_ADMIN) != 0
 }
 
-/// `pkexec` argv installing `bundled` as the copy and granting it. The copy
-/// is `root:<gid>` mode 0750: only the granting user's group can run a
-/// CAP_NET_ADMIN sing-box, not every local account. (Another user, without
-/// access, fails the version probe and gets offered its own grant.) The
-/// path and gid go in as `$1` / `$2`, never into the script text, so no
+/// The grant script's exit code when the copy can't be made the account's
+/// alone: no ACLs, and a primary group others share.
+const NO_PRIVATE_LAYOUT: i32 = 64;
+
+/// `pkexec` argv installing `bundled` as the copy and granting it, for the
+/// account that asked (pkexec's `PKEXEC_UID`) alone, whatever groups it
+/// shares with others. (Another account fails the version probe and gets
+/// offered its own grant.) The copy is root's either way, so no process of
+/// the account can change it, or put a program of its own under the
+/// capabilities. It is `root:root` mode 0700, run through an ACL entry for
+/// the account; where ACLs can't be set (no `setfacl`, or a filesystem
+/// without them), `root:<own_group>` mode 0750, with `own_group` the
+/// account's primary group if that is its alone ([`own_primary_group`]).
+/// With neither, nothing is granted (exit [`NO_PRIVATE_LAYOUT`]). The path
+/// and group go in as `$1` / `$2`, never into the script text, so no
 /// quoting of a user-controlled path can change what runs as root.
-pub fn grant_command(bundled: &Path, gid: u32) -> (String, Vec<String>) {
+pub fn grant_command(bundled: &Path, own_group: Option<u32>) -> (String, Vec<String>) {
+    // `PKEXEC_UID` is read first: without it, nothing is touched.
     let script = format!(
-        "install -D -m 0750 -o root -g \"$2\" \"$1\" {copy} && setcap {caps} {copy}",
+        "u=\"${{PKEXEC_UID:?}}\" && install -D -m 0700 -o 0 -g 0 \"$1\" {copy} && \
+         {{ setfacl -m \"u:$u:r-x\" {copy} 2>/dev/null || \
+         {{ [ -n \"$2\" ] && chgrp \"$2\" {copy} && chmod 0750 {copy}; }} || \
+         exit {refused}; }} && setcap {caps} {copy}",
         copy = PRIVILEGED_COPY_PATH,
         caps = GRANTED_CAPS,
+        refused = NO_PRIVATE_LAYOUT,
     );
     (
         "pkexec".to_string(),
@@ -175,18 +272,16 @@ pub fn grant_command(bundled: &Path, gid: u32) -> (String, Vec<String>) {
             script,
             "sh".to_string(),
             bundled.to_string_lossy().into_owned(),
-            gid.to_string(),
+            own_group.map(|gid| gid.to_string()).unwrap_or_default(),
         ],
     )
 }
 
-/// Install and grant the copy through pkexec, for the caller's primary
-/// group. Blocks until the user has answered the password prompt: call on
-/// the background executor. `Err` is a short message for a toast.
+/// Install and grant the copy through pkexec, for the account that asks.
+/// Blocks until the user has answered the password prompt: call on the
+/// background executor. `Err` is a short message for a toast.
 pub fn run_grant(bundled: &Path) -> Result<(), String> {
-    // SAFETY: getgid has no preconditions and cannot fail.
-    let gid = unsafe { libc::getgid() };
-    let (program, args) = grant_command(bundled, gid);
+    let (program, args) = grant_command(bundled, own_primary_group());
     let output = match Command::new(&program).args(&args).output() {
         Ok(output) => output,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -213,6 +308,7 @@ fn grant_error_message(code: Option<i32>, stderr: &str) -> String {
     let t = &s().errors;
     match (code, detail) {
         (Some(126), _) => t.tun_dismissed.to_string(),
+        (Some(NO_PRIVATE_LAYOUT), _) => t.tun_needs_acl.to_string(),
         (Some(127), None) => t.tun_not_authorized.to_string(),
         (Some(127), Some(detail)) if detail.contains("Not authorized") => {
             t.tun_not_authorized.to_string()
@@ -345,6 +441,7 @@ mod tests {
         CopyState::Present {
             version: Some(version.to_string()),
             has_net_admin,
+            private: true,
         }
     }
 
@@ -384,6 +481,16 @@ mod tests {
                 CopyState::Present {
                     version: None,
                     has_net_admin: true,
+                    private: true,
+                },
+            ),
+            // Granted before, to a group others may share.
+            (
+                Some("1.14.0"),
+                CopyState::Present {
+                    version: Some("1.14.0".to_string()),
+                    has_net_admin: true,
+                    private: false,
                 },
             ),
             // Bundled version unknown: can't vouch for the copy.
@@ -401,23 +508,86 @@ mod tests {
     }
 
     #[test]
-    fn grant_command_passes_path_and_gid_as_positional_args() {
+    fn grant_command_passes_path_and_group_as_positional_args() {
         let bundled = Path::new("/tmp/.mount_Box it'\"$(x)/usr/bin/sing-box");
-        let (program, args) = grant_command(bundled, 1000);
+        let (program, args) = grant_command(bundled, Some(1000));
         assert_eq!(program, "pkexec");
         assert_eq!(
             args,
             vec![
                 "sh",
                 "-c",
-                "install -D -m 0750 -o root -g \"$2\" \"$1\" /usr/local/lib/boxpilot/sing-box \
-                 && setcap cap_net_admin,cap_net_bind_service,cap_net_raw+ep \
+                "u=\"${PKEXEC_UID:?}\" && \
+                 install -D -m 0700 -o 0 -g 0 \"$1\" /usr/local/lib/boxpilot/sing-box && \
+                 { setfacl -m \"u:$u:r-x\" /usr/local/lib/boxpilot/sing-box 2>/dev/null || \
+                 { [ -n \"$2\" ] && chgrp \"$2\" /usr/local/lib/boxpilot/sing-box && \
+                 chmod 0750 /usr/local/lib/boxpilot/sing-box; } || exit 64; } && \
+                 setcap cap_net_admin,cap_net_bind_service,cap_net_raw+ep \
                  /usr/local/lib/boxpilot/sing-box",
                 "sh",
                 "/tmp/.mount_Box it'\"$(x)/usr/bin/sing-box",
                 "1000",
             ]
         );
+        // Without a group of its own, `$2` is empty.
+        let (_, args) = grant_command(bundled, None);
+        assert_eq!(args.last().map(String::as_str), Some(""));
+    }
+
+    /// Only the granting account runs the copy: root's, through its ACL
+    /// entry or a primary group that is its alone; never a group others
+    /// share, nor others' bits.
+    #[test]
+    fn only_a_copy_the_account_alone_can_run_is_private() {
+        // root:root 0700 plus `u:1000:r-x` (the mask shows as group r-x).
+        assert!(private_layout(0o100750, 0, 0, None));
+        assert!(private_layout(0o100700, 0, 0, Some(1000)));
+        // The account's own primary group.
+        assert!(private_layout(0o100750, 0, 1000, Some(1000)));
+        // A primary group others share (`users`), or someone else's.
+        assert!(!private_layout(0o100750, 0, 100, None));
+        assert!(!private_layout(0o100750, 0, 1001, Some(1000)));
+        // Not root's, or others may run it.
+        assert!(!private_layout(0o100500, 1000, 0, Some(1000)));
+        assert!(!private_layout(0o100755, 0, 0, None));
+        assert!(!private_layout(0o100751, 0, 1000, Some(1000)));
+    }
+
+    const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
+                          # a comment\n\
+                          alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
+                          bob:x:1001:100:Bob:/home/bob:/bin/bash\n\
+                          carol:x:1002:100:Carol:/home/carol:/bin/bash\n\
+                          dave:x:1003:1003::/home/dave:/bin/sh\n\
+                          erin:x:1004:1004::/home/erin:/bin/sh\n\
+                          frank:x:1005:1005::/home/frank:/bin/sh\n\
+                          grace:x:1006:1005::/home/grace:/bin/sh\n\
+                          +::::::\n";
+
+    const GROUP: &str = "root:x:0:\n\
+                         users:x:100:\n\
+                         alice:x:1000:alice\n\
+                         dave:x:1003:dave,mallory\n\
+                         staff:x:1004:\n\
+                         frank:x:1005:\n";
+
+    #[test]
+    fn a_primary_group_of_the_accounts_own_is_found() {
+        assert_eq!(private_primary_group(PASSWD, GROUP, 1000), Some(1000));
+    }
+
+    #[test]
+    fn a_primary_group_others_have_is_not_the_accounts_own() {
+        // openSUSE's shared `users`.
+        assert_eq!(private_primary_group(PASSWD, GROUP, 1001), None);
+        // Another member.
+        assert_eq!(private_primary_group(PASSWD, GROUP, 1003), None);
+        // Named after something else.
+        assert_eq!(private_primary_group(PASSWD, GROUP, 1004), None);
+        // Another account's primary group too.
+        assert_eq!(private_primary_group(PASSWD, GROUP, 1005), None);
+        // An account the files don't list (LDAP, say).
+        assert_eq!(private_primary_group(PASSWD, GROUP, 2000), None);
     }
 
     #[test]
@@ -425,6 +595,12 @@ mod tests {
         assert_eq!(
             grant_error_message(Some(126), ""),
             "TUN permission was not granted: the password prompt was dismissed."
+        );
+        assert_eq!(
+            grant_error_message(Some(NO_PRIVATE_LAYOUT), ""),
+            "TUN permission was not granted: this account shares its primary group \
+             with others, and granting TUN to it alone needs ACLs. Install the acl \
+             package (setfacl) and try again."
         );
         assert_eq!(
             grant_error_message(

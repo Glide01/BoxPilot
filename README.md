@@ -71,7 +71,7 @@ chmod +x BoxPilot-*-x86_64.AppImage
 ```
 
 - **链接协议与菜单项**：以 AppImage 运行时，BoxPilot 每次启动都会在 `~/.local/share` 下注册 `sing-box://` / `boxpilot://` 链接协议，并写入 `.desktop` 菜单项和图标。AppImage 移动位置后重新运行一次即可更新。
-- **TUN 模式**：AppImage 是只读挂载，不能直接给里面的 sing-box 授权。第一次用 TUN 模式连接时，BoxPilot 会通过系统密码框（pkexec）请求一次授权：把带网络管理能力（setcap）的 sing-box 副本安装到 `/usr/local/lib/boxpilot/`。之后连接不再询问；升级后自带的 sing-box 版本变了，会再询问一次。Mixed 模式不需要授权。
+- **TUN 模式**：AppImage 是只读挂载，不能直接给里面的 sing-box 授权。第一次用 TUN 模式连接时，BoxPilot 会通过系统密码框（pkexec）请求一次授权：把带网络管理能力（setcap）的 sing-box 副本安装到 `/usr/local/lib/boxpilot/`，只有授权的账户能运行它。之后连接不再询问；升级后自带的 sing-box 版本变了，会再询问一次。如果系统里所有用户共用一个主组（如 openSUSE 的 `users`），授权需要 `acl` 软件包（`setfacl`）。Mixed 模式不需要授权。
 - **系统代理**：GNOME 和 KDE 下可用（由 sing-box 的 `set_system_proxy` 设置）。
 - 配置和设置保存在 `~/.config/BoxPilot`。
 

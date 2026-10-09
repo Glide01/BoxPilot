@@ -663,6 +663,8 @@ pub static ZH_CN: Strings = Strings {
         tun_failed: |detail| format!("授予 TUN 权限失败：{detail}"),
         tun_failed_code: |code| format!("授予 TUN 权限失败（退出码 {code}）。"),
         tun_terminated: "授予 TUN 权限失败：pkexec 被终止。",
+        tun_needs_acl: "未授予 TUN 权限：此账户与其他账户共用主组，只授权给此账户需要 ACL。\
+                        请安装 acl 软件包（提供 setfacl）后重试。",
         resolve_dir: "无法确定配置目录或当前目录",
         create_app_dir: |e| format!("创建应用数据目录失败：{e}"),
         exe_path: |e| format!("无法获取当前程序路径：{e}"),

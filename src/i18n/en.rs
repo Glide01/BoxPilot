@@ -722,6 +722,9 @@ pub static EN: Strings = Strings {
         tun_failed: |detail| format!("Failed to grant TUN permission: {detail}"),
         tun_failed_code: |code| format!("Failed to grant TUN permission (exit code {code})."),
         tun_terminated: "Failed to grant TUN permission: pkexec was terminated.",
+        tun_needs_acl: "TUN permission was not granted: this account shares its primary group \
+                        with others, and granting TUN to it alone needs ACLs. Install the acl \
+                        package (setfacl) and try again.",
         resolve_dir: "Failed to resolve config or current directory",
         create_app_dir: |e| format!("Failed to create app data directory: {e}"),
         exe_path: |e| format!("Failed to get current executable path: {e}"),

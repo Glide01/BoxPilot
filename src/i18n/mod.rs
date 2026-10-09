@@ -868,6 +868,9 @@ pub struct Errors {
     pub tun_failed: Fmt1,
     pub tun_failed_code: Fmt1,
     pub tun_terminated: &'static str,
+    /// No ACLs to grant TUN to this account alone, and a primary group
+    /// others share.
+    pub tun_needs_acl: &'static str,
     pub resolve_dir: &'static str,
     pub create_app_dir: Fmt1,
     pub exe_path: Fmt1,
