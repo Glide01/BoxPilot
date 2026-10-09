@@ -357,3 +357,22 @@ fn chinese_uses_full_width_punctuation() {
         }
     }
 }
+
+/// macOS lists the ad hoc signed helper in Login Items under its label,
+/// not BoxPilot's name (`AssociatedBundleIdentifiers` matches by signing
+/// team, which an ad hoc signature hasn't): every text that sends the user
+/// there names the entry as macOS shows it.
+#[test]
+fn login_items_texts_name_the_helpers_entry() {
+    use boxpilot_protocol::endpoint::macos::LABEL;
+    for t in [&EN, &ZH_CN] {
+        let texts: Vec<_> = plain(t)
+            .into_iter()
+            .filter(|text| text.contains("Login Items") || text.contains("登录项"))
+            .collect();
+        assert_eq!(texts.len(), 4, "{texts:?}");
+        for text in texts {
+            assert!(text.contains(LABEL), "{text}");
+        }
+    }
+}

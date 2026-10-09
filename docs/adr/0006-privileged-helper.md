@@ -815,7 +815,9 @@ not from a BoxPilot setting:
   leaves it there), and since macOS 27 launchd refuses to load a plist
   that has it; an ACL would grant on root's copy whatever it grants on
   the user's file.
-- **Login Items.** macOS 13+ lists the helper under Login Items. If the
+- **Login Items.** macOS 13+ lists the helper under Login Items: under
+  its label for an ad hoc signed build, since `AssociatedBundleIdentifiers`
+  matches BoxPilot by signing team, so the GUI's texts name it. If the
   user turns it off there, BoxPilot treats it as not installed: launchd no
   longer serves its socket, so TUN can't be chosen, and Settings › TUN
   says to turn it back on there, or to reinstall it.

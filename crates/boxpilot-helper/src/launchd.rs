@@ -25,7 +25,10 @@
 //!   it. That is how a root sing-box never outlives its helper, as a job
 //!   object's `KILL_ON_JOB_CLOSE` does it on Windows.
 //! - `AssociatedBundleIdentifiers`: macOS 13 and later show the daemon
-//!   under BoxPilot's name in Login Items; older versions ignore it.
+//!   under BoxPilot's name in Login Items when it and the app are signed
+//!   by one team; older versions ignore it. An ad hoc signature has no
+//!   team, so today's builds are listed under the label instead (seen on
+//!   macOS 27), and the GUI's texts name the entry that way.
 
 #![forbid(unsafe_code)]
 

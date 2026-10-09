@@ -52,10 +52,15 @@ unit-tested on Linux and, by the job's Test step, on macOS.
   `/var/run/io.github.glide01.boxpilot.helper.sock` exists, root:wheel
   0666, before any client connects (**CI**).
 - macOS 13 and later: the "Background Items Added" notification, and
-  System Settings › General › Login Items lists the helper under BoxPilot's
-  name (`AssociatedBundleIdentifiers`). Turning it off there unloads it;
-  the GUI then treats it as not installed (see "GUI" below; **CI** checks
-  the GUI's reading of an unloaded job, after `launchctl bootout`).
+  System Settings › General › Login Items (Login Items & Extensions since
+  macOS 15) lists the helper, turned on. An ad hoc signed build is listed
+  under its label, `io.github.glide01.boxpilot.helper`, as the GUI's texts
+  say, not under BoxPilot's name: `AssociatedBundleIdentifiers` matches by
+  signing team, which an ad hoc signature hasn't (seen on macOS 27, turned
+  on and "Running in background" after the install). Turning it off there
+  unloads it; the GUI then treats it as not installed (see "GUI" below;
+  **CI** checks the GUI's reading of an unloaded job, after `launchctl
+  bootout`).
 - Installing from a downloaded, quarantined DMG, opened with "Open
   Anyway" (which leaves the app's quarantine flag): no installed file
   carries the flag, nor an ACL from the app's files (**CI**, from a copy

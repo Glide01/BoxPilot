@@ -501,7 +501,9 @@ pub static EN: Strings = Strings {
         helper_not_installed: "Not installed. TUN mode needs it: it runs sing-box as root, on a \
                                config it checks first.",
         helper_turned_off: "Installed, but not running. If it's turned off in System Settings › \
-                            General › Login Items, turn it on there; otherwise reinstall it.",
+                            General › Login Items & Extensions, where it's listed as \
+                            io.github.glide01.boxpilot.helper, turn it on there; otherwise \
+                            reinstall it.",
         helper_ready: "Installed and up to date.",
         helper_other_owner: "Installed, but another account on this Mac owns it. Installing it \
                              again makes this account its owner.",
@@ -608,7 +610,8 @@ pub static EN: Strings = Strings {
                               which runs sing-box as root on a config it checks first. \
                               Installing it takes an administrator's name and password, once: \
                               macOS asks for them, never BoxPilot. It then shows in System \
-                              Settings › General › Login Items.",
+                              Settings › General › Login Items & Extensions, as \
+                              io.github.glide01.boxpilot.helper.",
         helper_reinstall_title: "Reinstall the privileged helper",
         helper_reinstall_body: "The privileged helper on this Mac is from another BoxPilot \
                                 version, or needs repair. Reinstalling it takes an \
@@ -620,9 +623,11 @@ pub static EN: Strings = Strings {
                                 takes an administrator's name and password: macOS asks for \
                                 them, never BoxPilot.",
         helper_turn_on_body: "The privileged helper is installed but not running. If you \
-                              turned it off in System Settings › General › Login Items, turn \
-                              it on there instead. Reinstalling it takes an administrator's \
-                              name and password: macOS asks for them, never BoxPilot.",
+                              turned it off in System Settings › General › Login Items & \
+                              Extensions, where it's listed as io.github.glide01.boxpilot.helper, \
+                              turn it on there instead. Reinstalling it takes an \
+                              administrator's name and password: macOS asks for them, never \
+                              BoxPilot.",
         helper_remove_title: "Remove the privileged helper?",
         helper_remove_body: "TUN mode won't be available until it's installed again. Removing \
                              it takes an administrator's name and password: macOS asks for \
@@ -836,7 +841,8 @@ pub static EN: Strings = Strings {
         mac_not_installed: "TUN mode needs BoxPilot's privileged helper, which isn't installed. \
                             Install it in Settings › TUN, or use Proxy mode.",
         mac_turned_off: "The privileged helper is installed but not running. If it's turned off \
-                         in System Settings › General › Login Items, turn it on there; \
+                         in System Settings › General › Login Items & Extensions, where it's \
+                         listed as io.github.glide01.boxpilot.helper, turn it on there; \
                          otherwise reinstall it in Settings › TUN. Proxy mode works without it.",
         mac_connect_denied: "macOS didn't let BoxPilot connect to the privileged helper. \
                              Reinstall it in Settings › TUN, or use Proxy mode.",
