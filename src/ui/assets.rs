@@ -16,10 +16,8 @@ const TOAST_SUCCESS_SVG: &[u8] = include_bytes!("../../assets/icons/toast-succes
 const TOAST_INFO_SVG: &[u8] = include_bytes!("../../assets/icons/toast-info.svg");
 const TOAST_WARNING_SVG: &[u8] = include_bytes!("../../assets/icons/toast-warning.svg");
 const TOAST_ERROR_SVG: &[u8] = include_bytes!("../../assets/icons/toast-error.svg");
-/// The app icon, shown beside the name at the top of the sidebar.
+/// The app icon, at the head of the sidebar and in the title bar.
 const BRAND_ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
-/// The app's mark as a glyph (the tray's box), on the sidebar's accent tile.
-const BRAND_BOX_SVG: &[u8] = include_bytes!("../../assets/tray/box-outline.svg");
 
 pub struct AppAssets;
 
@@ -37,7 +35,6 @@ impl AssetSource for AppAssets {
             "icons/toast-warning.svg" => Ok(Some(Cow::Borrowed(TOAST_WARNING_SVG))),
             "icons/toast-error.svg" => Ok(Some(Cow::Borrowed(TOAST_ERROR_SVG))),
             "brand/icon.png" => Ok(Some(Cow::Borrowed(BRAND_ICON_PNG))),
-            "brand/box.svg" => Ok(Some(Cow::Borrowed(BRAND_BOX_SVG))),
             _ => Assets.load(path),
         }
     }

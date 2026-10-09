@@ -101,8 +101,7 @@ pub fn brand(compact: bool) -> Div {
         .child(name.font_weight(FontWeight::SEMIBOLD).child("BoxPilot"))
 }
 
-/// The rail's head: the app's mark — a box glyph on an accent tile — and,
-/// `expanded`, its name.
+/// The rail's head: the app icon and, `expanded`, the app's name.
 pub fn rail_brand(expanded: bool, colors: SidebarColors) -> Div {
     let tile = div()
         .flex_none()
@@ -110,25 +109,7 @@ pub fn rail_brand(expanded: bool, colors: SidebarColors) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(12.))
-        .bg(linear_gradient(
-            160.,
-            linear_color_stop(colors.accent_light, 0.),
-            linear_color_stop(colors.accent, 1.),
-        ))
-        .shadow(vec![BoxShadow {
-            color: colors.accent.opacity(0.35),
-            offset: point(px(0.), px(4.)),
-            blur_radius: px(14.),
-            spread_radius: px(0.),
-            inset: false,
-        }])
-        .child(
-            svg()
-                .path("brand/box.svg")
-                .size(px(22.))
-                .text_color(colors.on_accent),
-        );
+        .child(img("brand/icon.png").size(px(34.)));
     div()
         .h_flex()
         .items_center()
@@ -437,12 +418,8 @@ pub struct SidebarColors {
     pub rail: Hsla,
     pub fg: Hsla,
     pub muted: Hsla,
-    /// The mark's tile runs from `accent_light` down to `accent`; the update
-    /// dot is `accent` too.
+    /// The update dot.
     pub accent: Hsla,
-    pub accent_light: Hsla,
-    /// The glyph on the mark.
-    pub on_accent: Hsla,
     /// The selected item's raised tile, and the rules between groups.
     pub tile: Hsla,
     pub tile_border: Hsla,

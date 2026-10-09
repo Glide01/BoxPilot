@@ -485,8 +485,6 @@ impl Render for RootView {
             fg,
             muted,
             accent: theme.primary,
-            accent_light: theme.primary_hover,
-            on_accent: theme.primary_foreground,
             tile: theme.sidebar_accent,
             tile_border: theme.border,
         };
