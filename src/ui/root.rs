@@ -331,18 +331,16 @@ impl RootView {
             alert
                 .title(centered.title(s().dialogs.import_title))
                 .description(
-                    centered.description(
-                        div()
-                            .v_flex()
-                            .gap_1()
-                            .children(
-                                (!name.is_empty())
-                                    .then(|| div().font_weight(FontWeight::SEMIBOLD).child(name)),
-                            )
-                            .child(div().text_sm().child(redact_url(&request.url))),
-                    ),
+                    div()
+                        .v_flex()
+                        .gap_1()
+                        .children(
+                            (!name.is_empty())
+                                .then(|| div().font_weight(FontWeight::SEMIBOLD).child(name)),
+                        )
+                        .child(div().text_sm().child(redact_url(&request.url))),
                 )
-                .confirm()
+                .footer(centered.confirm_footer(s().common.ok))
                 .on_ok(move |_, _, cx| {
                     app_state.update(cx, |state, cx| {
                         state.import_profile(request.clone(), cx);
@@ -364,9 +362,8 @@ impl RootView {
             let app_state = app_state.clone();
             alert
                 .title(centered.title(s().dialogs.tun_grant_title))
-                .description(centered.description(s().dialogs.tun_grant_body))
-                .confirm()
-                .ok_text(s().dialogs.grant)
+                .description(s().dialogs.tun_grant_body)
+                .footer(centered.confirm_footer(s().dialogs.grant))
                 .on_ok(move |_, _, cx| {
                     app_state.update(cx, |state, cx| state.grant_tun_permission(cx));
                     true
@@ -390,9 +387,8 @@ impl RootView {
             let app_state = app_state.clone();
             alert
                 .title(centered.title(prompt.title))
-                .description(centered.description(prompt.body))
-                .confirm()
-                .ok_text(prompt.ok)
+                .description(prompt.body)
+                .footer(centered.confirm_footer(prompt.ok))
                 .on_ok(move |_, _, cx| {
                     app_state.update(cx, |state, cx| state.install_helper(then_start, cx));
                     true
@@ -411,9 +407,8 @@ impl RootView {
             let app_state = app_state.clone();
             alert
                 .title(centered.title(s().dialogs.helper_remove_title))
-                .description(centered.description(s().dialogs.helper_remove_body))
-                .confirm()
-                .ok_text(s().settings.remove_helper)
+                .description(s().dialogs.helper_remove_body)
+                .footer(centered.confirm_footer(s().settings.remove_helper))
                 .on_ok(move |_, _, cx| {
                     app_state.update(cx, |state, cx| state.remove_helper(cx));
                     true

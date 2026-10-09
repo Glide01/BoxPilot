@@ -27,8 +27,8 @@ use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    dialog_button, empty_state, form_input, meta_row, page_header, page_layout, select_widths,
-    Control, ControlSize, IconLabel, TextLabel, DIALOG_BODY_BOTTOM,
+    dialog_button, empty_state, form_button, form_input, meta_row, page_header, page_layout,
+    select_widths, Control, ControlSize, IconLabel, TextLabel, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -282,7 +282,7 @@ fn ended_notice(theme: &Theme) -> Div {
 }
 
 fn open_browser_button(id: &'static str, url: String) -> Button {
-    dialog_button(Button::new(id))
+    form_button(Button::new(id))
         .outline()
         .icon_label(IconName::ExternalLink, s().vpn.open_sign_in_page)
         .on_click(move |_, _, cx| cx.open_url(&url))

@@ -145,8 +145,8 @@ impl ProfilesPage {
                             let id = id.clone();
                             alert
                                 .title(centered.title((s().profiles.delete_title)(&name)))
-                                .description(centered.description(s().profiles.delete_body))
-                                .confirm()
+                                .description(s().profiles.delete_body)
+                                .footer(centered.confirm_footer(s().common.ok))
                                 .on_ok(move |_, window, cx| {
                                     app_state.update(cx, |state, cx| {
                                         state.delete_profile(id.clone(), cx);

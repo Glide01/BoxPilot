@@ -9,7 +9,7 @@
 //!
 //! gpui-component places a dialog by its top edge and doesn't say how tall
 //! it came out, so the dialog measures itself: its title and its last part
-//! (the footer, or an alert's description) are wrapped in probes, and the
+//! (the footer) are wrapped in probes, and the
 //! chrome around them is added back. The first frame opens at
 //! gpui-component's spot, fully transparent (its fade starts at 0); from the
 //! second the dialog is where it belongs. The extra offset is a top margin
@@ -19,8 +19,12 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::*;
-use gpui_component::dialog::{AlertDialog, Dialog};
-use gpui_component::{window_paddings, ActiveTheme, WindowExt};
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::dialog::{AlertDialog, Dialog, DialogAction, DialogClose, DialogFooter};
+use gpui_component::{window_paddings, ActiveTheme, StyledExt, WindowExt};
+
+use crate::i18n::s;
+use crate::ui::widgets::{dialog_button, TextLabel};
 
 /// Share of the free height above the dialog (the rest is below it): a
 /// touch above the geometric centre, which reads as centred.
@@ -29,9 +33,6 @@ const ABOVE: f32 = 0.4;
 const TOP_CHROME: f32 = 17.;
 /// Below a footer: bottom padding and border.
 const FOOTER_TAIL: f32 = 17.;
-/// Below an alert's description: the gap, the default OK/Cancel row (a
-/// medium button) and the bottom padding and border.
-const ALERT_TAIL: f32 = 16. + 32. + 17.;
 
 /// Open a dialog that places itself (see the module docs). `build` wraps the
 /// title in [`Centered::title`] and the footer in [`Centered::footer`].
@@ -48,7 +49,7 @@ pub fn open_dialog(
 }
 
 /// Open an alert that places itself. `build` wraps the title in
-/// [`Centered::title`] and the description in [`Centered::description`].
+/// [`Centered::title`] and gives it a [`Centered::confirm_footer`].
 pub fn open_alert(
     window: &mut Window,
     cx: &mut App,
@@ -95,13 +96,28 @@ impl Centered {
         .w_full()
     }
 
-    /// An alert's description, the last part before its default buttons.
-    pub fn description(&self, description: impl IntoElement) -> Div {
-        let probes = self.0.clone();
-        probe(description, move |bounds| {
-            let bottom = Some((bounds.bottom(), ALERT_TAIL));
-            probes.bottom.replace(bottom) != bottom
-        })
+    /// A confirmation's footer: Cancel, then `ok` (the alert's `on_ok`),
+    /// as [`dialog_button`]s like every other dialog's — not
+    /// gpui-component's default pair, which is a size up with louder text.
+    pub fn confirm_footer(&self, ok: impl Into<SharedString>) -> Div {
+        // In a row of their own: `DialogClose` and `DialogAction` are as
+        // wide as what holds them, and side by side in the footer itself
+        // they would share its whole width.
+        self.footer(
+            DialogFooter::new().child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(DialogClose::new().child(dialog_button(
+                        Button::new("alert-cancel")
+                            .outline()
+                            .text_label(s().common.cancel),
+                    )))
+                    .child(DialogAction::new().child(dialog_button(
+                        Button::new("alert-ok").primary().text_label(ok),
+                    ))),
+            ),
+        )
     }
 
     /// The surface's height, once both probes have painted.

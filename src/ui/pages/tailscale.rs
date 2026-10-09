@@ -323,8 +323,8 @@ fn confirm_logout(
         }
         alert
             .title(centered.title(s().tailscale.logout_title))
-            .description(centered.description(description))
-            .confirm()
+            .description(description)
+            .footer(centered.confirm_footer(s().common.ok))
             .on_ok(move |_, _, cx| {
                 entity.update(cx, |state, cx| state.logout(tag.clone(), cx));
                 true
@@ -754,8 +754,8 @@ fn confirm_delete(
         let name = name.clone();
         alert
             .title(centered.title((s().tailscale.delete_title)(&name)))
-            .description(centered.description(s().tailscale.delete_body))
-            .confirm()
+            .description(s().tailscale.delete_body)
+            .footer(centered.confirm_footer(s().common.ok))
             .on_ok(move |_, _, cx| {
                 entity.update(cx, |state, cx| {
                     state.delete_file(tag.clone(), name.clone(), cx)
@@ -881,16 +881,22 @@ fn show_certificate(
             )
             .footer(
                 centered.footer(
-                    DialogFooter::new()
-                        .child(copy)
-                        .child(
-                            DialogClose::new().child(
-                                dialog_button(Button::new("ts-cert-close"))
-                                    .outline()
-                                    .text_label(s().common.close),
-                            ),
-                        )
-                        .child(save),
+                    // In a row of their own, so `DialogClose` keeps its
+                    // button's width (see `Centered::confirm_footer`).
+                    DialogFooter::new().child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .child(copy)
+                            .child(
+                                DialogClose::new().child(
+                                    dialog_button(Button::new("ts-cert-close"))
+                                        .outline()
+                                        .text_label(s().common.close),
+                                ),
+                            )
+                            .child(save),
+                    ),
                 ),
             )
     });
