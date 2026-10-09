@@ -16,15 +16,15 @@ use crate::ui::toast;
 use crate::ui::widgets::{
     choice_select, dialog_button, empty_state, empty_state_button, form_button, form_input,
     freshness_button, full_text_tooltip, grouped_card, minute_ticker, page_header, page_layout,
-    profile_source_line, row_hover_bg, section_heading, segmented, setting_row, usage_meter,
-    Control, ControlSize, IconLabel, Segment, TextLabel, CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
+    profile_source_line, row_hover_bg, scroll_page, section_heading, segmented, setting_row,
+    usage_meter, Control, ControlSize, IconLabel, Segment, TextLabel, CONTROL_LINE_HEIGHT,
+    DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::InputState,
-    scroll::ScrollableElement,
     switch::Switch,
     ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
 };
@@ -582,11 +582,12 @@ impl Render for ProfilesPage {
             return page_layout(
                 page_header(theme, ActivePage::Profiles),
                 div().size_full().child(empty),
-            );
+            )
+            .into_any_element();
         }
 
         let list = div().v_flex().gap_2().w_full().children(rows);
-        page_layout(
+        scroll_page(
             page_header(theme, ActivePage::Profiles).action(
                 Button::new("profile-add")
                     .primary()
@@ -594,7 +595,8 @@ impl Render for ProfilesPage {
                     .icon_label(IconName::Plus, s().profiles.add)
                     .on_click(add),
             ),
-            div().size_full().child(list.overflow_y_scrollbar()),
+            list,
         )
+        .into_any_element()
     }
 }

@@ -58,15 +58,16 @@ use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
 use crate::ui::theme::FORM_MAX_WIDTH;
 use gpui::{
-    div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, ClickEvent, Context, Div,
-    ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, Stateful, StatefulInteractiveElement, Styled, Task, TextStyle,
-    Window,
+    div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, Bounds, ClickEvent, Context,
+    Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Pixels, Point, RenderOnce, ScrollHandle, SharedString, Stateful, StatefulInteractiveElement,
+    Styled, Task, TextStyle, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
     input::{Input, InputState},
     progress::Progress,
+    scroll::{Scrollbar, ScrollbarHandle},
     searchable_list::{SearchableListDelegate, SearchableListItem},
     select::{Select, SelectEvent, SelectState},
     spinner::Spinner,
@@ -371,21 +372,38 @@ pub fn form_column(content: impl IntoElement) -> Div {
         .child(div().w_full().max_w(px(FORM_MAX_WIDTH)).child(content))
 }
 
-/// Title line of a [`page_header`].
+/// Title line of a [`page_header`]: its height and the title's size, at
+/// the top of the page and once the header has collapsed (see
+/// [`scroll_page`]) — as tall as the header's `Regular` actions.
 const PAGE_TITLE_HEIGHT: f32 = 32.;
-/// Context line of a [`page_header`].
+const PAGE_TITLE_SIZE: f32 = 26.;
+const COLLAPSED_TITLE_HEIGHT: f32 = 28.;
+const COLLAPSED_TITLE_SIZE: f32 = 17.;
+/// Context line of a [`page_header`], and the gap above it.
 const PAGE_CONTEXT_HEIGHT: f32 = 20.;
+const PAGE_CONTEXT_GAP: f32 = 4.;
+/// Room under a [`page_header`] before the body, open and collapsed.
+const PAGE_HEADER_SPACE: f32 = 20.;
+const COLLAPSED_HEADER_SPACE: f32 = 12.;
+/// A [`page_header`]'s height, open and collapsed: how far a
+/// [`scroll_page`]'s body scrolls while the header collapses.
+const PAGE_HEADER_HEIGHT: f32 =
+    PAGE_TITLE_HEIGHT + PAGE_CONTEXT_GAP + PAGE_CONTEXT_HEIGHT + PAGE_HEADER_SPACE;
+const COLLAPSED_HEADER_HEIGHT: f32 = COLLAPSED_TITLE_HEIGHT + COLLAPSED_HEADER_SPACE;
 
 /// Every page's head, the same on each: the page's title, one line of
 /// context under it — live figures when the page has them, else what the
 /// page is for — and the page's own actions on the right. A fixed height,
-/// so the body starts at the same place on every page.
+/// so the body starts at the same place on every page. On a
+/// [`scroll_page`] it collapses as the body scrolls.
 pub fn page_header(theme: &Theme, page: ActivePage) -> PageHeader {
     PageHeader {
         title: page.label(),
         context: page.hint().into_any_element(),
         muted: theme.muted_foreground,
+        background: theme.background,
         actions: Vec::new(),
+        collapsed: 0.,
     }
 }
 
@@ -395,7 +413,11 @@ pub struct PageHeader {
     title: &'static str,
     context: AnyElement,
     muted: Hsla,
+    /// The panel's colour, so a [`scroll_page`]'s body passes under it.
+    background: Hsla,
     actions: Vec<AnyElement>,
+    /// How far it has collapsed: 0 open, 1 down to its title line.
+    collapsed: f32,
 }
 
 impl PageHeader {
@@ -416,39 +438,47 @@ impl PageHeader {
 
 impl RenderOnce for PageHeader {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let collapsed = self.collapsed;
+        let between = |open: f32, closed: f32| px(open + (closed - open) * collapsed);
+        let title_height = between(PAGE_TITLE_HEIGHT, COLLAPSED_TITLE_HEIGHT);
         let text = div()
             .v_flex()
             .flex_1()
             .min_w_0()
-            .gap_1()
+            .gap(between(PAGE_CONTEXT_GAP, 0.))
             .child(
                 div()
-                    .h(px(PAGE_TITLE_HEIGHT))
-                    .text_size(px(26.))
-                    .line_height(px(PAGE_TITLE_HEIGHT))
+                    .h(title_height)
+                    .text_size(between(PAGE_TITLE_SIZE, COLLAPSED_TITLE_SIZE))
+                    .line_height(title_height)
                     .font_weight(FontWeight::BOLD)
                     .truncate()
                     .child(self.title),
             )
-            .child(
-                div()
-                    .h(px(PAGE_CONTEXT_HEIGHT))
-                    .h_flex()
-                    .items_center()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_sm()
-                    .text_color(self.muted)
-                    .child(self.context),
-            );
+            .when(collapsed < 1., |text| {
+                text.child(
+                    div()
+                        .h(between(PAGE_CONTEXT_HEIGHT, 0.))
+                        // Gone by halfway, before the title closes up on it.
+                        .opacity((1. - 2. * collapsed).max(0.))
+                        .h_flex()
+                        .items_center()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_sm()
+                        .text_color(self.muted)
+                        .child(self.context),
+                )
+            });
         div()
             .flex_none()
             .w_full()
             .h_flex()
             .items_center()
             .gap_4()
-            .mb_5()
+            .pb(between(PAGE_HEADER_SPACE, COLLAPSED_HEADER_SPACE))
+            .bg(self.background)
             .child(text)
             .when(!self.actions.is_empty(), |header| {
                 header.child(
@@ -471,6 +501,124 @@ pub fn page_layout(header: PageHeader, body: impl IntoElement) -> Div {
         .size_full()
         .child(header)
         .child(div().flex_1().min_h_0().w_full().child(body))
+}
+
+/// A page whose body scrolls as one column (Home, Profiles, Settings, …):
+/// [`page_layout`], except the body scrolls up under the header, and the
+/// header collapses as it does — the context line fades out and the title
+/// shrinks to a line as tall as the header's actions — then stays at the
+/// top, small, while the body goes on scrolling under it. Scrolling back to
+/// the top opens it again.
+///
+/// The header follows the scroll position rather than a timer, as large
+/// titles on macOS and iOS do: the body's top edge pushes the header's
+/// bottom edge up, so the two move together at any scroll speed and in
+/// either direction, and there is no state to keep.
+pub fn scroll_page(header: PageHeader, body: impl IntoElement) -> ScrollPage {
+    ScrollPage {
+        header,
+        body: body.into_any_element(),
+    }
+}
+
+/// See [`scroll_page`].
+#[derive(IntoElement)]
+pub struct ScrollPage {
+    header: PageHeader,
+    body: AnyElement,
+}
+
+impl RenderOnce for ScrollPage {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Kept while the page shows, as `overflow_y_scrollbar`'s is. A
+        // scroll (wheel or scrollbar) re-renders the page, so the header
+        // collapses in step.
+        let scroll = window
+            .use_keyed_state(ElementId::from(self.header.title), cx, |_, _| {
+                ScrollHandle::new()
+            })
+            .read(cx)
+            .clone();
+        let travel = PAGE_HEADER_HEIGHT - COLLAPSED_HEADER_HEIGHT;
+        let scrolled = f32::from(-scroll.offset().y).max(0.);
+        let collapsed = (scrolled / travel).min(1.);
+        let header_height = px(PAGE_HEADER_HEIGHT - travel * collapsed);
+        let scrollbar = Scrollbar::vertical(&BelowHeader {
+            scroll: scroll.clone(),
+            header: header_height,
+        })
+        .id("page-scrollbar")
+        .viewport_from_layout();
+        div()
+            .relative()
+            .size_full()
+            .child(
+                div()
+                    .id("page-scroll")
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&scroll)
+                    // The open header's room: the body starts under it.
+                    .child(div().flex_none().h(px(PAGE_HEADER_HEIGHT)))
+                    .child(div().flex_none().w_full().child(self.body)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .child(PageHeader {
+                        collapsed,
+                        ..self.header
+                    }),
+            )
+            // The scrollbar runs from the header down, not under it.
+            .child(
+                div()
+                    .absolute()
+                    .top(header_height)
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .child(scrollbar),
+            )
+    }
+}
+
+/// A [`scroll_page`]'s scroll handle as its scrollbar sees it: the part
+/// under the header — always as tall as the scrolled area less the
+/// header — is the scrollbar's whole track, and its content as much shorter.
+#[derive(Clone)]
+struct BelowHeader {
+    scroll: ScrollHandle,
+    header: Pixels,
+}
+
+impl ScrollbarHandle for BelowHeader {
+    fn viewport_bounds(&self) -> Bounds<Pixels> {
+        let mut bounds = self.scroll.bounds();
+        bounds.origin.y += self.header;
+        bounds.size.height -= self.header;
+        bounds
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        self.scroll.offset()
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        self.scroll.set_offset(offset);
+    }
+
+    fn content_size(&self) -> gpui::Size<Pixels> {
+        let mut size = ScrollbarHandle::content_size(&self.scroll);
+        size.height -= self.header;
+        size
+    }
 }
 
 /// Small heading above a group of cards or rows ("General", "Network").

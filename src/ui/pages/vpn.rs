@@ -28,14 +28,13 @@ use crate::ui::pages::ActivePage;
 use crate::ui::toast;
 use crate::ui::widgets::{
     dialog_button, empty_state, form_button, form_input, meta_row, page_header, page_layout,
-    select_widths, Control, ControlSize, IconLabel, TextLabel, DIALOG_BODY_BOTTOM,
+    scroll_page, select_widths, Control, ControlSize, IconLabel, TextLabel, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::InputState,
-    scroll::ScrollableElement,
     select::{Select, SelectState},
     theme::Theme,
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, Size, StyledExt, WindowExt,
@@ -1018,15 +1017,9 @@ impl Render for VpnPage {
             ));
         }
 
-        page_layout(
+        scroll_page(
             page_header(theme, ActivePage::Vpn),
-            div().size_full().child(
-                div()
-                    .v_flex()
-                    .gap_3()
-                    .children(cards)
-                    .overflow_y_scrollbar(),
-            ),
+            div().v_flex().gap_3().children(cards),
         )
         .into_any_element()
     }

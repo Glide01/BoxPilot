@@ -23,8 +23,8 @@ use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    dialog_button, empty_state, meta_row, page_header, page_layout, status_label, Control,
-    ControlSize, TextLabel,
+    dialog_button, empty_state, meta_row, page_header, page_layout, scroll_page, status_label,
+    Control, ControlSize, TextLabel,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -95,39 +95,27 @@ impl Render for TailscalePage {
         let theme = cx.theme();
         let now = SystemTime::now();
 
-        let body = if state.endpoints.is_empty() {
-            empty_state(
+        if state.endpoints.is_empty() {
+            let empty = empty_state(
                 theme,
                 IconName::Frame,
                 s().tailscale.empty_title,
                 s().tailscale.empty_hint,
+            );
+            return page_layout(
+                page_header(theme, ActivePage::Tailscale),
+                div().v_flex().size_full().child(empty),
             )
-            .into_any_element()
-        } else {
-            let sections =
-                div()
-                    .v_flex()
-                    .gap_3()
-                    .children(state.endpoints.iter().enumerate().flat_map(|(ei, status)| {
-                        endpoint_sections(ei, status, state, &entity, theme, now)
-                    }));
+            .into_any_element();
+        }
+        let sections =
             div()
                 .v_flex()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(sections.overflow_y_scrollbar()),
-                )
-                .into_any_element()
-        };
-
-        page_layout(
-            page_header(theme, ActivePage::Tailscale),
-            div().v_flex().size_full().child(body),
-        )
+                .gap_3()
+                .children(state.endpoints.iter().enumerate().flat_map(|(ei, status)| {
+                    endpoint_sections(ei, status, state, &entity, theme, now)
+                }));
+        scroll_page(page_header(theme, ActivePage::Tailscale), sections).into_any_element()
     }
 }
 

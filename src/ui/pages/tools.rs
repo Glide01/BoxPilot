@@ -14,8 +14,8 @@ use crate::state::{AppState, NetworkTools};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
     choice_select_with, connect_button, control_input, empty_state, form_column, grouped_card,
-    page_header, page_layout, plain_select, section_heading, segmented, setting_row, stat,
-    status_label, text_centered, Control, ControlSize, Segment, TextLabel,
+    page_header, page_layout, plain_select, scroll_page, section_heading, segmented, setting_row,
+    stat, status_label, text_centered, Control, ControlSize, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -24,7 +24,6 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     input::InputState,
     progress::Progress,
-    scroll::ScrollableElement,
     select::{SearchableVec, Select, SelectItem, SelectState},
     spinner::Spinner,
     switch::Switch,
@@ -477,38 +476,31 @@ impl Render for ToolsPage {
         let quality = tools.quality.clone();
         let stun = tools.stun.clone();
 
-        let body = if !active {
-            empty_state(
+        if !active {
+            let empty = empty_state(
                 cx.theme(),
                 Icon::empty().path("icons/gauge.svg"),
                 s().tools.not_running_title,
                 s().tools.not_running_hint,
             )
-            .action(connect_button("tools-connect"))
-            .into_any_element()
-        } else {
-            let cards = div()
-                .v_flex()
-                .gap_6()
-                .pb_2()
-                .child(self.quality_section(quality.as_ref(), window, cx))
-                .child(self.stun_section(stun.as_ref(), window, cx));
-            div()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    div()
-                        .w_full()
-                        .child(form_column(cards))
-                        .overflow_y_scrollbar(),
-                )
-                .into_any_element()
-        };
-
-        page_layout(
+            .action(connect_button("tools-connect"));
+            return page_layout(
+                page_header(cx.theme(), ActivePage::Tools),
+                div().v_flex().size_full().child(empty),
+            )
+            .into_any_element();
+        }
+        let cards = div()
+            .v_flex()
+            .gap_6()
+            .pb_2()
+            .child(self.quality_section(quality.as_ref(), window, cx))
+            .child(self.stun_section(stun.as_ref(), window, cx));
+        scroll_page(
             page_header(cx.theme(), ActivePage::Tools),
-            div().v_flex().size_full().child(body),
+            form_column(cards),
         )
+        .into_any_element()
     }
 }
 

@@ -20,14 +20,13 @@ use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    control_input, form_column, grouped_card, page_header, page_layout, section_heading,
+    control_input, form_column, grouped_card, page_header, scroll_page, section_heading,
     setting_row, Control, ControlSize, TextLabel,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::Button,
     input::{InputEvent, InputState},
-    scroll::ScrollableElement,
     switch::Switch,
     ActiveTheme, Disableable, StyledExt,
 };
@@ -215,14 +214,6 @@ impl Render for SettingsPage {
             .child(section(t.troubleshooting, troubleshooting_rows))
             .child(section(t.about, about_rows));
 
-        page_layout(
-            page_header(theme, ActivePage::Settings),
-            div().size_full().child(
-                div()
-                    .w_full()
-                    .child(form_column(cards))
-                    .overflow_y_scrollbar(),
-            ),
-        )
+        scroll_page(page_header(theme, ActivePage::Settings), form_column(cards))
     }
 }

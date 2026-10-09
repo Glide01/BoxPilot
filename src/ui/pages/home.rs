@@ -20,15 +20,14 @@ use crate::ui::pages::ActivePage;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
     empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
-    minute_ticker, page_header, page_layout, profile_source_line, section_heading, segmented,
-    setting_row, shorten, stat, usage_meter, Control, ControlSize, IconLabel, Segment, TextLabel,
-    CONTROL_LINE_HEIGHT,
+    minute_ticker, page_header, page_layout, profile_source_line, scroll_page, section_heading,
+    segmented, setting_row, shorten, stat, usage_meter, Control, ControlSize, IconLabel, Segment,
+    TextLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
     menu::{DropdownMenu, PopupMenuItem},
-    scroll::ScrollableElement,
     spinner::Spinner,
     switch::Switch,
     theme::Theme,
@@ -562,7 +561,7 @@ impl Render for HomePage {
 
         let body = div()
             .v_flex()
-            .size_full()
+            .w_full()
             .gap_4()
             .child(hero)
             .children(stats)
@@ -579,9 +578,8 @@ impl Render for HomePage {
                     .gap_2()
                     .child(section_heading(theme, t.home.profile))
                     .child(profile_card),
-            )
-            // 窗口矮时整页滚动。
-            .overflow_y_scrollbar();
-        page_layout(page_header(theme, ActivePage::Home), body).into_any_element()
+            );
+        // 窗口矮时整页滚动。
+        scroll_page(page_header(theme, ActivePage::Home), body).into_any_element()
     }
 }
