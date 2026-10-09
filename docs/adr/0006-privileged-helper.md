@@ -545,7 +545,13 @@ policy.
       `cfprefsd`'s daemon (with its shared memory); `local` needed only
       mDNSResponder's socket. Those stay allowed; the rest of the guess
       (`trustd.agent`, `cfprefsd.agent`, `configd`'s DNS configuration)
-      went unused and is gone.
+      went unused and was dropped. A later run measured `configd`'s DNS
+      configuration after all, and it is allowed again: `local` reads the
+      system's resolvers through it when the DNS configuration or the
+      default interface changes (there, the helper had just set the
+      system proxy). Denied, `local` keeps resolvers a network change may
+      have taken away, or falls back to `127.0.0.1:53`, where macOS runs no
+      server.
     - **Known denials** (`sandboxplan::KNOWN_DENIALS`), each harmless:
       sing-tun's `fork` for `dscacheutil` (it ignores the error),
       CoreFoundation's look at `master.passwd`, opendirectoryd and root's

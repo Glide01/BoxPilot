@@ -656,7 +656,9 @@ as another account:
     /// system: one direct outbound bound to the real interface, DNS
     /// hijacked to a resolver over HTTPS (sing-box verifies its TLS
     /// certificate, through macOS's own verifier), the `local` DNS server
-    /// for the outbounds' own lookups (mDNSResponder), and a local rule set
+    /// for the outbounds' own lookups (the system's resolvers, as configd's
+    /// DNS configuration names them; mDNSResponder for `.local`), and a
+    /// local rule set
     /// that travels as an attachment, as the GUI sends it. All of it runs
     /// under sing-box's enforced sandbox profile.
     fn tun_start(proxy_port: u16, system_proxy: bool) -> Result<StartRequest, String> {

@@ -42,7 +42,13 @@
 //! report)` showed what they use: `trustd` and `cfprefsd`'s daemon (with
 //! its shared memory) for the certificate, `mDNSResponder`'s socket for
 //! `local`. The rest of the guess (`trustd.agent`, `cfprefsd.agent`,
-//! `configd`'s DNS configuration) went unused, so it is gone.
+//! `configd`'s DNS configuration) went unused, so it was dropped. A later
+//! run measured `configd`'s DNS configuration after all: `local` reads the
+//! system's resolvers through it (`dns_configuration_copy`) when the DNS
+//! configuration or the default interface changes, as it did when the
+//! helper set the system proxy under a running sing-box. Denied, `local`
+//! keeps resolvers that may be gone, or falls back to `127.0.0.1:53`, where
+//! macOS runs no server, so it is allowed again.
 //!
 //! **How it is applied: `/usr/bin/sandbox-exec`.** The supervisor
 //! `posix_spawn`s [`SANDBOX_EXEC`] by its absolute path, with the argv
@@ -192,6 +198,12 @@ pub const SING_BOX_PROFILE: &str = r#"(version 1)
        (global-name "com.apple.trustd")
        (global-name "com.apple.cfprefsd.daemon"))
 (allow ipc-posix-shm-read-data (ipc-posix-name "apple.cfprefs.daemonv1"))
+
+; The local DNS server's resolvers: configd's DNS configuration, read
+; again when it or the default interface changes (measured on CI, after
+; the helper set the system proxy under a running sing-box).
+(allow mach-lookup
+       (global-name "com.apple.SystemConfiguration.DNSConfiguration"))
 "#;
 
 /// sing-box's own path: the one program the profile lets sandbox-exec
@@ -811,6 +823,7 @@ mod tests {
                 "com.apple.system.notification_center",
                 "com.apple.trustd",
                 "com.apple.cfprefsd.daemon",
+                "com.apple.SystemConfiguration.DNSConfiguration",
             ]
         );
         assert!(reported.is_empty(), "{reported:?}");
