@@ -39,3 +39,22 @@ pub enum ActivePage {
     Tools,
     Settings,
 }
+
+impl ActivePage {
+    /// The page's name, as the sidebar, the breadcrumb and the page's title
+    /// show it.
+    pub fn label(self) -> &'static str {
+        let nav = &crate::i18n::s().nav;
+        match self {
+            ActivePage::Home => nav.home,
+            ActivePage::Groups => nav.groups,
+            ActivePage::Connections => nav.connections,
+            ActivePage::Tailscale => nav.tailscale,
+            ActivePage::Vpn => nav.vpn,
+            ActivePage::Profiles => nav.profiles,
+            ActivePage::Logs => nav.logs,
+            ActivePage::Tools => nav.tools,
+            ActivePage::Settings => nav.settings,
+        }
+    }
+}

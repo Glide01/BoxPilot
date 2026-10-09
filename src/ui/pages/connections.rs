@@ -1,8 +1,10 @@
-//! 连接页:标题行(标题 + 汇总:打开数、实时速率、总流量 + Close all)、
-//! 控制行(过滤输入框 + Active/Closed 切换 + Newest/Traffic 排序),下方卡片
-//! 里是连接列表。每行两行文字:主机(域名或目标地址)+ 进程名;出站链
-//! (组 → 节点)+ 网络/协议 · 入站 · 规则;右侧实时速率 / 累计流量、存活时长、
-//! 关闭按钮(仅打开的连接)。
+//! 连接页,日志浏览器式布局:控制行(搜索框 + Active/Closed 切换 +
+//! Newest/Traffic 排序 + Close all + Live 徽标);时间线卡片(汇总:打开数、
+//! 实时速率、总流量;新建连接按 TCP/UDP 堆叠的柱状图,`core::connections_view::
+//! timeline`);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
+//! 淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
+//! (组 → 节点)、累计流量、存活时长、关闭按钮(仅打开的连接)。网络/协议、
+//! 入站、规则与实时速率在详情面板里。
 //!
 //! 列表用 gpui 的 `uniform_list` 虚拟化:只渲染可见行,上千条已关闭 + 大量
 //! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)按
@@ -24,14 +26,15 @@ use crate::actions::{
 use crate::core::bytefmt::{format_bytes, format_speed};
 use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
-    chain_label, connection_age_ms, format_elapsed, host_label, inbound_label, network_label,
-    process_name, rule_label, select_connections, summarize, ConnectionSort, ConnectionView,
+    chain_label, connection_age_ms, format_clock, format_elapsed, format_hour_minute, host_label,
+    process_name, select_connections, summarize, timeline, ConnectionSort, ConnectionView,
+    Timeline,
 };
 use crate::core::singbox_api::Connection;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, row_hover_bg, segmented, small_input, Segment,
+    connect_button, empty_state, form_input, full_text_tooltip, row_hover_bg, segmented, Segment,
     TextLabel,
 };
 use crate::ui::{card_frame, locale};
@@ -42,6 +45,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
     scroll::ScrollableElement,
     theme::Theme,
+    tooltip::Tooltip,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
 };
 use std::rc::Rc;
@@ -49,7 +53,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Fixed row height — `uniform_list` lays every row out at the first row's
 /// size, so all rows must match.
-const ROW_HEIGHT: f32 = 52.;
+const ROW_HEIGHT: f32 = 36.;
+/// Column widths shared by the header and the rows.
+const TIME_WIDTH: f32 = 104.;
+const NETWORK_WIDTH: f32 = 56.;
+const TRAFFIC_WIDTH: f32 = 156.;
+const AGE_WIDTH: f32 = 64.;
+const CLOSE_WIDTH: f32 = 28.;
+/// The timeline's bars and their height.
+const TIMELINE_BARS: usize = 48;
+const TIMELINE_HEIGHT: f32 = 56.;
 /// The details panel's width; on a narrow window it takes most of the list
 /// (`DETAILS_MAX_FRACTION`), leaving the selected row's start in view.
 const DETAILS_WIDTH: f32 = 380.;
@@ -279,21 +292,101 @@ fn clipped(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
+/// TCP and UDP, in the badges, the bars and the legend: the accent blue,
+/// and an orange that holds up beside it in both themes.
+#[derive(Clone, Copy)]
+struct NetworkColors {
+    tcp: Hsla,
+    udp: Hsla,
+}
+
+impl NetworkColors {
+    fn new(theme: &Theme) -> Self {
+        Self {
+            tcp: theme.primary,
+            udp: if theme.is_dark() {
+                rgb(0xFB923C).into() // orange-400
+            } else {
+                rgb(0xEA580C).into() // orange-600
+            },
+        }
+    }
+
+    fn of(&self, network: &str, theme: &Theme) -> Hsla {
+        match network {
+            "tcp" => self.tcp,
+            "udp" => self.udp,
+            _ => theme.muted_foreground,
+        }
+    }
+}
+
+/// The network as a small tinted badge: `TCP`, `UDP`.
+fn network_badge(network: &str, color: Hsla, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .px_1p5()
+        .rounded(px(4.))
+        .bg(color.opacity(0.14))
+        .text_color(color)
+        .text_xs()
+        .font_family(theme.mono_font_family.clone())
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(network.to_uppercase())
+}
+
 /// One list row. Every row has the same structure (closed rows keep an
 /// empty slot where the close button goes) so heights stay uniform.
+#[allow(clippy::too_many_arguments)]
 fn connection_row(
     connection: &Connection,
     now_ms: i64,
     connections: &Entity<Connections>,
     page: &WeakEntity<ConnectionsPage>,
     selected: bool,
+    networks: NetworkColors,
     theme: &Theme,
 ) -> Stateful<Div> {
     let closed = connection.is_closed();
     let hover_bg = row_hover_bg(theme);
+    let (fg, muted) = if closed {
+        (theme.muted_foreground, theme.muted_foreground.opacity(0.7))
+    } else {
+        (theme.foreground, theme.muted_foreground)
+    };
 
-    let mut title = div()
+    let (clock, fraction) = format_clock(connection.created_at);
+    let time = div()
+        .flex_none()
+        .w(px(TIME_WIDTH))
         .h_flex()
+        .text_sm()
+        .font_family(theme.mono_font_family.clone())
+        .child(div().text_color(fg).child(clock))
+        .child(div().text_color(muted).child(fraction));
+
+    let network = connection.network.to_lowercase();
+    let badge_color = networks.of(&network, theme);
+    let badge = div()
+        .flex_none()
+        .w(px(NETWORK_WIDTH))
+        .h_flex()
+        .child(network_badge(
+            if network.is_empty() { "—" } else { &network },
+            if closed {
+                badge_color.opacity(0.6)
+            } else {
+                badge_color
+            },
+            theme,
+        ));
+
+    // Host and chain share what the fixed columns leave, two to one.
+    let mut host = div()
+        .h_flex()
+        .flex_grow(2.)
+        .flex_basis(px(0.))
+        .min_w(px(80.))
         .items_center()
         .gap_2()
         .child(full_text_tooltip(
@@ -304,100 +397,52 @@ fn connection_row(
                 .whitespace_nowrap()
                 .flex_shrink(1.)
                 .text_sm()
-                .text_color(if closed {
-                    theme.muted_foreground
-                } else {
-                    theme.foreground
-                }),
+                .text_color(fg),
             SharedString::from(format!("conn-host-{}", connection.id)),
             host_label(connection),
             HOST_ROOM,
         ));
     if let Some(process) = process_name(connection) {
-        title = title.child(
+        host = host.child(
+            // Gives way before the host does.
             clipped(process.to_string())
-                .flex_shrink_0()
-                .max_w(px(160.))
+                .flex_shrink(SHRINK_FIRST)
+                .max_w(px(140.))
                 .text_xs()
-                .text_color(theme.muted_foreground),
+                .text_color(muted),
         );
     }
 
-    // Chain first (accented while open), then network, inbound and rule,
-    // set apart by space. Short of room (a narrow window), the rule gives
-    // way first, then the chain; network and inbound are a word each and
-    // stay whole rather than all four turning into a bare "…" each (the
-    // details panel has them all in full).
-    let subtitle = div()
-        .h_flex()
-        .items_center()
-        .gap_3()
-        .min_w_0()
-        .overflow_hidden()
+    // Clipped short of room; the details panel has it in full.
+    let chain = clipped(chain_label(connection))
+        .flex_grow(1.)
+        .flex_basis(px(0.))
         .text_xs()
-        .child(
-            clipped(chain_label(connection))
-                .flex_shrink(1.)
-                .min_w(px(44.))
-                .max_w(relative(0.5))
-                .text_color(if closed {
-                    theme.muted_foreground
-                } else {
-                    theme.primary
-                }),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .text_color(theme.muted_foreground)
-                .child(network_label(connection)),
-        )
-        .child(
-            clipped(inbound_label(connection).to_string())
-                .flex_shrink_0()
-                .max_w(px(120.))
-                .text_color(theme.muted_foreground),
-        )
-        .child(
-            clipped(rule_label(connection).to_string())
-                .flex_shrink(SHRINK_FIRST)
-                .text_color(theme.muted_foreground),
-        );
+        .text_color(muted);
 
-    let rate = if closed {
-        s().connections.closed.to_string()
-    } else {
-        format!(
-            "↑ {}  ↓ {}",
-            format_speed(connection.uplink),
-            format_speed(connection.downlink)
-        )
-    };
-    let totals = format!(
-        "↑ {}  ↓ {}",
-        format_bytes(connection.uplink_total),
-        format_bytes(connection.downlink_total)
-    );
     let traffic = div()
-        .v_flex()
-        .flex_shrink_0()
-        .w(px(170.))
-        .items_end()
-        .gap_0p5()
+        .flex_none()
+        .w(px(TRAFFIC_WIDTH))
+        .text_right()
+        .whitespace_nowrap()
         .text_xs()
-        .child(div().text_color(theme.foreground).child(rate))
-        .child(div().text_color(theme.muted_foreground).child(totals));
+        .font_family(theme.mono_font_family.clone())
+        .text_color(muted)
+        .child(format!(
+            "↑ {}  ↓ {}",
+            format_bytes(connection.uplink_total),
+            format_bytes(connection.downlink_total)
+        ));
 
     let age = div()
-        .flex_shrink_0()
-        .w(px(64.))
+        .flex_none()
+        .w(px(AGE_WIDTH))
         .text_right()
         .text_xs()
-        .text_color(theme.muted_foreground)
+        .text_color(muted)
         .child(format_elapsed(connection_age_ms(connection, now_ms)));
 
-    let close_slot = div().flex_shrink_0().w(px(28.)).when(!closed, |slot| {
+    let close_slot = div().flex_none().w(px(CLOSE_WIDTH)).when(!closed, |slot| {
         let connections = connections.clone();
         let id = connection.id.clone();
         slot.child(
@@ -416,6 +461,7 @@ fn connection_row(
 
     let id = SharedString::from(connection.id.clone());
     let page = page.clone();
+    let accent = theme.primary;
     div()
         .id(SharedString::from(format!("conn-row-{}", connection.id)))
         .relative()
@@ -425,37 +471,209 @@ fn connection_row(
         .h_flex()
         .items_center()
         .gap_3()
-        .border_b_1()
-        .border_color(theme.border)
+        .rounded(px(8.))
+        .border_1()
         .cursor_pointer()
-        .when(selected, |row| {
-            row.bg(theme.primary.opacity(0.08)).child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(3.))
-                    .bg(theme.primary),
-            )
+        .map(|row| {
+            if selected {
+                // Raised like the reference's flagged row: a tinted band,
+                // its outline, and a bar down its leading edge.
+                row.bg(accent.opacity(0.10))
+                    .border_color(accent.opacity(0.45))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-1.))
+                            .top(px(7.))
+                            .bottom(px(7.))
+                            .w(px(3.))
+                            .rounded_full()
+                            .bg(accent),
+                    )
+            } else {
+                row.border_color(transparent_black())
+                    .hover(move |style| style.bg(hover_bg))
+            }
         })
-        .when(!selected, |row| row.hover(move |style| style.bg(hover_bg)))
         .on_click(move |_, window, cx| {
             page.update(cx, |page, cx| page.select(id.clone(), window, cx))
                 .ok();
         })
-        .child(
-            div()
-                .v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_0p5()
-                .child(title)
-                .child(subtitle),
-        )
+        .child(time)
+        .child(badge)
+        .child(host)
+        .child(chain)
         .child(traffic)
         .child(age)
         .child(close_slot)
+}
+
+/// The list's column headings, on the rows' columns.
+fn column_header(theme: &Theme) -> Div {
+    let t = &s().connections;
+    let heading = |text: &'static str| div().whitespace_nowrap().child(text);
+    div()
+        .flex_none()
+        .h(px(32.))
+        .w_full()
+        // The rows' padding and their (transparent) border.
+        .px(px(13.))
+        .h_flex()
+        .items_center()
+        .gap_3()
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.muted_foreground)
+        .border_b_1()
+        .border_color(theme.border)
+        .child(heading(t.col_time).flex_none().w(px(TIME_WIDTH)))
+        .child(heading(t.col_network).flex_none().w(px(NETWORK_WIDTH)))
+        .child(
+            heading(t.col_host)
+                .flex_grow(2.)
+                .flex_basis(px(0.))
+                .min_w(px(80.)),
+        )
+        .child(
+            heading(t.col_chain)
+                .flex_grow(1.)
+                .flex_basis(px(0.))
+                .min_w_0()
+                .overflow_hidden(),
+        )
+        .child(
+            heading(t.col_traffic)
+                .flex_none()
+                .w(px(TRAFFIC_WIDTH))
+                .text_right(),
+        )
+        .child(
+            heading(t.col_duration)
+                .flex_none()
+                .w(px(AGE_WIDTH))
+                .text_right(),
+        )
+        .child(div().flex_none().w(px(CLOSE_WIDTH)))
+}
+
+/// A legend entry: a small square in the series colour and its name.
+fn legend_item(color: Hsla, label: &'static str) -> Div {
+    div()
+        .h_flex()
+        .items_center()
+        .gap_1p5()
+        .child(div().size(px(8.)).rounded(px(2.)).bg(color))
+        .child(label)
+}
+
+/// When the listed connections were opened: one stacked bar (TCP below,
+/// UDP above) per interval up to now, the axis in local clock time under
+/// them, each bar's interval and count in its tooltip.
+fn timeline_chart(timeline: &Timeline, networks: NetworkColors, theme: &Theme) -> Div {
+    let peak = timeline.peak() as f32;
+    let empty = theme.border;
+    let bars = timeline.buckets.iter().enumerate().map(|(ix, bucket)| {
+        let height = |n: u32| {
+            if n == 0 {
+                px(0.)
+            } else {
+                px((n as f32 / peak * TIMELINE_HEIGHT).max(2.))
+            }
+        };
+        let from = timeline.start_ms + timeline.bucket_ms * ix as i64;
+        let tip: SharedString = format!(
+            "{} – {}  ·  {}",
+            format_clock(from).0,
+            format_clock(from + timeline.bucket_ms).0,
+            (s().connections.opened_count)(bucket.total() as u64)
+        )
+        .into();
+        div()
+            .id(("timeline-bar", ix))
+            .flex_1()
+            .min_w(px(2.))
+            .h_full()
+            .v_flex()
+            .justify_end()
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .map(|bar| {
+                if bucket.total() == 0 {
+                    bar.child(div().h(px(2.)).rounded(px(1.)).bg(empty))
+                } else {
+                    bar.child(
+                        div()
+                            .h(height(bucket.udp))
+                            .rounded_t(px(2.))
+                            .bg(networks.udp),
+                    )
+                    .child(
+                        div()
+                            .h(height(bucket.tcp))
+                            .when(bucket.udp == 0, |seg| seg.rounded_t(px(2.)))
+                            .bg(networks.tcp),
+                    )
+                }
+            })
+    });
+    // Ticks at the start, the thirds and now.
+    let ticks = (0..4).map(|ix| {
+        let at = timeline.start_ms + timeline.span_ms() * ix / 3;
+        div().child(format_hour_minute(at))
+    });
+    div()
+        .v_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            div()
+                .h(px(TIMELINE_HEIGHT))
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_end()
+                .gap(px(3.))
+                .children(bars),
+        )
+        .child(
+            div()
+                .h_flex()
+                .justify_between()
+                .text_xs()
+                .font_family(theme.mono_font_family.clone())
+                .text_color(theme.muted_foreground)
+                .children(ticks),
+        )
+}
+
+/// "● Live": the list follows sing-box as it happens.
+fn live_badge(theme: &Theme) -> Div {
+    let green = theme.success;
+    div()
+        .flex_none()
+        .h(px(28.))
+        .px_2p5()
+        .h_flex()
+        .items_center()
+        .gap_1p5()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .child(
+            div()
+                .size(px(7.))
+                .rounded_full()
+                .bg(green)
+                .shadow(vec![BoxShadow {
+                    color: green.opacity(0.6),
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(6.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }]),
+        )
+        .child(s().connections.live)
 }
 
 impl Render for ConnectionsPage {
@@ -465,11 +683,15 @@ impl Render for ConnectionsPage {
         let state = connections.read(cx);
         let live = state.live;
         let summary = summarize(state.table.iter());
+        let now_ms = unix_millis_now();
+        let query = self.filter_input.read(cx).value().to_string();
+        let timeline = timeline(state.table.iter(), &query, now_ms, TIMELINE_BARS);
         let query_empty = self
             .rows_key
             .as_ref()
             .is_none_or(|k| k.query.trim().is_empty());
         let theme = cx.theme();
+        let networks = NetworkColors::new(theme);
         let t = &s().connections;
 
         // Nothing to filter, switch or close (sing-box stopped, or no
@@ -508,25 +730,42 @@ impl Render for ConnectionsPage {
                 ))
                 .flex_shrink(SHRINK_FIRST),
             );
-        let header = has_any.then(|| {
+        let card = has_any.then(|| {
+            let legend = div()
+                .h_flex()
+                .flex_none()
+                .items_center()
+                .gap_4()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(legend_item(networks.tcp, "TCP"))
+                .child(legend_item(networks.udp, "UDP"));
+            card_frame(theme)
+                .flex_none()
+                .gap_4()
+                .child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .w_full()
+                        .child(summary_items)
+                        .child(legend),
+                )
+                .child(timeline_chart(&timeline, networks, theme))
+        });
+        let close_all = {
             let connections = connections.clone();
-            let close_all = Button::new("connections-close-all")
+            Button::new("connections-close-all")
                 .outline()
                 .small()
                 .text_label(t.close_all)
                 .disabled(summary.open == 0)
                 .on_click(move |_, _, cx| {
                     connections.update(cx, |state, cx| state.close_all(cx));
-                });
-            div()
-                .h_flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .w_full()
-                .child(summary_items)
-                .child(close_all)
-        });
+                })
+        };
 
         let page = cx.entity().downgrade();
         let mut controls = div()
@@ -537,7 +776,7 @@ impl Render for ConnectionsPage {
             .w_full()
             .child(
                 div().flex_1().min_w(px(200.)).child(
-                    small_input(&self.filter_input).cleanable(true).prefix(
+                    form_input(&self.filter_input).cleanable(true).prefix(
                         Icon::new(IconName::Search)
                             .small()
                             .text_color(theme.muted_foreground),
@@ -573,6 +812,7 @@ impl Render for ConnectionsPage {
                     .ok();
             },
         ));
+        controls = controls.child(close_all).child(live_badge(theme));
 
         // The empty state goes on the page's root (see `empty_state`), the
         // list in the body under the header.
@@ -598,6 +838,7 @@ impl Render for ConnectionsPage {
             let selected = self.selected.clone();
             let list = uniform_list("connections-list", rows.len(), move |range, _, cx| {
                 let now_ms = unix_millis_now();
+                let networks = NetworkColors::new(cx.theme());
                 let theme = cx.theme();
                 let state = list_connections.read(cx);
                 range
@@ -608,6 +849,7 @@ impl Render for ConnectionsPage {
                             &list_connections,
                             &list_page,
                             selected.as_deref() == Some(rows[ix].as_str()),
+                            networks,
                             theme,
                         )
                         .into_any_element(),
@@ -620,16 +862,17 @@ impl Render for ConnectionsPage {
             .track_scroll(&self.scroll)
             .size_full();
 
-            let list = card_frame(theme)
+            let list = div()
+                .v_flex()
                 .flex_1()
                 .min_h_0()
-                .p_0()
-                .gap_0()
-                .overflow_hidden()
+                .child(column_header(theme))
                 .child(
                     div()
                         .relative()
-                        .size_full()
+                        .flex_1()
+                        .min_h_0()
+                        .pt_1()
                         .child(list)
                         .vertical_scrollbar(&self.scroll),
                 );
@@ -681,8 +924,8 @@ impl Render for ConnectionsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .children(header)
             .when(has_any, |page| page.child(controls))
+            .children(card)
             // Before the body, so the details panel stays above it.
             .children(empty)
             .child(body)

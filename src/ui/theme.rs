@@ -23,7 +23,8 @@ pub struct AccentPalette {
     pub primary_active: Hsla,
     /// Text / icons on `primary` (buttons, the Home power button).
     pub primary_foreground: Hsla,
-    /// The window chrome behind the sidebar and around the content panel.
+    /// The window chrome: the icon rail and the frame around the content
+    /// panel.
     pub sidebar: Hsla,
     /// The content panel, cards, inputs and popovers.
     pub background: Hsla,
@@ -37,7 +38,9 @@ pub struct AccentPalette {
     pub sidebar_accent_foreground: Hsla,
 }
 
-/// Blue accents for `dark` or light mode. Dark brightens the primary one
+/// Blue accents for `dark` or light mode. In dark mode the content panel
+/// is the darkest surface and the chrome around it a step lighter; in light
+/// mode a white panel sits on grey chrome. Dark brightens the primary one
 /// step (blue-500, hovering lighter) so it holds up against a near-black
 /// background, and keeps white text on it — the dark base theme's own
 /// primary foreground is near-black, made for its near-white primary.
@@ -48,11 +51,13 @@ pub fn accent_palette(dark: bool) -> AccentPalette {
             primary_hover: rgb(0x60A5FA).into(),  // blue-400
             primary_active: rgb(0x2563EB).into(), // blue-600
             primary_foreground: rgb(0xFFFFFF).into(),
-            sidebar: rgb(0x0B0B0C).into(),
-            background: rgb(0x19191C).into(),
-            border: rgb(0x2A2A2E).into(),
-            segmented_track: rgb(0x0E0E10).into(),
-            sidebar_accent: rgb(0x1F1F23).into(),
+            // A near-black panel set in a lighter frame: the page reads as
+            // a canvas, the icon rail around it as chrome.
+            sidebar: rgb(0x141417).into(),
+            background: rgb(0x0B0B0D).into(),
+            border: rgb(0x232327).into(),
+            segmented_track: rgb(0x1C1C20).into(),
+            sidebar_accent: rgb(0x26262B).into(),
             sidebar_accent_foreground: rgb(0xFAFAFA).into(),
         }
     } else {
@@ -264,15 +269,14 @@ mod tests {
         assert!(dark.primary_foreground.l > 0.9);
         assert!(dark.sidebar_accent.l < 0.3);
         assert!(dark.sidebar_accent_foreground.l > 0.8);
-        // The panel is raised above the chrome, the selected entry above
-        // the chrome too.
-        assert!(dark.background.l > dark.sidebar.l);
+        // The panel is the darkest surface, set in lighter chrome; the
+        // selected rail entry is lighter than the chrome.
+        assert!(dark.background.l < dark.sidebar.l);
         assert!(dark.sidebar_accent.l > dark.sidebar.l);
         // The chosen segment (panel colour) stands out from its track.
         for palette in [dark, accent_palette(false)] {
             assert_ne!(palette.segmented_track, palette.background);
         }
-        assert!(dark.segmented_track.l < dark.background.l);
         // Hover lightens in dark mode (darkens in light).
         assert!(dark.primary_hover.l > dark.primary.l);
         let light = accent_palette(false);

@@ -57,6 +57,7 @@ pub static ZH_CN: Strings = Strings {
         logs: "日志",
         tools: "工具",
         settings: "设置",
+        toggle_sidebar: "显示或隐藏标签",
     },
     home: Home {
         no_subscription_title: "还没有订阅",
@@ -173,6 +174,14 @@ pub static ZH_CN: Strings = Strings {
         no_active_hint: "应用通过代理联网时，连接会显示在这里。",
         no_closed_title: "没有已关闭的连接",
         no_closed_hint: "最近关闭的连接会保留在这里。",
+        col_time: "时间",
+        col_network: "网络",
+        col_host: "主机",
+        col_chain: "出站链",
+        col_traffic: "流量",
+        col_duration: "时长",
+        live: "实时",
+        opened_count: |n| format!("新建 {n} 个"),
     },
     connection_details: ConnectionDetails {
         close_panel: "关闭详情（Esc）",

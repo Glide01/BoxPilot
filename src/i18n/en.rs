@@ -61,6 +61,7 @@ pub static EN: Strings = Strings {
         logs: "Logs",
         tools: "Tools",
         settings: "Settings",
+        toggle_sidebar: "Show or hide labels",
     },
     home: Home {
         no_subscription_title: "No subscription yet",
@@ -189,6 +190,14 @@ pub static EN: Strings = Strings {
         no_active_hint: "Connections appear here as apps use the proxy.",
         no_closed_title: "No closed connections",
         no_closed_hint: "Recently closed connections are kept here.",
+        col_time: "Time",
+        col_network: "Network",
+        col_host: "Host",
+        col_chain: "Chain",
+        col_traffic: "Traffic",
+        col_duration: "Duration",
+        live: "Live",
+        opened_count: |n| format!("{n} opened"),
     },
     connection_details: ConnectionDetails {
         close_panel: "Close details (Esc)",

@@ -209,6 +209,9 @@ pub struct Nav {
     pub logs: &'static str,
     pub tools: &'static str,
     pub settings: &'static str,
+    /// Tooltip of the breadcrumb's button that shows / hides the labels
+    /// beside the sidebar's icons.
+    pub toggle_sidebar: &'static str,
 }
 
 pub struct Home {
@@ -366,6 +369,17 @@ pub struct Connections {
     pub no_active_hint: &'static str,
     pub no_closed_title: &'static str,
     pub no_closed_hint: &'static str,
+    /// The list's column headings.
+    pub col_time: &'static str,
+    pub col_network: &'static str,
+    pub col_host: &'static str,
+    pub col_chain: &'static str,
+    pub col_traffic: &'static str,
+    pub col_duration: &'static str,
+    /// The badge saying the list follows sing-box as it happens.
+    pub live: &'static str,
+    /// Tooltip of a timeline bar: "12 opened".
+    pub opened_count: FmtN,
 }
 
 /// The Connections page's details panel (one connection).

@@ -13,13 +13,18 @@ use crate::ui::pages::{
     ActivePage, ConnectionsPage, GroupsPage, HomePage, LogsPage, ProfilesPage, SettingsPage,
     TailscalePage, ToolsPage, VpnPage,
 };
-use crate::ui::sidebar::{brand, sidebar, Badges, OptionalPages, SidebarColors, StatusDetail};
+use crate::ui::sidebar::{
+    brand, rail_brand, sidebar, Badges, OptionalPages, SidebarColors, SidebarStatus, StatusDetail,
+};
 use crate::ui::theme::{PANEL_INSET, PANEL_RADIUS};
 use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{ActiveTheme, StyledExt, WindowExt};
+use gpui_component::{
+    button::{Button, ButtonVariants},
+    ActiveTheme, IconName, Sizable, StyledExt, WindowExt,
+};
 
 /// Top-level view: sidebar navigation + the active page, owns the
 /// keyboard-shortcut action handlers and the toast routing. All page
@@ -42,6 +47,9 @@ pub struct RootView {
     /// Last active profile name — the status tile's second line while
     /// disconnected; re-rendered when it changes, like `starting`.
     profile_name: Option<String>,
+    /// Whether the sidebar rail shows its labels (the breadcrumb's panel
+    /// button). Collapsed — icons only — at launch.
+    sidebar_expanded: bool,
     active_page: ActivePage,
     home: Entity<HomePage>,
     groups: Entity<GroupsPage>,
@@ -224,6 +232,7 @@ impl RootView {
             starting,
             update_badge,
             profile_name,
+            sidebar_expanded: false,
             active_page: ActivePage::Home,
             home,
             groups,
@@ -415,6 +424,48 @@ impl RootView {
     }
 }
 
+impl RootView {
+    /// The panel's head, above every page: a breadcrumb (the rail's
+    /// show-labels button, the app, the page) and the page's name as its
+    /// title.
+    fn page_header(&self, muted: Hsla, cx: &mut Context<Self>) -> Div {
+        let page = self.active_page.label();
+        let toggle = Button::new("sidebar-toggle")
+            .ghost()
+            .xsmall()
+            .icon(if self.sidebar_expanded {
+                IconName::PanelLeftClose
+            } else {
+                IconName::PanelLeftOpen
+            })
+            .tooltip(s().nav.toggle_sidebar)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.sidebar_expanded = !this.sidebar_expanded;
+                cx.notify();
+            }));
+        let breadcrumb = div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .h(px(28.))
+            .text_sm()
+            .child(div().ml(px(-6.)).child(toggle))
+            .child(div().w(px(1.)).h(px(14.)).bg(muted.opacity(0.35)))
+            .child(div().text_color(muted).child("BoxPilot"))
+            .child(div().text_color(muted.opacity(0.6)).child("/"))
+            .child(div().font_weight(FontWeight::MEDIUM).child(page));
+        div().v_flex().flex_none().w_full().child(breadcrumb).child(
+            div()
+                .mt_3()
+                .mb_5()
+                .text_size(px(28.))
+                .line_height(px(34.))
+                .font_weight(FontWeight::BOLD)
+                .child(page),
+        )
+    }
+}
+
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_starting = self.app_state.read(cx).is_starting(cx);
@@ -426,18 +477,21 @@ impl Render for RootView {
             ConnectionStatus::Connected => theme.success,
             ConnectionStatus::Disconnected => theme.muted_foreground,
         };
-        let status_label = status.label();
         let chrome = theme.sidebar;
         let fg = theme.foreground;
+        let muted = theme.muted_foreground;
         let colors = SidebarColors {
+            rail: chrome,
+            fg,
+            muted,
             accent: theme.primary,
-            badge: theme.primary,
-            muted: theme.muted_foreground,
-            tile: theme.background,
+            accent_light: theme.primary_hover,
+            on_accent: theme.primary_foreground,
+            tile: theme.sidebar_accent,
             tile_border: theme.border,
         };
         let (panel_bg, panel_border) = (theme.background, theme.border);
-        // 状态卡第二行:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
+        // 状态球的第二行:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
         let detail = if is_running {
             let traffic = self.app_state.read(cx).traffic.read(cx);
             StatusDetail::Speed(format_speed(traffic.down), format_speed(traffic.up))
@@ -446,6 +500,12 @@ impl Render for RootView {
                 Some(name) if !is_starting => StatusDetail::Profile(name.clone()),
                 _ => StatusDetail::None,
             }
+        };
+        let status = SidebarStatus {
+            dot: dot_color,
+            label: status.label(),
+            detail,
+            connected: status == ConnectionStatus::Connected,
         };
 
         let view = cx.entity().downgrade();
@@ -473,10 +533,9 @@ impl Render for RootView {
         // the traffic lights, beside a panel that runs up to the top.
         let strip = title_bar::draws_strip(window);
         let title_bar = strip.then(|| title_bar::title_bar(brand(true), window, cx));
+        let expanded = self.sidebar_expanded;
         let header = (!strip).then(|| {
-            // The padding `SidebarHeader` gave it, not its hover: the name
-            // isn't clickable.
-            let name = div().p_2().child(brand(false).px_1().py_1());
+            let name = rail_brand(expanded, colors);
             if cfg!(target_os = "macos") {
                 title_bar::sidebar_top(name, window, cx).into_any_element()
             } else {
@@ -495,10 +554,9 @@ impl Render for RootView {
             .w_full()
             .child(sidebar(
                 header,
+                expanded,
                 self.active_page,
-                dot_color,
-                status_label,
-                detail,
+                status,
                 colors,
                 OptionalPages {
                     tailscale: self.tailscale_visible,
@@ -508,7 +566,6 @@ impl Render for RootView {
                     settings: self.update_badge,
                 },
                 on_nav,
-                window,
             ))
             // Cached: the page re-renders only when it notifies (each page
             // observes the entities it reads), not on every root re-render —
@@ -529,12 +586,18 @@ impl Render for RootView {
                     .bg(panel_bg)
                     .shadow_xs()
                     .overflow_hidden()
-                    .px_6()
-                    .pt_5()
+                    .px_7()
+                    .pt_3()
                     .pb_6()
                     // Toasts float at the panel's bottom centre.
                     .relative()
-                    .child(page.cached(StyleRefinement::default().size_full()))
+                    .child(self.page_header(muted, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .child(page.cached(StyleRefinement::default().size_full())),
+                    )
                     .child(self.toasts.clone()),
             )
             .relative()

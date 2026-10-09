@@ -216,6 +216,28 @@ pub fn format_elapsed(ms: i64) -> String {
     }
 }
 
+/// A unix-ms instant as a local wall-clock time, split for the list's time
+/// column: `("16:16:31", ".902")` — the seconds' fraction is drawn quieter.
+pub fn format_clock(ms: i64) -> (String, String) {
+    use chrono::TimeZone;
+    let time = chrono::Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|at| at.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".into());
+    (time, format!(".{:03}", ms.rem_euclid(1000)))
+}
+
+/// A unix-ms instant as local hours and minutes, for the timeline's axis.
+pub fn format_hour_minute(ms: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|at| at.format("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
 /// The page's summary header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionSummary {
@@ -243,6 +265,95 @@ pub fn summarize<'a>(connections: impl IntoIterator<Item = &'a Connection>) -> C
         summary.down_total = summary.down_total.saturating_add(connection.downlink_total);
     }
     summary
+}
+
+/// How far back the page's timeline reaches: the shortest of these that
+/// covers the oldest matching connection, else the longest.
+pub const TIMELINE_SPANS_MIN: [i64; 5] = [5, 15, 30, 60, 180];
+
+/// One bar of the timeline: connections opened in its interval, by network.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimelineBucket {
+    pub tcp: u32,
+    /// UDP, and anything that is neither (sing-box only reports the two).
+    pub udp: u32,
+}
+
+impl TimelineBucket {
+    pub fn total(&self) -> u32 {
+        self.tcp + self.udp
+    }
+}
+
+/// When the listed connections were opened: `buckets.len()` equal
+/// intervals ending at `now`, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Timeline {
+    /// Unix ms where the first interval starts.
+    pub start_ms: i64,
+    pub bucket_ms: i64,
+    pub buckets: Vec<TimelineBucket>,
+}
+
+impl Timeline {
+    pub fn span_ms(&self) -> i64 {
+        self.bucket_ms * self.buckets.len() as i64
+    }
+
+    /// The tallest bar, at least 1 so an empty timeline scales.
+    pub fn peak(&self) -> u32 {
+        self.buckets
+            .iter()
+            .map(TimelineBucket::total)
+            .max()
+            .unwrap_or(0)
+            .max(1)
+    }
+}
+
+/// The timeline of `connections` matching `query` (open and closed alike:
+/// it shows activity, whichever tab is listed), in `count` bars up to
+/// `now_ms`, over the shortest of [`TIMELINE_SPANS_MIN`] that reaches back
+/// to the oldest of them. Connections older than the longest span are left
+/// out; ones dated after `now_ms` (clock skew) land in the last bar.
+pub fn timeline<'a>(
+    connections: impl IntoIterator<Item = &'a Connection>,
+    query: &str,
+    now_ms: i64,
+    count: usize,
+) -> Timeline {
+    let count = count.max(1);
+    let terms = query_terms(query);
+    let opened: Vec<(i64, bool)> = connections
+        .into_iter()
+        .filter(|c| matches_terms(c, &terms))
+        .map(|c| (c.created_at, c.network.eq_ignore_ascii_case("tcp")))
+        .collect();
+    let oldest = opened.iter().map(|(at, _)| *at).min().unwrap_or(now_ms);
+    let span_min = TIMELINE_SPANS_MIN
+        .iter()
+        .copied()
+        .find(|min| now_ms - oldest <= min * 60_000)
+        .unwrap_or(TIMELINE_SPANS_MIN[TIMELINE_SPANS_MIN.len() - 1]);
+    let bucket_ms = (span_min * 60_000 / count as i64).max(1);
+    let start_ms = now_ms - bucket_ms * count as i64;
+    let mut buckets = vec![TimelineBucket::default(); count];
+    for (at, tcp) in opened {
+        if at < start_ms {
+            continue;
+        }
+        let ix = (((at - start_ms) / bucket_ms) as usize).min(count - 1);
+        if tcp {
+            buckets[ix].tcp += 1;
+        } else {
+            buckets[ix].udp += 1;
+        }
+    }
+    Timeline {
+        start_ms,
+        bucket_ms,
+        buckets,
+    }
 }
 
 #[cfg(test)]
@@ -468,5 +579,58 @@ mod tests {
             }
         );
         assert_eq!(summarize([]), ConnectionSummary::default());
+    }
+    #[test]
+    fn timeline_picks_the_shortest_span_covering_the_oldest() {
+        let now = 10 * 3_600_000;
+        let mut udp = conn("u", now - 4 * 60_000);
+        udp.network = "udp".into();
+        let recent = [conn("a", now - 1_000), conn("b", now - 1_000), udp];
+        let t = timeline(recent.iter(), "", now, 10);
+        assert_eq!(t.span_ms(), 5 * 60_000);
+        assert_eq!(t.start_ms, now - 5 * 60_000);
+        assert_eq!(t.buckets.len(), 10);
+        assert_eq!(t.buckets[9], TimelineBucket { tcp: 2, udp: 0 });
+        assert_eq!(t.buckets[2], TimelineBucket { tcp: 0, udp: 1 });
+        assert_eq!(t.peak(), 2);
+
+        // 20 minutes back needs the 30-minute span.
+        let older = [conn("a", now - 20 * 60_000)];
+        assert_eq!(timeline(older.iter(), "", now, 30).span_ms(), 30 * 60_000);
+    }
+
+    #[test]
+    fn timeline_filters_and_drops_what_is_out_of_range() {
+        let now = 100 * 3_600_000;
+        let mut google = conn("g", now - 1);
+        google.domain = "www.google.com".into();
+        let rows = [
+            google,
+            conn("x", now - 1),
+            // Past the longest span: left out, and the span stays maximal.
+            conn("old", now - 10 * 3_600_000),
+            // From the future: the last bar.
+            conn("skew", now + 5_000),
+        ];
+        let t = timeline(rows.iter(), "google", now, 6);
+        assert_eq!(t.buckets.iter().map(|b| b.total()).sum::<u32>(), 1);
+        let all = timeline(rows.iter(), "", now, 6);
+        assert_eq!(all.span_ms(), 180 * 60_000);
+        assert_eq!(all.buckets[5].tcp, 3);
+        assert_eq!(all.buckets.iter().map(|b| b.total()).sum::<u32>(), 3);
+        // Nothing yet: an empty bar chart still scales.
+        let empty = timeline([], "", now, 4);
+        assert_eq!(empty.span_ms(), 5 * 60_000);
+        assert_eq!(empty.peak(), 1);
+    }
+
+    #[test]
+    fn clock_splits_off_the_milliseconds() {
+        let (time, fraction) = format_clock(1_700_000_000_902);
+        assert_eq!(time.len(), 8);
+        assert_eq!(time.matches(':').count(), 2);
+        assert_eq!(fraction, ".902");
+        assert_eq!(format_clock(5).1, ".005");
+        assert_eq!(format_hour_minute(1_700_000_000_000).len(), 5);
     }
 }
