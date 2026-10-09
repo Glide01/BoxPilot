@@ -156,6 +156,9 @@ pub struct Common {
     pub copy: &'static str,
     pub copied: &'static str,
     pub search: &'static str,
+    /// The badge saying a list follows sing-box as it happens (Connections,
+    /// Logs).
+    pub live: &'static str,
     pub start: &'static str,
     pub stop: &'static str,
     pub unknown: &'static str,
@@ -376,10 +379,6 @@ pub struct Connections {
     pub col_chain: &'static str,
     pub col_traffic: &'static str,
     pub col_duration: &'static str,
-    /// The badge saying the list follows sing-box as it happens.
-    pub live: &'static str,
-    /// Tooltip of a timeline bar: "12 opened".
-    pub opened_count: FmtN,
 }
 
 /// The Connections page's details panel (one connection).
@@ -432,6 +431,21 @@ pub struct Logs {
     pub clear: &'static str,
     pub empty_title: &'static str,
     pub empty_hint: &'static str,
+    /// The search box's placeholder; `-word` leaves lines out.
+    pub search_placeholder: &'static str,
+    /// "1,204 lines".
+    pub lines: FmtN,
+    /// The button copying every line the table shows, in order.
+    pub copy_shown: &'static str,
+    pub no_match_title: &'static str,
+    pub no_match_hint: &'static str,
+    /// The table's column headings.
+    pub col_time: &'static str,
+    pub col_level: &'static str,
+    pub col_source: &'static str,
+    pub col_message: &'static str,
+    /// Tooltip of the selected line's close button.
+    pub close_line: &'static str,
 }
 
 pub struct Tools {

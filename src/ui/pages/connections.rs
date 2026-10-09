@@ -1,7 +1,6 @@
-//! 连接页,日志浏览器式布局:控制行(搜索框 + Active/Closed 切换 +
-//! Newest/Traffic 排序 + Close all + Live 徽标);时间线卡片(汇总:打开数、
-//! 实时速率、总流量;新建连接按 TCP/UDP 堆叠的柱状图,`core::connections_view::
-//! timeline`);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
+//! 连接页,日志浏览器式布局(与日志页一致):控制行(搜索框 + Active/Closed
+//! 切换 + Newest/Traffic 排序 + Close all + Live 徽标);一行汇总(打开数、
+//! 实时速率、总流量);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
 //! 淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
 //! (组 → 节点)、累计流量、存活时长、关闭按钮(仅打开的连接)。网络/协议、
 //! 入站、规则与实时速率在详情面板里。
@@ -26,18 +25,18 @@ use crate::actions::{
 use crate::core::bytefmt::{format_bytes, format_speed};
 use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
-    chain_label, connection_age_ms, format_clock, format_elapsed, format_hour_minute, host_label,
-    process_name, select_connections, summarize, timeline, ConnectionSort, ConnectionView,
-    Timeline,
+    chain_label, connection_age_ms, format_elapsed, host_label, process_name, select_connections,
+    summarize, ConnectionSort, ConnectionView,
 };
 use crate::core::singbox_api::Connection;
+use crate::core::timefmt::format_clock_ms;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
+use crate::ui::locale;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, full_text_tooltip, row_hover_bg, segmented, Segment,
-    TextLabel,
+    connect_button, empty_state, form_input, full_text_tooltip, live_badge, row_hover_bg,
+    segmented, tag_badge, warn_orange, Segment, TextLabel,
 };
-use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -45,7 +44,6 @@ use gpui_component::{
     input::{InputEvent, InputState},
     scroll::ScrollableElement,
     theme::Theme,
-    tooltip::Tooltip,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
 };
 use std::rc::Rc;
@@ -60,9 +58,6 @@ const NETWORK_WIDTH: f32 = 56.;
 const TRAFFIC_WIDTH: f32 = 156.;
 const AGE_WIDTH: f32 = 64.;
 const CLOSE_WIDTH: f32 = 28.;
-/// The timeline's bars and their height.
-const TIMELINE_BARS: usize = 48;
-const TIMELINE_HEIGHT: f32 = 56.;
 /// The details panel's width; on a narrow window it takes most of the list
 /// (`DETAILS_MAX_FRACTION`), leaving the selected row's start in view.
 const DETAILS_WIDTH: f32 = 380.;
@@ -292,8 +287,8 @@ fn clipped(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// TCP and UDP, in the badges, the bars and the legend: the accent blue,
-/// and an orange that holds up beside it in both themes.
+/// TCP and UDP badges: the accent blue and the warning orange, as the
+/// Logs page's INFO and WARN.
 #[derive(Clone, Copy)]
 struct NetworkColors {
     tcp: Hsla,
@@ -304,11 +299,7 @@ impl NetworkColors {
     fn new(theme: &Theme) -> Self {
         Self {
             tcp: theme.primary,
-            udp: if theme.is_dark() {
-                rgb(0xFB923C).into() // orange-400
-            } else {
-                rgb(0xEA580C).into() // orange-600
-            },
+            udp: warn_orange(theme),
         }
     }
 
@@ -319,20 +310,6 @@ impl NetworkColors {
             _ => theme.muted_foreground,
         }
     }
-}
-
-/// The network as a small tinted badge: `TCP`, `UDP`.
-fn network_badge(network: &str, color: Hsla, theme: &Theme) -> Div {
-    div()
-        .flex_none()
-        .px_1p5()
-        .rounded(px(4.))
-        .bg(color.opacity(0.14))
-        .text_color(color)
-        .text_xs()
-        .font_family(theme.mono_font_family.clone())
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(network.to_uppercase())
 }
 
 /// One list row. Every row has the same structure (closed rows keep an
@@ -355,7 +332,7 @@ fn connection_row(
         (theme.foreground, theme.muted_foreground)
     };
 
-    let (clock, fraction) = format_clock(connection.created_at);
+    let (clock, fraction) = format_clock_ms(connection.created_at);
     let time = div()
         .flex_none()
         .w(px(TIME_WIDTH))
@@ -371,14 +348,18 @@ fn connection_row(
         .flex_none()
         .w(px(NETWORK_WIDTH))
         .h_flex()
-        .child(network_badge(
-            if network.is_empty() { "—" } else { &network },
+        .child(tag_badge(
+            theme,
+            if network.is_empty() {
+                "—".to_string()
+            } else {
+                network.to_uppercase()
+            },
             if closed {
                 badge_color.opacity(0.6)
             } else {
                 badge_color
             },
-            theme,
         ));
 
     // Host and chain share what the fixed columns leave, two to one.
@@ -556,126 +537,6 @@ fn column_header(theme: &Theme) -> Div {
         .child(div().flex_none().w(px(CLOSE_WIDTH)))
 }
 
-/// A legend entry: a small square in the series colour and its name.
-fn legend_item(color: Hsla, label: &'static str) -> Div {
-    div()
-        .h_flex()
-        .items_center()
-        .gap_1p5()
-        .child(div().size(px(8.)).rounded(px(2.)).bg(color))
-        .child(label)
-}
-
-/// When the listed connections were opened: one stacked bar (TCP below,
-/// UDP above) per interval up to now, the axis in local clock time under
-/// them, each bar's interval and count in its tooltip.
-fn timeline_chart(timeline: &Timeline, networks: NetworkColors, theme: &Theme) -> Div {
-    let peak = timeline.peak() as f32;
-    let empty = theme.border;
-    let bars = timeline.buckets.iter().enumerate().map(|(ix, bucket)| {
-        let height = |n: u32| {
-            if n == 0 {
-                px(0.)
-            } else {
-                px((n as f32 / peak * TIMELINE_HEIGHT).max(2.))
-            }
-        };
-        let from = timeline.start_ms + timeline.bucket_ms * ix as i64;
-        let tip: SharedString = format!(
-            "{} – {}  ·  {}",
-            format_clock(from).0,
-            format_clock(from + timeline.bucket_ms).0,
-            (s().connections.opened_count)(bucket.total() as u64)
-        )
-        .into();
-        div()
-            .id(("timeline-bar", ix))
-            .flex_1()
-            .min_w(px(2.))
-            .h_full()
-            .v_flex()
-            .justify_end()
-            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-            .map(|bar| {
-                if bucket.total() == 0 {
-                    bar.child(div().h(px(2.)).rounded(px(1.)).bg(empty))
-                } else {
-                    bar.child(
-                        div()
-                            .h(height(bucket.udp))
-                            .rounded_t(px(2.))
-                            .bg(networks.udp),
-                    )
-                    .child(
-                        div()
-                            .h(height(bucket.tcp))
-                            .when(bucket.udp == 0, |seg| seg.rounded_t(px(2.)))
-                            .bg(networks.tcp),
-                    )
-                }
-            })
-    });
-    // Ticks at the start, the thirds and now.
-    let ticks = (0..4).map(|ix| {
-        let at = timeline.start_ms + timeline.span_ms() * ix / 3;
-        div().child(format_hour_minute(at))
-    });
-    div()
-        .v_flex()
-        .w_full()
-        .gap_2()
-        .child(
-            div()
-                .h(px(TIMELINE_HEIGHT))
-                .w_full()
-                .flex()
-                .flex_row()
-                .items_end()
-                .gap(px(3.))
-                .children(bars),
-        )
-        .child(
-            div()
-                .h_flex()
-                .justify_between()
-                .text_xs()
-                .font_family(theme.mono_font_family.clone())
-                .text_color(theme.muted_foreground)
-                .children(ticks),
-        )
-}
-
-/// "● Live": the list follows sing-box as it happens.
-fn live_badge(theme: &Theme) -> Div {
-    let green = theme.success;
-    div()
-        .flex_none()
-        .h(px(28.))
-        .px_2p5()
-        .h_flex()
-        .items_center()
-        .gap_1p5()
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.border)
-        .text_xs()
-        .font_weight(FontWeight::MEDIUM)
-        .child(
-            div()
-                .size(px(7.))
-                .rounded_full()
-                .bg(green)
-                .shadow(vec![BoxShadow {
-                    color: green.opacity(0.6),
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(6.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }]),
-        )
-        .child(s().connections.live)
-}
-
 impl Render for ConnectionsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_rows(cx);
@@ -683,15 +544,11 @@ impl Render for ConnectionsPage {
         let state = connections.read(cx);
         let live = state.live;
         let summary = summarize(state.table.iter());
-        let now_ms = unix_millis_now();
-        let query = self.filter_input.read(cx).value().to_string();
-        let timeline = timeline(state.table.iter(), &query, now_ms, TIMELINE_BARS);
         let query_empty = self
             .rows_key
             .as_ref()
             .is_none_or(|k| k.query.trim().is_empty());
         let theme = cx.theme();
-        let networks = NetworkColors::new(theme);
         let t = &s().connections;
 
         // Nothing to filter, switch or close (sing-box stopped, or no
@@ -699,7 +556,7 @@ impl Render for ConnectionsPage {
         // Close all stay out of the way of the empty state.
         let has_any = live && summary.open + summary.closed > 0;
 
-        // Live totals above the toolbar: open count, current rates, and the
+        // Live totals under the toolbar: open count, current rates, and the
         // traffic so far — three groups set apart by space. On a narrow
         // window the totals give way first, then the rates; the count
         // stays whole.
@@ -730,31 +587,6 @@ impl Render for ConnectionsPage {
                 ))
                 .flex_shrink(SHRINK_FIRST),
             );
-        let card = has_any.then(|| {
-            let legend = div()
-                .h_flex()
-                .flex_none()
-                .items_center()
-                .gap_4()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(legend_item(networks.tcp, "TCP"))
-                .child(legend_item(networks.udp, "UDP"));
-            card_frame(theme)
-                .flex_none()
-                .gap_4()
-                .child(
-                    div()
-                        .h_flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_4()
-                        .w_full()
-                        .child(summary_items)
-                        .child(legend),
-                )
-                .child(timeline_chart(&timeline, networks, theme))
-        });
         let close_all = {
             let connections = connections.clone();
             Button::new("connections-close-all")
@@ -924,8 +756,7 @@ impl Render for ConnectionsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .when(has_any, |page| page.child(controls))
-            .children(card)
+            .when(has_any, |page| page.child(controls).child(summary_items))
             // Before the body, so the details panel stays above it.
             .children(empty)
             .child(body)

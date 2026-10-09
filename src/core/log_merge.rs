@@ -41,7 +41,7 @@
 use crate::core::singbox_api::{strip_ansi, LogBatch, LogLevel};
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long a pipe line waits for its API twin while the API stream is live
 /// (and how long an API line waits for its pipe twin). Covers both drain
@@ -72,6 +72,9 @@ pub struct LogEntry {
     /// (a Go panic, say).
     pub level_span: Option<Range<usize>>,
     pub source: LogSource,
+    /// When the line reached BoxPilot, unix ms (wall clock). A held-back
+    /// pipe line keeps the time it was read, not when it was shown.
+    pub at_ms: i64,
     /// Strictly increasing in view order.
     id: u64,
     /// The sing-box run this line belongs to.
@@ -136,6 +139,99 @@ impl Line {
 impl LogEntry {
     fn key(&self) -> Key {
         (self.level, self.text[self.body_start..].to_string())
+    }
+
+    /// Strictly increasing in view order: a stable handle on the line.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The line split for the Logs table: see [`LineParts`].
+    pub fn parts(&self) -> LineParts<'_> {
+        LineParts::parse(&self.text[self.body_start..])
+    }
+}
+
+/// Most a source may be: longer, the words before a colon are prose, not a
+/// component's name.
+const MAX_SOURCE_LEN: usize = 48;
+
+/// A log line's text after the level word, split into columns. sing-box
+/// writes `[3417626869 12ms] inbound/mixed[mixed-in]: inbound connection
+/// from …`: the connection tag, the component that logged, and the
+/// message. Each part but the message is optional; a line that isn't
+/// shaped like that (a Go panic) is all message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineParts<'a> {
+    /// `[3417626869 12ms]`: which connection, and how long it has run.
+    pub tag: Option<&'a str>,
+    /// `inbound/mixed[mixed-in]`, `router`, `dns`.
+    pub source: Option<&'a str>,
+    pub message: &'a str,
+}
+
+impl<'a> LineParts<'a> {
+    pub fn parse(body: &'a str) -> Self {
+        let mut rest = body.trim();
+        let mut tag = None;
+        if rest.starts_with('[') {
+            if let Some(end) = rest.find("] ") {
+                tag = Some(&rest[..=end]);
+                rest = rest[end + 2..].trim_start();
+            }
+        }
+        let source = rest.find(": ").and_then(|end| {
+            let name = &rest[..end];
+            (!name.is_empty()
+                && name.len() <= MAX_SOURCE_LEN
+                && !name.contains(char::is_whitespace))
+            .then_some(name)
+        });
+        if let Some(name) = source {
+            rest = rest[name.len() + 2..].trim_start();
+        }
+        Self {
+            tag,
+            source,
+            message: rest,
+        }
+    }
+}
+
+/// The Logs page's search: whitespace-separated terms, each of which must
+/// appear in the line (case-insensitively) — or, written `-term`, must not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogQuery {
+    include: Vec<String>,
+    exclude: Vec<String>,
+}
+
+impl LogQuery {
+    pub fn parse(query: &str) -> Self {
+        let mut parsed = Self::default();
+        for term in query.split_whitespace() {
+            match term.strip_prefix('-') {
+                Some(excluded) if !excluded.is_empty() => {
+                    parsed.exclude.push(excluded.to_lowercase())
+                }
+                // A lone "-" is a term like any other.
+                _ => parsed.include.push(term.to_lowercase()),
+            }
+        }
+        parsed
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    pub fn matches(&self, entry: &LogEntry) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        let text = entry.text.to_lowercase();
+        self.include.iter().all(|term| text.contains(term.as_str()))
+            && !self.exclude.iter().any(|term| text.contains(term.as_str()))
     }
 }
 
@@ -217,6 +313,9 @@ pub struct LogMerge {
     pending: VecDeque<PendingPipe>,
     /// API lines without a pipe twin yet: arrival times, oldest first.
     recent_api: HashMap<Key, VecDeque<Instant>>,
+    /// An instant and the wall clock (unix ms) then: the merge runs on
+    /// `Instant`s, the lines are stamped with wall-clock time from them.
+    epoch: (Instant, i64),
 }
 
 impl LogMerge {
@@ -230,7 +329,19 @@ impl LogMerge {
             phase: Phase::Stopped,
             pending: VecDeque::new(),
             recent_api: HashMap::new(),
+            epoch: (Instant::now(), unix_millis(SystemTime::now())),
         }
+    }
+
+    /// `at` as wall-clock unix ms, rounded down either side of the epoch
+    /// alike, so instants keep their spacing.
+    fn wall_ms(&self, at: Instant) -> i64 {
+        let (base, base_ms) = self.epoch;
+        let nanos = match at.checked_duration_since(base) {
+            Some(after) => after.as_nanos() as i128,
+            None => -(base.duration_since(at).as_nanos() as i128),
+        };
+        base_ms + nanos.div_euclid(1_000_000) as i64
     }
 
     /// Oldest first.
@@ -261,7 +372,7 @@ impl LogMerge {
         let mut changed = false;
         for pending in std::mem::take(&mut self.pending) {
             if let PendingState::Held(line) = pending.state {
-                self.show(line, LogSource::Pipe);
+                self.show(line, LogSource::Pipe, pending.at);
                 changed = true;
             }
         }
@@ -290,7 +401,7 @@ impl LogMerge {
                     state: PendingState::Held(line),
                 }),
                 Phase::PreApi => {
-                    let id = self.show(line, LogSource::Pipe);
+                    let id = self.show(line, LogSource::Pipe, now);
                     self.pending.push_back(PendingPipe {
                         key,
                         at: now,
@@ -299,7 +410,7 @@ impl LogMerge {
                     changed = true;
                 }
                 Phase::Stopped => {
-                    self.show(line, LogSource::Pipe);
+                    self.show(line, LogSource::Pipe, now);
                     changed = true;
                 }
             }
@@ -308,10 +419,11 @@ impl LogMerge {
         while self.pending.len() > self.max_lines {
             if let Some(PendingPipe {
                 state: PendingState::Held(line),
+                at,
                 ..
             }) = self.pending.pop_front()
             {
-                self.show(line, LogSource::Pipe);
+                self.show(line, LogSource::Pipe, at);
                 changed = true;
             }
         }
@@ -342,7 +454,7 @@ impl LogMerge {
             if !self.take_pending_pipe(&key, now) {
                 self.recent_api.entry(key).or_default().push_back(now);
             }
-            self.show(line, LogSource::Api);
+            self.show(line, LogSource::Api, now);
         }
         self.trim();
         changed
@@ -368,10 +480,11 @@ impl LogMerge {
         {
             if let Some(PendingPipe {
                 state: PendingState::Held(line),
+                at,
                 ..
             }) = self.pending.pop_front()
             {
-                self.show(line, LogSource::Pipe);
+                self.show(line, LogSource::Pipe, at);
                 changed = true;
             }
         }
@@ -437,7 +550,7 @@ impl LogMerge {
             }
         }
         for line in snapshot {
-            self.show(line, LogSource::Api);
+            self.show(line, LogSource::Api, now);
         }
     }
 
@@ -480,14 +593,16 @@ impl LogMerge {
         found
     }
 
-    fn show(&mut self, line: Line, source: LogSource) -> u64 {
+    fn show(&mut self, line: Line, source: LogSource, at: Instant) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
+        let at_ms = self.wall_ms(at);
         self.entries.push_back(LogEntry {
             level: line.level,
             text: line.text,
             level_span: line.level_span,
             source,
+            at_ms,
             id,
             run: self.run,
             body_start: line.body_start,
@@ -517,72 +632,17 @@ impl LogMerge {
     }
 }
 
+fn unix_millis(at: SystemTime) -> i64 {
+    at.duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as i64)
+}
+
 /// The lines visible at `threshold` (that level or more severe).
 pub fn visible(
     entries: &VecDeque<LogEntry>,
     threshold: LogLevel,
 ) -> impl Iterator<Item = &LogEntry> {
     entries.iter().filter(move |e| e.level <= threshold)
-}
-
-/// What the viewer shows: the visible lines as one text, one line per entry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ViewText {
-    pub text: String,
-    /// Each level word's byte range in `text`, for the badge colours.
-    pub badges: Vec<(Range<usize>, LogLevel)>,
-    /// Per line: its entry's id and the byte offset it starts at. Ids are
-    /// increasing, which `map_offset`/`map_row` rely on.
-    lines: Vec<(u64, usize)>,
-}
-
-impl ViewText {
-    /// The visible lines at `threshold` (that level or more severe).
-    pub fn compose(entries: &VecDeque<LogEntry>, threshold: LogLevel) -> Self {
-        let mut view = Self::default();
-        for entry in visible(entries, threshold) {
-            if !view.text.is_empty() {
-                view.text.push('\n');
-            }
-            let start = view.text.len();
-            if let Some(span) = &entry.level_span {
-                view.badges
-                    .push((start + span.start..start + span.end, entry.level));
-            }
-            view.lines.push((entry.id, start));
-            view.text.push_str(&entry.text);
-        }
-        view
-    }
-
-    pub fn line_count(&self) -> usize {
-        self.lines.len()
-    }
-
-    /// Byte offset where the last line starts (0 when empty).
-    pub fn last_line_start(&self) -> usize {
-        self.lines.last().map_or(0, |&(_, start)| start)
-    }
-
-    /// Where `offset` into `old` sits in this text: the same line, by entry,
-    /// at the same column. `None` when that line is no longer shown. Keeps a
-    /// selection in place while lines come and go around it.
-    pub fn map_offset(&self, old: &ViewText, offset: usize) -> Option<usize> {
-        let row = old.lines.partition_point(|&(_, start)| start <= offset);
-        let (id, old_start) = *old.lines.get(row.checked_sub(1)?)?;
-        let index = self.lines.binary_search_by_key(&id, |&(id, _)| id).ok()?;
-        Some(self.lines[index].1 + (offset - old_start))
-    }
-
-    /// Where row `row` of `old` is in this text — or, when its line is gone,
-    /// the first later line still shown. `None` when none is. Keeps the
-    /// scroll position on the same lines.
-    pub fn map_row(&self, old: &ViewText, row: usize) -> Option<usize> {
-        old.lines
-            .get(row..)?
-            .iter()
-            .find_map(|&(id, _)| self.lines.binary_search_by_key(&id, |&(id, _)| id).ok())
-    }
 }
 
 #[cfg(test)]
@@ -1013,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn view_text_filters_and_places_badges() {
+    fn visible_filters_by_threshold() {
         let t0 = Instant::now();
         let mut merge = LogMerge::new(100);
         merge.push_pipe(
@@ -1025,51 +1085,113 @@ mod tests {
             ],
             t0,
         );
-        let view = ViewText::compose(merge.entries(), LogLevel::Info);
-        assert_eq!(view.text, "INFO[0000] a\npanic: x\nWARN[0001] b");
-        assert_eq!(
-            view.badges,
-            vec![(0..4, LogLevel::Info), (22..26, LogLevel::Warn)]
-        );
-        assert_eq!(&view.text[22..26], "WARN");
-        assert_eq!(view.line_count(), 3);
-        assert_eq!(view.last_line_start(), 22);
+        let shown: Vec<&str> = visible(merge.entries(), LogLevel::Info)
+            .map(|e| e.text.as_str())
+            .collect();
+        assert_eq!(shown, ["INFO[0000] a", "panic: x", "WARN[0001] b"]);
         assert_eq!(visible(merge.entries(), LogLevel::Trace).count(), 4);
-
-        let empty = ViewText::compose(&VecDeque::new(), LogLevel::Trace);
-        assert_eq!((empty.text.as_str(), empty.line_count()), ("", 0));
-        assert_eq!(empty.last_line_start(), 0);
+        // Ids increase in view order.
+        let ids: Vec<u64> = merge.entries().iter().map(LogEntry::id).collect();
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
-    /// Lines evicted above and appended below: a selection and the scroll
-    /// position stay on the same lines.
     #[test]
-    fn view_text_maps_positions_across_updates() {
+    fn lines_are_stamped_when_they_arrive() {
         let t0 = Instant::now();
-        let mut merge = LogMerge::new(3);
-        merge.push_pipe(&["INFO[0000] a", "INFO[0000] bb", "INFO[0000] c"], t0);
-        let old = ViewText::compose(merge.entries(), LogLevel::Trace);
-        merge.push_pipe(&["INFO[0000] d"], t0);
-        let new = ViewText::compose(merge.entries(), LogLevel::Trace);
-        assert_eq!(new.text, "INFO[0000] bb\nINFO[0000] c\nINFO[0000] d");
+        let mut merge = LogMerge::new(100);
+        let start = merge.wall_ms(t0);
+        merge.push_pipe(&["INFO[0000] a"], t0);
+        merge.push_pipe(&["INFO[0000] b"], t0 + Duration::from_millis(1500));
+        let stamps: Vec<i64> = merge.entries().iter().map(|e| e.at_ms - start).collect();
+        assert_eq!(stamps, [0, 1500]);
 
-        // "bb" starts at 13 + 11 in old, at 11 in new.
-        let bb = old.text.find("bb").unwrap();
-        assert_eq!(new.map_offset(&old, bb), Some(11));
-        assert_eq!(&new.text[11..13], "bb");
-        // End of a line maps to the end of the same line.
-        let end_of_bb = old.text.find("bb").unwrap() + 2;
-        assert_eq!(new.map_offset(&old, end_of_bb), Some(13));
-        assert_eq!(new.map_offset(&old, 0), None, "line a was evicted");
+        // A held pipe line keeps its read time, not the time it is shown.
+        merge.begin_run();
+        merge.push_api(append(vec![]), t0);
+        merge.push_pipe(&["WARN[0000] stderr only"], t0 + Duration::from_secs(10));
+        assert!(merge.tick(t0 + Duration::from_secs(20)));
+        let held = merge.entries().back().unwrap();
+        assert_eq!(held.text, "WARN[0000] stderr only");
+        assert_eq!(held.at_ms - start, 10_000);
+    }
 
-        assert_eq!(new.map_row(&old, 1), Some(0));
-        assert_eq!(new.map_row(&old, 0), Some(0), "gone: next surviving line");
-        assert_eq!(new.map_row(&old, 9), None);
+    #[test]
+    fn parts_split_tag_source_and_message() {
+        let parts = LineParts::parse("[3417626869 12ms] inbound/mixed[mixed-in]: from 127.0.0.1:5");
+        assert_eq!(parts.tag, Some("[3417626869 12ms]"));
+        assert_eq!(parts.source, Some("inbound/mixed[mixed-in]"));
+        assert_eq!(parts.message, "from 127.0.0.1:5");
 
-        merge.set_keep_level(LogLevel::Trace);
-        merge.clear();
-        let cleared = ViewText::compose(merge.entries(), LogLevel::Trace);
-        assert_eq!(cleared.map_row(&new, 0), None);
-        assert_eq!(cleared.map_offset(&new, 3), None);
+        let parts = LineParts::parse("router: rule-set loaded");
+        assert_eq!((parts.tag, parts.source), (None, Some("router")));
+        assert_eq!(parts.message, "rule-set loaded");
+
+        // Prose before a colon is not a source.
+        let parts = LineParts::parse("sing-box started (0.00s)");
+        assert_eq!((parts.tag, parts.source), (None, None));
+        assert_eq!(parts.message, "sing-box started (0.00s)");
+        let parts = LineParts::parse("failed to start: bind: address in use");
+        assert_eq!(parts.source, None);
+        assert_eq!(parts.message, "failed to start: bind: address in use");
+        let parts = LineParts::parse("panic: runtime error");
+        assert_eq!(parts.source, Some("panic"));
+    }
+
+    #[test]
+    fn entries_split_after_the_level_word() {
+        let t0 = Instant::now();
+        let mut merge = LogMerge::new(100);
+        merge.push_pipe(
+            &[
+                "INFO[0012] [42 5ms] router: ok",
+                "+0800 2026-10-02 11:23:04 WARN dns: slow",
+            ],
+            t0,
+        );
+        let parts: Vec<LineParts> = merge.entries().iter().map(LogEntry::parts).collect();
+        assert_eq!(
+            parts[0],
+            LineParts {
+                tag: Some("[42 5ms]"),
+                source: Some("router"),
+                message: "ok"
+            }
+        );
+        assert_eq!(parts[1].source, Some("dns"));
+        assert_eq!(parts[1].message, "slow");
+    }
+
+    #[test]
+    fn query_includes_and_excludes_terms() {
+        let t0 = Instant::now();
+        let mut merge = LogMerge::new(100);
+        merge.push_pipe(
+            &[
+                "INFO[0000] dns: exchanged google.com",
+                "INFO[0000] dns: healthcheck ok",
+                "ERROR[0000] router: Google unreachable",
+            ],
+            t0,
+        );
+        let matching = |query: &str| -> Vec<usize> {
+            let query = LogQuery::parse(query);
+            merge
+                .entries()
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| query.matches(e))
+                .map(|(ix, _)| ix)
+                .collect()
+        };
+        assert_eq!(matching(""), [0, 1, 2]);
+        assert_eq!(matching("GOOGLE"), [0, 2]);
+        assert_eq!(matching("dns -healthcheck"), [0]);
+        assert_eq!(matching("-dns"), [2]);
+        assert_eq!(
+            matching("- dns"),
+            Vec::<usize>::new(),
+            "a lone dash is a term"
+        );
+        assert!(LogQuery::parse("  ").is_empty());
     }
 }

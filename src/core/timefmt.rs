@@ -1,5 +1,6 @@
 //! Time formatting: the subscription "last updated" label, the Home
-//! uptime readout and local date-times (connection details).
+//! uptime readout, local date-times (connection details) and clock times
+//! (the Connections and Logs tables).
 
 use crate::i18n::s;
 use std::path::Path;
@@ -132,6 +133,18 @@ fn day_and_time_in<Tz: chrono::TimeZone>(
         LocalDay::Date(then_day.format("%Y-%m-%d").to_string())
     };
     (day, then.naive_local().format("%H:%M").to_string())
+}
+
+/// A unix-ms instant as a local wall-clock time, split for a table's time
+/// column: `("16:16:31", ".902")` — the seconds' fraction is drawn quieter.
+pub fn format_clock_ms(ms: i64) -> (String, String) {
+    use chrono::TimeZone;
+    let time = chrono::Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|at| at.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".into());
+    (time, format!(".{:03}", ms.rem_euclid(1000)))
 }
 
 #[cfg(test)]
@@ -298,5 +311,14 @@ mod tests {
     fn uptime_since_future_start_is_zero() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_759_400_000);
         assert_eq!(uptime_since(1_759_400_005_000, now), Duration::ZERO);
+    }
+
+    #[test]
+    fn clock_splits_off_the_milliseconds() {
+        let (time, fraction) = super::format_clock_ms(1_700_000_000_902);
+        assert_eq!(time.len(), 8);
+        assert_eq!(time.matches(':').count(), 2);
+        assert_eq!(fraction, ".902");
+        assert_eq!(super::format_clock_ms(5).1, ".005");
     }
 }

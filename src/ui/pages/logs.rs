@@ -1,21 +1,48 @@
-use crate::core::log_merge::ViewText;
+//! 日志页,日志浏览器式布局(与连接页一致):控制行(搜索框 + 级别切换 +
+//! 复制 + 清空 + Live 徽标);一行计数(显示的行数,以及缓冲里 Error / Warn
+//! 各有几行);下面是带表头的日志表,最新的在上,每行一行:到达时间(等宽,
+//! 毫秒部分淡色)、级别徽标、来源(`router`、`inbound/mixed[…]`)、消息(前面
+//! 是淡色的连接标记 `[id 时长]`)。拆分见 `core::log_merge::LineParts`。
+//!
+//! 点一行选中它(再点取消):表格下方的卡片显示整行原文,可复制。复制按钮
+//! 复制表里显示的全部行(按时间顺序)。
+//!
+//! 搜索:空白分隔的词都要出现(不区分大小写),`-词` 排除含它的行
+//! (`core::log_merge::LogQuery`)。级别:默认跟随 sing-box 配置的
+//! `log.level`(API 报告),用户可放宽到 Debug/Trace 或收紧;选回配置级别即
+//! 恢复跟随。来源与去重见 `core::log_merge`。
+//!
+//! 列表用 `uniform_list` 虚拟化,行(按 id,最新在前)按 `RowsKey` 缓存,
+//! 日志或条件变了才重算。停在顶部时新行出现在顶上;往下翻着看时,新行插在
+//! 上方不会把正在看的行挤走:滚动位置随之下移。页面不在前台时不渲染,也就
+//! 不重算。
+
+use crate::core::log_merge::{LogEntry, LogQuery};
 use crate::core::presentation::log_count_label;
+use crate::core::settings::StatusLevel;
 use crate::core::singbox_api::LogLevel;
+use crate::core::timefmt::format_clock_ms;
 use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
-use crate::ui::card_frame;
-use crate::ui::widgets::{connect_button, empty_state, segmented, Segment, TextLabel};
+use crate::ui::widgets::{
+    connect_button, empty_state, form_input, live_badge, row_hover_bg, segmented, tag_badge,
+    warn_orange, Segment, TextLabel,
+};
+use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    button::Button,
-    input::{Editor, EditorState, TextDecoration, TextDecorationCollection},
-    ActiveTheme, IconName, Sizable, StyledExt,
+    button::{Button, ButtonVariants},
+    input::{InputEvent, InputState},
+    scroll::ScrollableElement,
+    theme::Theme,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
 };
+use std::rc::Rc;
 
 /// The level control's choices, most severe first. `panic`/`fatal` lines
 /// show under every one of them. The names stay English in every UI
 /// language: they are sing-box's own level names, the same words the
-/// coloured badges in the log text show (`ERROR`, `INFO`…).
+/// badges in the table show (`ERROR`, `INFO`…).
 const LEVEL_CHOICES: [(&str, &str, LogLevel); 5] = [
     ("level-error", "Error", LogLevel::Error),
     ("level-warn", "Warn", LogLevel::Warn),
@@ -24,248 +51,398 @@ const LEVEL_CHOICES: [(&str, &str, LogLevel); 5] = [
     ("level-trace", "Trace", LogLevel::Trace),
 ];
 
-/// 日志页:标题行(标题 + 计数 + 级别 pills + 清空)在内容卡片**外面**(与
-/// Groups 页一致);卡片内是一个只读的 `Editor`,承载按当前级别过滤后的日志
-/// 文本——用户能用鼠标拖选、复制(⌘/Ctrl+C 或右键菜单)、Ctrl+F 搜索,不换行
-/// 所以长行可横向滚动。每行的级别词(`INFO` 等)用 text decoration 上色,
-/// 即级别徽标。卡片 `flex_1 + min_h_0` 占满标题行外的剩余高度。
-///
-/// 级别:默认跟随 sing-box 配置的 `log.level`(API 报告),用户可放宽到
-/// Debug/Trace 或收紧;选回配置级别即恢复跟随。来源与去重见
-/// `core::log_merge`。
-///
-/// 刷新:`set_value` 会清掉选区并把滚动复位到顶部,所以每次换文本后还原——
-/// 选区按行 id 映射到新文本(`ViewText::map_offset`);停在底部时滚到新的底部
-/// 跟随最新行(还没布局过就把光标放到末行,首次布局时编辑器自己滚过去);
-/// 否则按行 id 保持同一批行可见(`ViewText::map_row`),上方淘汰旧行、下方
-/// 追加新行都不会让视图跳走。
-///
-/// 不可见时不刷新:页面自上次刷新后没渲染过(不在前台,或窗口没画),新日志
-/// 只记 `stale`,不重组文本、不 `set_value`;下次渲染开头补一次刷新。忙碌的
-/// 日志流因此不会在别的页面上持续占用 UI 线程。
+/// Fixed row height — `uniform_list` lays every row out at the first row's
+/// size, so all rows must match.
+const ROW_HEIGHT: f32 = 32.;
+/// Column widths shared by the header and the rows.
+const TIME_WIDTH: f32 = 104.;
+const LEVEL_WIDTH: f32 = 64.;
+const SOURCE_WIDTH: f32 = 168.;
+/// The selected line's card grows with its text up to this, then scrolls.
+const DETAIL_MAX_HEIGHT: f32 = 132.;
+
+/// What the cached rows were derived from.
+#[derive(Clone, PartialEq)]
+struct RowsKey {
+    /// The buffer's oldest and newest ids and its length: any change to it
+    /// (new lines, evictions, a clear) moves one of them.
+    first: Option<u64>,
+    last: Option<u64>,
+    len: usize,
+    threshold: LogLevel,
+    query: String,
+}
+
 pub struct LogsPage {
     app_state: Entity<AppState>,
-    /// 只读编辑器,承载日志文本,供选中 / 复制 / 搜索 / 横向滚动。
-    viewer: Entity<EditorState>,
-    /// 级别徽标的着色。
-    badges: TextDecorationCollection,
-    /// `badges` 按哪种主题(深色?)上的色;切换浅色/深色后渲染时重新上色。
-    badges_dark: bool,
-    /// 当前灌进 viewer 的内容(用于判断是否变化,以及映射选区 / 滚动)。
-    shown: ViewText,
-    /// 是否跟随最新行。仅在 viewer 画过当前内容后按"是否停在底部"重算。
-    follow: bool,
-    /// 自上次刷新以来本页是否渲染过——没渲染过(页面不可见)时 viewer 的
-    /// 布局 / 滚动还是旧的,不能据此判断。
-    painted: bool,
-    /// 上次刷新设下但可能还没生效的滚动位置(页面不可见时一直挂着)。
-    pending_offset: Option<Point<Pixels>>,
-    /// LogBuffer 变了但因页面不可见跳过了刷新;下次渲染时补上。
-    stale: bool,
     /// AppState 的 LogBuffer(固定不变)。
     logs: Entity<LogBuffer>,
+    search: Entity<InputState>,
+    scroll: UniformListScrollHandle,
+    /// Ids of the lines shown, newest first, and what they came from.
+    rows: Rc<Vec<u64>>,
+    rows_key: Option<RowsKey>,
+    /// The line whose full text the card under the table shows.
+    selected: Option<u64>,
 }
 
 impl LogsPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let logs = app_state.read(cx).logs.clone();
-
-        let viewer = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .line_number(false)
-                .folding(false)
-                .soft_wrap(false)
-        });
-        let badges = viewer.update(cx, |s, cx| s.create_decorations_collection(Vec::new(), cx));
-
-        // LogBuffer 变化(新日志 / 清空 / 切换级别)→ 把最新文本灌进 viewer,
-        // 并重渲染标题计数。页面自上次刷新后没渲染过(不可见)就只标记
-        // `stale`,留到下次渲染。
-        cx.observe_in(&logs, window, |this, logs, window, cx| {
-            if this.painted {
-                this.refresh(&logs, window, cx);
-            } else {
-                this.stale = true;
-            }
-            cx.notify();
-        })
-        .detach();
-
-        // Stopped / started: the empty state's Connect button follows.
+        cx.observe(&logs, |_, _, cx| cx.notify()).detach();
+        // Stopped / started: the Live badge and the empty state's Connect
+        // button follow.
         let process = app_state.read(cx).process.clone();
         cx.observe(&process, |_, _, cx| cx.notify()).detach();
 
-        let mut page = Self {
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(s().logs.search_placeholder));
+        locale::observe(window, cx, |this: &mut Self, window, cx| {
+            this.search.update(cx, |input, cx| {
+                input.set_placeholder(s().logs.search_placeholder, window, cx)
+            });
+        })
+        .detach();
+        cx.subscribe_in(&search, window, |_, _, ev: &InputEvent, _, cx| {
+            if matches!(ev, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+
+        Self {
             app_state,
-            viewer,
-            badges,
-            badges_dark: cx.theme().is_dark(),
-            shown: ViewText::default(),
-            follow: true,
-            painted: false,
-            pending_offset: None,
-            stale: false,
-            logs: logs.clone(),
-        };
-        page.refresh(&logs, window, cx);
-        page
+            logs,
+            search,
+            scroll: UniformListScrollHandle::new(),
+            rows: Rc::new(Vec::new()),
+            rows_key: None,
+            selected: None,
+        }
     }
 
-    fn refresh(&mut self, logs: &Entity<LogBuffer>, window: &mut Window, cx: &mut Context<Self>) {
-        let view = {
-            let logs = logs.read(cx);
-            ViewText::compose(logs.entries(), logs.threshold())
+    /// Recompute the rows only when the buffer or the filters moved. New
+    /// lines above a scrolled-down view move the scroll position down with
+    /// them, so the lines being read stay put; at the top, the newest stay
+    /// in view.
+    fn refresh_rows(&mut self, cx: &App) {
+        let logs = self.logs.read(cx);
+        let entries = logs.entries();
+        let key = RowsKey {
+            first: entries.front().map(LogEntry::id),
+            last: entries.back().map(LogEntry::id),
+            len: entries.len(),
+            threshold: logs.threshold(),
+            query: self.search.read(cx).value().trim().to_string(),
         };
-        if view.text == self.shown.text {
+        if self.rows_key.as_ref() == Some(&key) {
             return;
         }
+        let query = LogQuery::parse(&key.query);
+        let rows: Vec<u64> = entries
+            .iter()
+            .rev()
+            .filter(|e| e.level <= key.threshold && query.matches(e))
+            .map(LogEntry::id)
+            .collect();
 
-        let (offset, line_height, height, selection) = {
-            let viewer = self.viewer.read(cx);
-            (
-                viewer.scroll_offset(),
-                viewer.line_height(),
-                viewer.text_bounds().map(|b| b.size.height),
-                viewer.selected_range(),
-            )
-        };
-        // Only a painted layout says where the user is.
-        let offset = match (self.painted, self.pending_offset) {
-            (false, Some(pending)) => pending,
-            _ => offset,
-        };
-        if let (true, Some(line_height), Some(height)) = (self.painted, line_height, height) {
-            let content = line_height * self.shown.line_count() as f32;
-            self.follow = -offset.y + height >= content - line_height * 1.5;
+        let same_filters = self
+            .rows_key
+            .as_ref()
+            .is_some_and(|old| old.threshold == key.threshold && old.query == key.query);
+        let handle = self.scroll.0.borrow().base_handle.clone();
+        if same_filters {
+            let newest = self.rows.first().copied();
+            let added = match newest {
+                Some(newest) => rows.iter().take_while(|id| **id > newest).count(),
+                None => 0,
+            };
+            let offset = handle.offset();
+            if added > 0 && offset.y < px(0.) {
+                handle.set_offset(point(offset.x, offset.y - px(ROW_HEIGHT) * added as f32));
+            }
+        } else {
+            handle.set_offset(point(px(0.), px(0.)));
         }
-
-        let decorations = badge_decorations(&view, cx);
-        self.viewer
-            .update(cx, |s, cx| s.set_value(view.text.clone(), window, cx));
-        self.badges.set(decorations, cx);
-        self.badges_dark = cx.theme().is_dark();
-
-        // Keep a selection on the same characters.
-        if selection.start != selection.end {
-            let start = view.map_offset(&self.shown, selection.start);
-            let end = view.map_offset(&self.shown, selection.end);
-            if let (Some(start), Some(end)) = (start, end) {
-                self.viewer
-                    .update(cx, |s, cx| s.set_selected_range(start..end, cx));
+        if let Some(id) = self.selected {
+            if entries.binary_search_by_key(&id, LogEntry::id).is_err() {
+                self.selected = None;
             }
         }
+        self.rows = Rc::new(rows);
+        self.rows_key = Some(key);
+    }
 
-        // A deferred scroll offset wins over the editor's own scroll-to-caret.
-        let target = match (self.follow, line_height, height) {
-            (true, Some(line_height), Some(height)) => {
-                let content = line_height * view.line_count() as f32;
-                Some(point(offset.x, -(content - height).max(px(0.))))
-            }
-            (true, _, _) => {
-                // Never laid out: put the caret on the last line; the first
-                // layout scrolls it into view with the real viewport size.
-                let end = view.last_line_start();
-                self.viewer
-                    .update(cx, |s, cx| s.set_selected_range(end..end, cx));
-                None
-            }
-            (false, Some(line_height), _) => {
-                // Stay on the same lines.
-                let scrolled = -offset.y;
-                let row = (scrolled / line_height).floor().max(0.) as usize;
-                let within = scrolled - line_height * row as f32;
-                let new_row = view.map_row(&self.shown, row).unwrap_or(0);
-                Some(point(offset.x, -(line_height * new_row as f32 + within)))
-            }
-            (false, None, _) => None,
+    fn toggle_selected(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.selected = if self.selected == Some(id) {
+            None
+        } else {
+            Some(id)
         };
-        if let Some(target) = target {
-            self.viewer
-                .update(cx, |s, cx| s.set_scroll_offset(target, cx));
-        }
-        self.pending_offset = target;
-        self.shown = view;
-        self.painted = false;
+        cx.notify();
+    }
+
+    /// Every shown line, oldest first, as sing-box wrote them.
+    fn shown_text(&self, cx: &App) -> String {
+        let logs = self.logs.read(cx);
+        let entries = logs.entries();
+        self.rows
+            .iter()
+            .rev()
+            .filter_map(|id| entry(entries, *id))
+            .map(|e| e.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
-/// `view`'s level badges, coloured from the current theme.
-fn badge_decorations(view: &ViewText, cx: &App) -> Vec<TextDecoration> {
-    let colors = BadgeColors::new(cx);
-    view.badges
-        .iter()
-        .map(|(range, level)| TextDecoration::new(range.clone(), colors.style(*level)))
-        .collect()
+fn copy_to_clipboard(text: String, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    toast::show(StatusLevel::Success, s().common.copied, cx);
 }
 
-/// Level-badge styles, from the theme.
-struct BadgeColors {
-    danger: Hsla,
-    warning: Hsla,
-    info: Hsla,
-    muted: Hsla,
+fn entry(entries: &std::collections::VecDeque<LogEntry>, id: u64) -> Option<&LogEntry> {
+    entries
+        .binary_search_by_key(&id, LogEntry::id)
+        .ok()
+        .map(|ix| &entries[ix])
 }
 
-impl BadgeColors {
-    fn new(cx: &App) -> Self {
-        let theme = cx.theme();
-        Self {
-            danger: theme.danger,
-            warning: theme.warning,
-            info: theme.info,
-            muted: theme.muted_foreground,
-        }
+/// A level's colour: red for the failures, orange for warnings, the accent
+/// for info, muted for the chatter below it.
+fn level_color(level: LogLevel, theme: &Theme) -> Hsla {
+    match level {
+        LogLevel::Panic | LogLevel::Fatal | LogLevel::Error => theme.danger,
+        LogLevel::Warn => warn_orange(theme),
+        LogLevel::Info => theme.primary,
+        LogLevel::Debug | LogLevel::Trace => theme.muted_foreground,
     }
+}
 
-    fn style(&self, level: LogLevel) -> HighlightStyle {
-        let color = match level {
-            LogLevel::Panic | LogLevel::Fatal | LogLevel::Error => self.danger,
-            LogLevel::Warn => self.warning,
-            LogLevel::Info => self.info,
-            LogLevel::Debug | LogLevel::Trace => self.muted,
-        };
-        HighlightStyle {
-            color: Some(color),
-            background_color: Some(color.opacity(0.14)),
-            font_weight: Some(FontWeight::SEMIBOLD),
-            ..Default::default()
-        }
-    }
+fn level_badge(level: LogLevel, theme: &Theme) -> Div {
+    tag_badge(
+        theme,
+        level.as_str().to_uppercase(),
+        level_color(level, theme),
+    )
+}
+
+/// Single-line text that ellipsizes instead of wrapping.
+fn clipped(text: impl Into<SharedString>) -> Div {
+    div()
+        .min_w_0()
+        .overflow_hidden()
+        .text_ellipsis()
+        .whitespace_nowrap()
+        .child(text.into())
+}
+
+/// The arrival time, its milliseconds quieter.
+fn clock(at_ms: i64, fg: Hsla, muted: Hsla, theme: &Theme) -> Div {
+    let (time, fraction) = format_clock_ms(at_ms);
+    div()
+        .flex_none()
+        .h_flex()
+        .text_sm()
+        .font_family(theme.mono_font_family.clone())
+        .child(div().text_color(fg).child(time))
+        .child(div().text_color(muted).child(fraction))
+}
+
+/// One table row.
+fn log_row(
+    entry: &LogEntry,
+    selected: bool,
+    page: &WeakEntity<LogsPage>,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let parts = entry.parts();
+    let (fg, muted) = (theme.foreground, theme.muted_foreground);
+    let color = level_color(entry.level, theme);
+    let hover_bg = row_hover_bg(theme);
+    let id = entry.id();
+    let page = page.clone();
+
+    let message = div()
+        .flex_1()
+        .min_w_0()
+        .h_flex()
+        .gap_2()
+        .text_sm()
+        .font_family(theme.mono_font_family.clone())
+        .children(parts.tag.map(|tag| {
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .text_color(muted.opacity(0.75))
+                .child(tag.to_string())
+        }))
+        .child(clipped(parts.message.to_string()).text_color(fg));
+
+    div()
+        .id(("log-row", id as usize))
+        .relative()
+        .h(px(ROW_HEIGHT))
+        .w_full()
+        .px_3()
+        .h_flex()
+        .items_center()
+        .gap_3()
+        .rounded(px(8.))
+        .border_1()
+        .cursor_pointer()
+        .map(|row| {
+            if selected {
+                // A tinted band in the line's level colour, its outline, and
+                // a bar down its leading edge.
+                row.bg(color.opacity(0.10))
+                    .border_color(color.opacity(0.45))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-1.))
+                            .top(px(6.))
+                            .bottom(px(6.))
+                            .w(px(3.))
+                            .rounded_full()
+                            .bg(color),
+                    )
+            } else {
+                row.border_color(transparent_black())
+                    .hover(move |style| style.bg(hover_bg))
+            }
+        })
+        .on_click(move |_, _, cx| {
+            page.update(cx, |page, cx| page.toggle_selected(id, cx))
+                .ok();
+        })
+        .child(clock(entry.at_ms, fg, muted, theme).w(px(TIME_WIDTH)))
+        .child(
+            div()
+                .flex_none()
+                .w(px(LEVEL_WIDTH))
+                .h_flex()
+                .child(level_badge(entry.level, theme)),
+        )
+        .child(
+            clipped(parts.source.unwrap_or_default().to_string())
+                .flex_none()
+                .w(px(SOURCE_WIDTH))
+                .text_sm()
+                .text_color(muted),
+        )
+        .child(message)
+}
+
+/// The table's column headings, on the rows' columns.
+fn column_header(theme: &Theme) -> Div {
+    let t = &s().logs;
+    let heading = |text: &'static str| div().whitespace_nowrap().child(text);
+    div()
+        .flex_none()
+        .h(px(32.))
+        .w_full()
+        // The rows' padding and their (transparent) border.
+        .px(px(13.))
+        .h_flex()
+        .items_center()
+        .gap_3()
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.muted_foreground)
+        .border_b_1()
+        .border_color(theme.border)
+        .child(heading(t.col_time).flex_none().w(px(TIME_WIDTH)))
+        .child(heading(t.col_level).flex_none().w(px(LEVEL_WIDTH)))
+        .child(heading(t.col_source).flex_none().w(px(SOURCE_WIDTH)))
+        .child(heading(t.col_message).flex_1().min_w_0())
+}
+
+/// The selected line in full, under the table: its level, time and source,
+/// the whole text (wrapped, scrolling past a few lines), and its own copy.
+fn detail_card(entry: &LogEntry, page: &WeakEntity<LogsPage>, theme: &Theme) -> Div {
+    let parts = entry.parts();
+    let text = entry.text.clone();
+    let close_page = page.clone();
+    let id = entry.id();
+    card_frame(theme)
+        .flex_none()
+        .gap_2()
+        .py_3()
+        .child(
+            div()
+                .h_flex()
+                .items_center()
+                .gap_3()
+                .child(level_badge(entry.level, theme))
+                .child(clock(
+                    entry.at_ms,
+                    theme.foreground,
+                    theme.muted_foreground,
+                    theme,
+                ))
+                .child(
+                    clipped(parts.source.unwrap_or_default().to_string())
+                        .flex_1()
+                        .text_sm()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(
+                    Button::new("log-copy-line")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Copy)
+                        .tooltip(s().common.copy)
+                        .on_click(move |_, _, cx| copy_to_clipboard(text.clone(), cx)),
+                )
+                .child(
+                    Button::new("log-close-line")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip(s().logs.close_line)
+                        .on_click(move |_, _, cx| {
+                            close_page
+                                .update(cx, |page, cx| page.toggle_selected(id, cx))
+                                .ok();
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .id("log-line-text")
+                .max_h(px(DETAIL_MAX_HEIGHT))
+                .overflow_y_scroll()
+                .text_sm()
+                .font_family(theme.mono_font_family.clone())
+                .child(entry.text.clone()),
+        )
 }
 
 impl Render for LogsPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Catch up on what arrived while hidden — before `painted` flips,
-        // so the refresh still treats the layout as not current.
-        if std::mem::take(&mut self.stale) {
-            let logs = self.logs.clone();
-            self.refresh(&logs, window, cx);
-        }
-        // Light/dark switched (which re-renders every page): the text is
-        // unchanged, so recolour the badges in place.
-        if cx.theme().is_dark() != self.badges_dark {
-            let decorations = badge_decorations(&self.shown, cx);
-            self.badges.set(decorations, cx);
-            self.badges_dark = cx.theme().is_dark();
-        }
-        self.painted = true;
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_rows(cx);
         let app_state_entity = self.app_state.clone();
         let logs_entity = self.logs.clone();
         let logs = logs_entity.read(cx);
         let theme = cx.theme();
+        let t = &s().logs;
 
         let total = logs.entries().len();
+        let running = self.app_state.read(cx).process.read(cx).is_running();
         let stopped = self.app_state.read(cx).process.read(cx).is_stopped();
+
+        // No lines yet: nothing to search, filter, copy or clear.
+        if total == 0 {
+            return div().size_full().child(
+                empty_state(theme, IconName::SquareTerminal, t.empty_title, t.empty_hint)
+                    .when(stopped, |this| this.action(connect_button("logs-connect"))),
+            );
+        }
+
         let threshold = logs.threshold();
         let default_threshold = logs.default_threshold();
-        let count_label = log_count_label(logs.visible_count(), total);
-
-        let count = count_label.map(|count| {
-            div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(count)
-        });
+        let page = cx.entity().downgrade();
 
         // The level sing-box's config asks for says so in its tooltip.
         let levels = LEVEL_CHOICES
@@ -280,10 +457,22 @@ impl Render for LogsPage {
             })
             .collect();
         let logs_for_levels = logs_entity.clone();
+        let copy_page = page.clone();
         let controls = div()
             .h_flex()
+            .flex_wrap()
             .items_center()
             .gap_2()
+            .w_full()
+            .child(
+                div().flex_1().min_w(px(200.)).child(
+                    form_input(&self.search).cleanable(true).prefix(
+                        Icon::new(IconName::Search)
+                            .small()
+                            .text_color(theme.muted_foreground),
+                    ),
+                ),
+            )
             .child(segmented(
                 theme,
                 "log-levels",
@@ -297,57 +486,119 @@ impl Render for LogsPage {
                 },
             ))
             .child(
+                Button::new("logs-copy")
+                    .outline()
+                    .small()
+                    .icon(IconName::Copy)
+                    .tooltip(t.copy_shown)
+                    .disabled(self.rows.is_empty())
+                    .on_click(move |_, _, cx| {
+                        if let Some(page) = copy_page.upgrade() {
+                            let text = page.read(cx).shown_text(cx);
+                            copy_to_clipboard(text, cx);
+                        }
+                    }),
+            )
+            .child(
                 Button::new("logs-clear")
                     .outline()
                     .small()
-                    .text_label(s().logs.clear)
+                    .text_label(t.clear)
                     .on_click(move |_, _, cx| {
                         app_state_entity.update(cx, |state, cx| state.clear_logs(cx));
                     }),
-            );
-
-        // No lines yet: nothing to filter or clear.
-        let header = (total > 0).then(|| {
-            div()
-                .h_flex()
-                .flex_wrap()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .w_full()
-                .child(controls)
-                .children(count)
-        });
-
-        let body = if total == 0 {
-            empty_state(
-                theme,
-                IconName::SquareTerminal,
-                s().logs.empty_title,
-                s().logs.empty_hint,
             )
-            .when(stopped, |this| this.action(connect_button("logs-connect")))
-            .into_any_element()
+            .when(running, |row| row.child(live_badge(theme)));
+
+        // How many lines the table shows ("3 of 10" when filtered), then
+        // how many errors and warnings the buffer holds, whatever is shown.
+        let shown = self.rows.len();
+        let count = log_count_label(shown, total).unwrap_or_else(|| (t.lines)(shown as u64));
+        let (errors, warnings) =
+            logs.entries()
+                .iter()
+                .fold((0, 0), |(errors, warnings), e| match e.level {
+                    LogLevel::Panic | LogLevel::Fatal | LogLevel::Error => (errors + 1, warnings),
+                    LogLevel::Warn => (errors, warnings + 1),
+                    _ => (errors, warnings),
+                });
+        let tally = |n: usize, level: LogLevel, label: &'static str| {
+            (n > 0).then(|| {
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(level_color(level, theme)),
+                    )
+                    .child(format!("{n} {label}"))
+            })
+        };
+        let meta = div()
+            .h_flex()
+            .items_center()
+            .gap_4()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child(count)
+            .children(tally(errors, LogLevel::Error, "Error"))
+            .children(tally(warnings, LogLevel::Warn, "Warn"));
+
+        let (empty, table) = if self.rows.is_empty() {
+            let empty = empty_state(theme, IconName::Search, t.no_match_title, t.no_match_hint);
+            (Some(empty), None)
         } else {
-            // 只读、无边框、不换行的编辑器:鼠标可拖选 + 复制 + 搜索 + 横向滚动。
-            card_frame(theme)
+            let rows = self.rows.clone();
+            let list_logs = logs_entity.clone();
+            let list_page = page.clone();
+            let selected = self.selected;
+            let list = uniform_list("logs-list", rows.len(), move |range, _, cx| {
+                let theme = cx.theme();
+                let entries = list_logs.read(cx).entries();
+                range
+                    .map(|ix| match entry(entries, rows[ix]) {
+                        Some(e) => log_row(e, selected == Some(rows[ix]), &list_page, theme)
+                            .into_any_element(),
+                        // Rows are refreshed with the buffer before the list
+                        // renders, so this is only a defensive blank.
+                        None => div().h(px(ROW_HEIGHT)).into_any_element(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .track_scroll(&self.scroll)
+            .size_full();
+            let table = div()
+                .v_flex()
                 .flex_1()
                 .min_h_0()
+                .child(column_header(theme))
                 .child(
-                    Editor::new(&self.viewer)
-                        .appearance(false)
-                        .readonly(true)
-                        .h_full()
-                        .text_sm(),
-                )
-                .into_any_element()
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .pt_1()
+                        .child(list)
+                        .vertical_scrollbar(&self.scroll),
+                );
+            (None, Some(table))
         };
+        let detail = self
+            .selected
+            .and_then(|id| entry(logs.entries(), id))
+            .map(|e| detail_card(e, &page, theme));
 
         div()
             .v_flex()
             .size_full()
             .gap_4()
-            .children(header)
-            .child(body)
+            .child(controls)
+            .child(meta)
+            .children(empty)
+            .children(table)
+            .children(detail)
     }
 }

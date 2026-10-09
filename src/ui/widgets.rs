@@ -555,6 +555,62 @@ pub fn status_label(color: Hsla, text: impl Into<SharedString>) -> Div {
         .child(text)
 }
 
+/// Warnings (and UDP beside TCP): an orange that holds up beside the
+/// accent blue in both themes — the theme's own warning is a yellow.
+pub fn warn_orange(theme: &Theme) -> Hsla {
+    if theme.is_dark() {
+        gpui::rgb(0xFB923C).into() // orange-400
+    } else {
+        gpui::rgb(0xEA580C).into() // orange-600
+    }
+}
+
+/// A short upper-case tag in a tinted box, in a table's cell: a log
+/// level (`ERROR`), a network (`TCP`).
+pub fn tag_badge(theme: &Theme, text: impl Into<SharedString>, color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .px_1p5()
+        .rounded(px(4.))
+        .bg(color.opacity(0.14))
+        .text_color(color)
+        .text_xs()
+        .font_family(theme.mono_font_family.clone())
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text.into())
+}
+
+/// "● Live": the list beside it follows sing-box as it happens.
+pub fn live_badge(theme: &Theme) -> Div {
+    let green = theme.success;
+    div()
+        .flex_none()
+        .h(px(28.))
+        .px_2p5()
+        .h_flex()
+        .items_center()
+        .gap_1p5()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .child(
+            div()
+                .size(px(7.))
+                .rounded_full()
+                .bg(green)
+                .shadow(vec![gpui::BoxShadow {
+                    color: green.opacity(0.6),
+                    offset: gpui::point(px(0.), px(0.)),
+                    blur_radius: px(6.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }]),
+        )
+        .child(s().common.live)
+}
+
 /// One choice of a [`segmented`] control.
 pub struct Segment {
     pub label: SharedString,
