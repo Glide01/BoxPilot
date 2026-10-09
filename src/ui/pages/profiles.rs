@@ -96,7 +96,7 @@ impl ProfilesPage {
         let interval_cell = cx.new(|_| draft.interval_minutes);
         let via_sing_box_cell = cx.new(|_| draft.update_via_sing_box);
 
-        window.open_dialog(cx, move |dialog, window, cx| {
+        crate::ui::dialog::open_dialog(window, cx, move |dialog, centered, window, cx| {
             let t = s();
             let kind = *kind_cell.read(cx);
             let interval = *interval_cell.read(cx);
@@ -144,12 +144,12 @@ impl ProfilesPage {
                         let app_state = app_state.clone();
                         let id = id.clone();
                         let name = name.clone();
-                        window.open_alert_dialog(cx, move |alert, _, _| {
+                        crate::ui::dialog::open_alert(window, cx, move |alert, centered, _, _| {
                             let app_state = app_state.clone();
                             let id = id.clone();
                             alert
-                                .title((s().profiles.delete_title)(&name))
-                                .description(s().profiles.delete_body)
+                                .title(centered.title((s().profiles.delete_title)(&name)))
+                                .description(centered.description(s().profiles.delete_body))
                                 .confirm()
                                 .on_ok(move |_, window, cx| {
                                     app_state.update(cx, |state, cx| {
@@ -294,7 +294,7 @@ impl ProfilesPage {
             );
 
             dialog
-                .title(title)
+                .title(centered.title(title))
                 .w(px(460.))
                 .child(
                     div()
@@ -314,28 +314,30 @@ impl ProfilesPage {
                         .when(kind == 0, move |this| this.child(update_options)),
                 )
                 .footer(
-                    DialogFooter::new()
-                        .justify_between()
-                        .child(div().children(delete_button))
-                        .child(
-                            div()
-                                .h_flex()
-                                .gap_2()
-                                .child(
-                                    DialogClose::new().child(dialog_button(
-                                        Button::new("profile-dialog-cancel")
-                                            .outline()
-                                            .text_label(t.common.cancel),
-                                    )),
-                                )
-                                .child(
-                                    DialogAction::new().child(dialog_button(
-                                        Button::new("profile-dialog-save")
-                                            .primary()
-                                            .text_label(t.common.save),
-                                    )),
-                                ),
-                        ),
+                    centered.footer(
+                        DialogFooter::new()
+                            .justify_between()
+                            .child(div().children(delete_button))
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .gap_2()
+                                    .child(
+                                        DialogClose::new().child(dialog_button(
+                                            Button::new("profile-dialog-cancel")
+                                                .outline()
+                                                .text_label(t.common.cancel),
+                                        )),
+                                    )
+                                    .child(
+                                        DialogAction::new().child(dialog_button(
+                                            Button::new("profile-dialog-save")
+                                                .primary()
+                                                .text_label(t.common.save),
+                                        )),
+                                    ),
+                            ),
+                    ),
                 )
                 .on_ok({
                     let app_state = app_state.clone();
@@ -358,16 +360,14 @@ impl ProfilesPage {
                             path: path_input.read(cx).value().to_string(),
                         }
                         .build();
-                        app_state.update(cx, |state, cx| {
-                            match editing_id.clone() {
-                                Some(id) => {
-                                    state.update_profile_fields(id, output.name, output.source, cx);
-                                }
-                                None => {
-                                    let id = state.create_profile(output.name, output.source, cx);
-                                    if output.has_content {
-                                        state.update_profile(id, FetchOrigin::Manual, cx);
-                                    }
+                        app_state.update(cx, |state, cx| match editing_id.clone() {
+                            Some(id) => {
+                                state.update_profile_fields(id, output.name, output.source, cx);
+                            }
+                            None => {
+                                let id = state.create_profile(output.name, output.source, cx);
+                                if output.has_content {
+                                    state.update_profile(id, FetchOrigin::Manual, cx);
                                 }
                             }
                         });

@@ -21,7 +21,7 @@ use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{ActiveTheme, StyledExt, WindowExt};
+use gpui_component::{ActiveTheme, StyledExt};
 
 /// Top-level view: sidebar navigation + the active page, owns the
 /// keyboard-shortcut action handlers and the toast routing. All page
@@ -324,22 +324,23 @@ impl RootView {
         // handler (`ui::app_window`) already ran for this attempt (emitted
         // first, and gpui dispatches effects in emit order), so the window
         // is up before the dialog.
-        window.open_alert_dialog(cx, move |alert, _, _| {
+        crate::ui::dialog::open_alert(window, cx, move |alert, centered, _, _| {
             let app_state = app_state.clone();
             let request = request.clone();
             let name = request.name.clone().unwrap_or_default();
             alert
-                .title(s().dialogs.import_title)
+                .title(centered.title(s().dialogs.import_title))
                 .description(
-                    div()
-                        .v_flex()
-                        .gap_1()
-                        .children(
-                            (!name.is_empty()).then(|| {
-                                div().font_weight(FontWeight::SEMIBOLD).child(name)
-                            }),
-                        )
-                        .child(div().text_sm().child(redact_url(&request.url))),
+                    centered.description(
+                        div()
+                            .v_flex()
+                            .gap_1()
+                            .children(
+                                (!name.is_empty())
+                                    .then(|| div().font_weight(FontWeight::SEMIBOLD).child(name)),
+                            )
+                            .child(div().text_sm().child(redact_url(&request.url))),
+                    ),
                 )
                 .confirm()
                 .on_ok(move |_, _, cx| {
@@ -359,11 +360,11 @@ impl RootView {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.open_alert_dialog(cx, move |alert, _, _| {
+        crate::ui::dialog::open_alert(window, cx, move |alert, centered, _, _| {
             let app_state = app_state.clone();
             alert
-                .title(s().dialogs.tun_grant_title)
-                .description(s().dialogs.tun_grant_body)
+                .title(centered.title(s().dialogs.tun_grant_title))
+                .description(centered.description(s().dialogs.tun_grant_body))
                 .confirm()
                 .ok_text(s().dialogs.grant)
                 .on_ok(move |_, _, cx| {
@@ -385,11 +386,11 @@ impl RootView {
         cx: &mut App,
     ) {
         let prompt = app_state.read(cx).helper_status.install_prompt();
-        window.open_alert_dialog(cx, move |alert, _, _| {
+        crate::ui::dialog::open_alert(window, cx, move |alert, centered, _, _| {
             let app_state = app_state.clone();
             alert
-                .title(prompt.title)
-                .description(prompt.body)
+                .title(centered.title(prompt.title))
+                .description(centered.description(prompt.body))
                 .confirm()
                 .ok_text(prompt.ok)
                 .on_ok(move |_, _, cx| {
@@ -406,11 +407,11 @@ impl RootView {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.open_alert_dialog(cx, move |alert, _, _| {
+        crate::ui::dialog::open_alert(window, cx, move |alert, centered, _, _| {
             let app_state = app_state.clone();
             alert
-                .title(s().dialogs.helper_remove_title)
-                .description(s().dialogs.helper_remove_body)
+                .title(centered.title(s().dialogs.helper_remove_title))
+                .description(centered.description(s().dialogs.helper_remove_body))
                 .confirm()
                 .ok_text(s().settings.remove_helper)
                 .on_ok(move |_, _, cx| {

@@ -9,6 +9,7 @@ pub mod app_menu;
 pub mod app_window;
 pub mod assets;
 pub mod config_viewer;
+pub mod dialog;
 pub mod locale;
 pub mod pages;
 pub mod root;

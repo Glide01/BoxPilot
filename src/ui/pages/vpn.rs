@@ -319,7 +319,7 @@ fn open_openconnect_dialog(
                     }
                 })
                 .collect();
-            window.open_dialog(cx, move |dialog, window, cx| {
+            crate::ui::dialog::open_dialog(window, cx, move |dialog, centered, window, cx| {
                 let pending = handle.is_pending(cx);
                 let theme = cx.theme();
                 let mut body = div().v_flex().gap_3().child(challenge_text(
@@ -345,11 +345,11 @@ fn open_openconnect_dialog(
                     body = body.child(ended_notice(theme));
                 }
                 dialog
-                    .title(handle.title())
+                    .title(centered.title(handle.title()))
                     .w(px(DIALOG_WIDTH))
                     .child(body.pb(DIALOG_BODY_BOTTOM))
                     // A form without fields is a "click to continue" step.
-                    .footer(handle.footer(
+                    .footer(centered.footer(handle.footer(
                         pending,
                         s().vpn.cancel_sign_in,
                         Some(if fields.is_empty() {
@@ -357,7 +357,7 @@ fn open_openconnect_dialog(
                         } else {
                             s().vpn.sign_in
                         }),
-                    ))
+                    )))
                     .on_ok({
                         let handle = handle.clone();
                         let fields = fields.clone();
@@ -391,7 +391,7 @@ fn open_openconnect_dialog(
         }
         OpenConnectPrompt::Browser(request) => {
             let pasted = text_input(window, cx, "", false, "http://127.0.0.1:…");
-            window.open_dialog(cx, move |dialog, _, cx| {
+            crate::ui::dialog::open_dialog(window, cx, move |dialog, centered, _, cx| {
                 let pending = handle.is_pending(cx);
                 let theme = cx.theme();
                 let limitation = openconnect_browser_limitation(&request);
@@ -434,14 +434,14 @@ fn open_openconnect_dialog(
                 }
                 let can_submit = limitation.is_none();
                 dialog
-                    .title(handle.title())
+                    .title(centered.title(handle.title()))
                     .w(px(DIALOG_WIDTH))
                     .child(body.pb(DIALOG_BODY_BOTTOM))
-                    .footer(handle.footer(
+                    .footer(centered.footer(handle.footer(
                         pending,
                         s().vpn.cancel_sign_in,
                         can_submit.then_some(s().vpn.sign_in),
-                    ))
+                    )))
                     .on_ok({
                         let handle = handle.clone();
                         let request = request.clone();
@@ -473,7 +473,7 @@ fn open_openconnect_dialog(
             });
         }
         OpenConnectPrompt::Unknown => {
-            window.open_dialog(cx, move |dialog, _, cx| {
+            crate::ui::dialog::open_dialog(window, cx, move |dialog, centered, _, cx| {
                 let pending = handle.is_pending(cx);
                 let theme = cx.theme();
                 let body = div()
@@ -491,10 +491,10 @@ fn open_openconnect_dialog(
                         ended_notice(theme)
                     });
                 dialog
-                    .title(handle.title())
+                    .title(centered.title(handle.title()))
                     .w(px(DIALOG_WIDTH))
                     .child(body.pb(DIALOG_BODY_BOTTOM))
-                    .footer(handle.footer(pending, s().vpn.cancel_sign_in, None))
+                    .footer(centered.footer(handle.footer(pending, s().vpn.cancel_sign_in, None)))
                     .on_close({
                         let handle = handle.clone();
                         move |_, _, cx| handle.forget(cx)
@@ -534,7 +534,7 @@ fn open_openvpn_dialog(
     let secret_masked = prompt.secret.as_ref().is_some_and(|secret| !secret.echo);
     let secret = text_input(window, cx, "", secret_masked, "");
 
-    window.open_dialog(cx, move |dialog, _, cx| {
+    crate::ui::dialog::open_dialog(window, cx, move |dialog, centered, _, cx| {
         let pending = handle.is_pending(cx);
         let theme = cx.theme();
         let mut body = div().v_flex().gap_3();
@@ -622,14 +622,14 @@ fn open_openvpn_dialog(
             }
         }
         dialog
-            .title(handle.title())
+            .title(centered.title(handle.title()))
             .w(px(DIALOG_WIDTH))
             .child(body.pb(DIALOG_BODY_BOTTOM))
-            .footer(handle.footer(
+            .footer(centered.footer(handle.footer(
                 pending,
                 s().vpn.disconnect,
                 prompt.answerable().then_some(s().vpn.sign_in),
-            ))
+            )))
             .on_ok({
                 let handle = handle.clone();
                 let challenge = challenge.clone();

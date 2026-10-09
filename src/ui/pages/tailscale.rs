@@ -313,7 +313,7 @@ fn confirm_logout(
     window: &mut Window,
     cx: &mut App,
 ) {
-    window.open_alert_dialog(cx, move |alert, _, _| {
+    crate::ui::dialog::open_alert(window, cx, move |alert, centered, _, _| {
         let entity = entity.clone();
         let tag = tag.clone();
         let mut description = (s().tailscale.logout_body)(&tag);
@@ -321,8 +321,8 @@ fn confirm_logout(
             description.push_str(s().tailscale.logout_key_auth);
         }
         alert
-            .title(s().tailscale.logout_title)
-            .description(description)
+            .title(centered.title(s().tailscale.logout_title))
+            .description(centered.description(description))
             .confirm()
             .on_ok(move |_, _, cx| {
                 entity.update(cx, |state, cx| state.logout(tag.clone(), cx));
@@ -747,13 +747,13 @@ fn confirm_delete(
     window: &mut Window,
     cx: &mut App,
 ) {
-    window.open_alert_dialog(cx, move |alert, _, _| {
+    crate::ui::dialog::open_alert(window, cx, move |alert, centered, _, _| {
         let entity = entity.clone();
         let tag = tag.clone();
         let name = name.clone();
         alert
-            .title((s().tailscale.delete_title)(&name))
-            .description(s().tailscale.delete_body)
+            .title(centered.title((s().tailscale.delete_title)(&name)))
+            .description(centered.description(s().tailscale.delete_body))
             .confirm()
             .on_ok(move |_, _, cx| {
                 entity.update(cx, |state, cx| {
@@ -828,7 +828,7 @@ fn show_certificate(
     let pem: SharedString = String::from_utf8_lossy(&certificate.certificate_pem)
         .into_owned()
         .into();
-    window.open_dialog(cx, move |dialog, _, cx| {
+    crate::ui::dialog::open_dialog(window, cx, move |dialog, centered, _, cx| {
         let theme = cx.theme();
         let (cert_name, key_name) = crate::core::tailscale::certificate_file_names(&domain);
         let copy = {
@@ -852,7 +852,7 @@ fn show_certificate(
                 })
         };
         dialog
-            .title((s().tailscale.certificate_title)(&domain))
+            .title(centered.title((s().tailscale.certificate_title)(&domain)))
             .w(px(560.))
             .child(
                 div()
@@ -879,16 +879,18 @@ fn show_certificate(
                     ),
             )
             .footer(
-                DialogFooter::new()
-                    .child(copy)
-                    .child(
-                        DialogClose::new().child(
-                            dialog_button(Button::new("ts-cert-close"))
-                                .outline()
-                                .text_label(s().common.close),
-                        ),
-                    )
-                    .child(save),
+                centered.footer(
+                    DialogFooter::new()
+                        .child(copy)
+                        .child(
+                            DialogClose::new().child(
+                                dialog_button(Button::new("ts-cert-close"))
+                                    .outline()
+                                    .text_label(s().common.close),
+                            ),
+                        )
+                        .child(save),
+                ),
             )
     });
 }
