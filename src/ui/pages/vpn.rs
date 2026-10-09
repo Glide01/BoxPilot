@@ -24,10 +24,11 @@ use crate::i18n::s;
 use crate::state::vpn::VpnStream;
 use crate::state::{AppState, ChallengeRequested, VpnStatus};
 use crate::ui::card_frame;
+use crate::ui::pages::ActivePage;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    dialog_button, empty_state, form_input, meta_row, select_widths, IconLabel, TextLabel,
-    DIALOG_BODY_BOTTOM,
+    dialog_button, empty_state, form_input, meta_row, page_header, page_layout, select_widths,
+    IconLabel, TextLabel, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -879,16 +880,16 @@ impl Render for VpnPage {
         let theme = &theme;
 
         if presence.is_empty() {
-            return div()
-                .v_flex()
-                .size_full()
-                .child(empty_state(
+            return page_layout(
+                page_header(theme, ActivePage::Vpn),
+                div().v_flex().size_full().child(empty_state(
                     theme,
                     IconName::Globe,
                     s().vpn.empty_title,
                     s().vpn.empty_hint,
-                ))
-                .into_any_element();
+                )),
+            )
+            .into_any_element();
         }
 
         let mut cards: Vec<Div> = Vec::new();
@@ -1017,19 +1018,17 @@ impl Render for VpnPage {
             ));
         }
 
-        div()
-            .v_flex()
-            .size_full()
-            .child(
-                div().flex_1().min_h_0().child(
-                    div()
-                        .v_flex()
-                        .gap_3()
-                        .children(cards)
-                        .overflow_y_scrollbar(),
-                ),
-            )
-            .into_any_element()
+        page_layout(
+            page_header(theme, ActivePage::Vpn),
+            div().size_full().child(
+                div()
+                    .v_flex()
+                    .gap_3()
+                    .children(cards)
+                    .overflow_y_scrollbar(),
+            ),
+        )
+        .into_any_element()
     }
 }
 

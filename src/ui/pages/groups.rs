@@ -25,10 +25,11 @@ use crate::core::singbox_api::{classify_delay, DelayLevel, GroupKind, ProxyGroup
 use crate::i18n::s;
 use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::locale;
+use crate::ui::pages::ActivePage;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, segmented, small_input, text_centered,
-    IconLabel, Segment,
+    connect_button, empty_state, full_text_tooltip, page_header, page_layout, segmented,
+    small_input, text_centered, IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -655,8 +656,12 @@ impl Render for GroupsPage {
                         .ok();
                 },
             ));
+            header = Some(toolbar);
+        }
+        let mut page_head = page_header(theme, ActivePage::Groups);
+        if has_groups {
             let proxy_groups = self.proxy_groups.clone();
-            toolbar = toolbar.child(
+            page_head = page_head.action(
                 Button::new("groups-test-all")
                     .outline()
                     .small()
@@ -673,7 +678,6 @@ impl Render for GroupsPage {
                         proxy_groups.update(cx, |state, cx| state.test_all(cx));
                     }),
             );
-            header = Some(toolbar);
         }
 
         let body = if !has_groups {
@@ -726,11 +730,14 @@ impl Render for GroupsPage {
                 .into_any_element()
         };
 
-        div()
-            .v_flex()
-            .size_full()
-            .gap_4()
-            .children(header)
-            .child(body)
+        page_layout(
+            page_head,
+            div()
+                .v_flex()
+                .size_full()
+                .gap_4()
+                .children(header)
+                .child(body),
+        )
     }
 }

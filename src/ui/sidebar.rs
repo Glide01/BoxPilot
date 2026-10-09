@@ -287,6 +287,7 @@ pub fn sidebar(
     optional: OptionalPages,
     badges: Badges,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let nav = &s().nav;
     // Overview / traffic, then what sing-box runs from and says, then the
@@ -408,7 +409,36 @@ pub fn sidebar(
         .when_some(header, |rail, header| rail.child(header).child(div().h_4()))
         .children(items)
         .child(div().flex_1())
+        .child(rail_toggle(expanded, colors, on_toggle))
         .child(status_orb(status, expanded, colors))
+}
+
+/// Shows or hides the labels beside the nav icons.
+fn rail_toggle(
+    expanded: bool,
+    colors: SidebarColors,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let (tile, fg, muted) = (colors.tile, colors.fg, colors.muted);
+    let icon = if expanded {
+        IconName::PanelLeftClose
+    } else {
+        IconName::PanelLeftOpen
+    };
+    div()
+        .id("rail-toggle")
+        .flex_none()
+        .size(px(ITEM_SIZE))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(ITEM_RADIUS))
+        .cursor_pointer()
+        .text_color(muted)
+        .hover(move |style| style.bg(tile.opacity(0.6)).text_color(fg))
+        .child(Icon::new(icon).size(px(ICON_SIZE)))
+        .tooltip(|window, cx| Tooltip::new(s().nav.toggle_sidebar).build(window, cx))
+        .on_click(move |_, window, cx| on_toggle(window, cx))
 }
 
 /// The colours the sidebar takes from the theme.

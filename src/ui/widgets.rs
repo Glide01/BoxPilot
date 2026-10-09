@@ -36,6 +36,7 @@ use crate::core::sub_usage::{expiry_date_utc, SubscriptionUsage, UsageLevel};
 use crate::core::timefmt::{format_relative_time, from_unix_secs, to_unix_secs};
 use crate::i18n::s;
 use crate::ui::card_frame;
+use crate::ui::pages::ActivePage;
 use crate::ui::theme::FORM_MAX_WIDTH;
 use gpui::{
     div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, ClickEvent, Context, Div,
@@ -272,6 +273,108 @@ pub fn form_column(content: impl IntoElement) -> Div {
         .child(div().w_full().max_w(px(FORM_MAX_WIDTH)).child(content))
 }
 
+/// Title line of a [`page_header`].
+const PAGE_TITLE_HEIGHT: f32 = 32.;
+/// Context line of a [`page_header`].
+const PAGE_CONTEXT_HEIGHT: f32 = 20.;
+
+/// Every page's head, the same on each: the page's title, one line of
+/// context under it — live figures when the page has them, else what the
+/// page is for — and the page's own actions on the right. A fixed height,
+/// so the body starts at the same place on every page.
+pub fn page_header(theme: &Theme, page: ActivePage) -> PageHeader {
+    PageHeader {
+        title: page.label(),
+        context: page.hint().into_any_element(),
+        muted: theme.muted_foreground,
+        actions: Vec::new(),
+    }
+}
+
+/// See [`page_header`].
+#[derive(IntoElement)]
+pub struct PageHeader {
+    title: &'static str,
+    context: AnyElement,
+    muted: Hsla,
+    actions: Vec<AnyElement>,
+}
+
+impl PageHeader {
+    /// Live figures in place of the page's hint. One line: what doesn't fit
+    /// is clipped.
+    pub fn context(mut self, context: impl IntoElement) -> Self {
+        self.context = context.into_any_element();
+        self
+    }
+
+    /// An action on the header's right, after those added before it:
+    /// `small` buttons, as every header's are.
+    pub fn action(mut self, action: impl IntoElement) -> Self {
+        self.actions.push(action.into_any_element());
+        self
+    }
+}
+
+impl RenderOnce for PageHeader {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let text = div()
+            .v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_1()
+            .child(
+                div()
+                    .h(px(PAGE_TITLE_HEIGHT))
+                    .text_size(px(26.))
+                    .line_height(px(PAGE_TITLE_HEIGHT))
+                    .font_weight(FontWeight::BOLD)
+                    .truncate()
+                    .child(self.title),
+            )
+            .child(
+                div()
+                    .h(px(PAGE_CONTEXT_HEIGHT))
+                    .h_flex()
+                    .items_center()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_sm()
+                    .text_color(self.muted)
+                    .child(self.context),
+            );
+        div()
+            .flex_none()
+            .w_full()
+            .h_flex()
+            .items_center()
+            .gap_4()
+            .mb_5()
+            .child(text)
+            .when(!self.actions.is_empty(), |header| {
+                header.child(
+                    div()
+                        .flex_none()
+                        .h_flex()
+                        .items_center()
+                        .gap_2()
+                        .children(self.actions),
+                )
+            })
+    }
+}
+
+/// A page's root: its [`page_header`] over its body, which takes the
+/// height left.
+pub fn page_layout(header: PageHeader, body: impl IntoElement) -> Div {
+    div()
+        .v_flex()
+        .size_full()
+        .child(header)
+        .child(div().flex_1().min_h_0().w_full().child(body))
+}
+
 /// Small heading above a group of cards or rows ("General", "Network").
 pub fn section_heading(theme: &Theme, title: &'static str) -> Div {
     div()
@@ -286,9 +389,10 @@ pub fn section_heading(theme: &Theme, title: &'static str) -> Div {
 /// optionally an [`EmptyState::action`] under them. No frame of its own —
 /// an empty page needs no box around its emptiness.
 ///
-/// It covers its parent, which must be the page's root: centred on the
-/// whole page rather than on the room under a toolbar, it sits at the same
-/// height on every page, whatever sits above it. Only the icon, title and
+/// It covers its parent, which must be the body's root under the
+/// [`page_header`]: centred on the whole body rather than on the room under
+/// a toolbar, it sits at the same height on every page, whatever sits
+/// above it. Only the icon, title and
 /// hint are centred; the
 /// action hangs under them, so a page with one puts its message where a
 /// page without one does.

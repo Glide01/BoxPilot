@@ -21,10 +21,7 @@ use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    ActiveTheme, IconName, Sizable, StyledExt, WindowExt,
-};
+use gpui_component::{ActiveTheme, StyledExt, WindowExt};
 
 /// Top-level view: sidebar navigation + the active page, owns the
 /// keyboard-shortcut action handlers and the toast routing. All page
@@ -47,8 +44,8 @@ pub struct RootView {
     /// Last active profile name — the status tile's second line while
     /// disconnected; re-rendered when it changes, like `starting`.
     profile_name: Option<String>,
-    /// Whether the sidebar rail shows its labels (the breadcrumb's panel
-    /// button). Collapsed — icons only — at launch.
+    /// Whether the sidebar rail shows its labels (the button at the rail's
+    /// foot). Collapsed — icons only — at launch.
     sidebar_expanded: bool,
     active_page: ActivePage,
     home: Entity<HomePage>,
@@ -424,48 +421,6 @@ impl RootView {
     }
 }
 
-impl RootView {
-    /// The panel's head, above every page: a breadcrumb (the rail's
-    /// show-labels button, the app, the page) and the page's name as its
-    /// title.
-    fn page_header(&self, muted: Hsla, cx: &mut Context<Self>) -> Div {
-        let page = self.active_page.label();
-        let toggle = Button::new("sidebar-toggle")
-            .ghost()
-            .xsmall()
-            .icon(if self.sidebar_expanded {
-                IconName::PanelLeftClose
-            } else {
-                IconName::PanelLeftOpen
-            })
-            .tooltip(s().nav.toggle_sidebar)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.sidebar_expanded = !this.sidebar_expanded;
-                cx.notify();
-            }));
-        let breadcrumb = div()
-            .h_flex()
-            .items_center()
-            .gap_2()
-            .h(px(28.))
-            .text_sm()
-            .child(div().ml(px(-6.)).child(toggle))
-            .child(div().w(px(1.)).h(px(14.)).bg(muted.opacity(0.35)))
-            .child(div().text_color(muted).child("BoxPilot"))
-            .child(div().text_color(muted.opacity(0.6)).child("/"))
-            .child(div().font_weight(FontWeight::MEDIUM).child(page));
-        div().v_flex().flex_none().w_full().child(breadcrumb).child(
-            div()
-                .mt_3()
-                .mb_5()
-                .text_size(px(28.))
-                .line_height(px(34.))
-                .font_weight(FontWeight::BOLD)
-                .child(page),
-        )
-    }
-}
-
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_starting = self.app_state.read(cx).is_starting(cx);
@@ -564,6 +519,16 @@ impl Render for RootView {
                     settings: self.update_badge,
                 },
                 on_nav,
+                {
+                    let root = cx.entity().downgrade();
+                    move |_, cx: &mut App| {
+                        root.update(cx, |this, cx| {
+                            this.sidebar_expanded = !this.sidebar_expanded;
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                },
             ))
             // Cached: the page re-renders only when it notifies (each page
             // observes the entities it reads), not on every root re-render —
@@ -585,11 +550,10 @@ impl Render for RootView {
                     .shadow_xs()
                     .overflow_hidden()
                     .px_7()
-                    .pt_3()
+                    .pt_6()
                     .pb_6()
                     // Toasts float at the panel's bottom centre.
                     .relative()
-                    .child(self.page_header(muted, cx))
                     .child(
                         div()
                             .flex_1()

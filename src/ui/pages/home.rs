@@ -16,11 +16,12 @@ use crate::core::presentation::{
 use crate::i18n::s;
 use crate::state::{AppState, ClashMode};
 use crate::ui::card_frame;
+use crate::ui::pages::ActivePage;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
     empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
-    minute_ticker, profile_source_line, section_heading, setting_row, shorten, stat, usage_meter,
-    IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
+    minute_ticker, page_header, page_layout, profile_source_line, section_heading, setting_row,
+    shorten, stat, usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -149,7 +150,11 @@ impl Render for HomePage {
                         );
                     }),
             );
-            return div().size_full().child(empty).into_any_element();
+            return page_layout(
+                page_header(theme, ActivePage::Home),
+                div().size_full().child(empty),
+            )
+            .into_any_element();
         }
 
         let process = state.process.read(cx);
@@ -551,7 +556,7 @@ impl Render for HomePage {
             )
             .children(usage.map(|usage| usage_meter(theme, "home-usage", &usage, now)));
 
-        div()
+        let body = div()
             .v_flex()
             .size_full()
             .gap_4()
@@ -572,7 +577,7 @@ impl Render for HomePage {
                     .child(profile_card),
             )
             // 窗口矮时整页滚动。
-            .overflow_y_scrollbar()
-            .into_any_element()
+            .overflow_y_scrollbar();
+        page_layout(page_header(theme, ActivePage::Home), body).into_any_element()
     }
 }

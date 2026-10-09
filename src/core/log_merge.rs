@@ -182,9 +182,15 @@ impl<'a> LineParts<'a> {
         }
         let source = rest.find(": ").and_then(|end| {
             let name = &rest[..end];
+            // A component's tag, in brackets after it, may hold spaces (an
+            // outbound named "Japan 02"); the rest of the name may not.
+            let bare = match name.find('[') {
+                Some(open) if name.ends_with(']') => &name[..open],
+                _ => name,
+            };
             (!name.is_empty()
                 && name.len() <= MAX_SOURCE_LEN
-                && !name.contains(char::is_whitespace))
+                && !bare.contains(char::is_whitespace))
             .then_some(name)
         });
         if let Some(name) = source {
@@ -1121,6 +1127,10 @@ mod tests {
         assert_eq!(parts.tag, Some("[3417626869 12ms]"));
         assert_eq!(parts.source, Some("inbound/mixed[mixed-in]"));
         assert_eq!(parts.message, "from 127.0.0.1:5");
+
+        let parts = LineParts::parse("[42 1ms] outbound/direct[Japan 02]: outbound connection");
+        assert_eq!(parts.source, Some("outbound/direct[Japan 02]"));
+        assert_eq!(parts.message, "outbound connection");
 
         let parts = LineParts::parse("router: rule-set loaded");
         assert_eq!((parts.tag, parts.source), (None, Some("router")));

@@ -212,9 +212,20 @@ pub struct Nav {
     pub logs: &'static str,
     pub tools: &'static str,
     pub settings: &'static str,
-    /// Tooltip of the breadcrumb's button that shows / hides the labels
-    /// beside the sidebar's icons.
+    /// Tooltip of the rail's button that shows / hides the labels beside
+    /// the sidebar's icons.
     pub toggle_sidebar: &'static str,
+    /// Each page's line under its title, while it has nothing live to say
+    /// there.
+    pub home_hint: &'static str,
+    pub groups_hint: &'static str,
+    pub connections_hint: &'static str,
+    pub tailscale_hint: &'static str,
+    pub vpn_hint: &'static str,
+    pub profiles_hint: &'static str,
+    pub logs_hint: &'static str,
+    pub tools_hint: &'static str,
+    pub settings_hint: &'static str,
 }
 
 pub struct Home {

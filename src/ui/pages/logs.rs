@@ -24,9 +24,10 @@ use crate::core::singbox_api::LogLevel;
 use crate::core::timefmt::format_clock_ms;
 use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
+use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, live_badge, row_hover_bg, segmented, tag_badge,
-    warn_orange, Segment, TextLabel,
+    connect_button, empty_state, form_input, live_badge, page_header, page_layout, row_hover_bg,
+    segmented, tag_badge, warn_orange, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -434,9 +435,12 @@ impl Render for LogsPage {
 
         // No lines yet: nothing to search, filter, copy or clear.
         if total == 0 {
-            return div().size_full().child(
-                empty_state(theme, IconName::SquareTerminal, t.empty_title, t.empty_hint)
-                    .when(stopped, |this| this.action(connect_button("logs-connect"))),
+            return page_layout(
+                page_header(theme, ActivePage::Logs),
+                div().size_full().child(
+                    empty_state(theme, IconName::SquareTerminal, t.empty_title, t.empty_hint)
+                        .when(stopped, |this| this.action(connect_button("logs-connect"))),
+                ),
             );
         }
 
@@ -484,8 +488,9 @@ impl Render for LogsPage {
                     let level = LEVEL_CHOICES[ix].2;
                     logs_for_levels.update(cx, |b, cx| b.set_threshold(level, cx));
                 },
-            ))
-            .child(
+            ));
+        let head = page_header(theme, ActivePage::Logs)
+            .action(
                 Button::new("logs-copy")
                     .outline()
                     .small()
@@ -499,7 +504,7 @@ impl Render for LogsPage {
                         }
                     }),
             )
-            .child(
+            .action(
                 Button::new("logs-clear")
                     .outline()
                     .small()
@@ -507,8 +512,12 @@ impl Render for LogsPage {
                     .on_click(move |_, _, cx| {
                         app_state_entity.update(cx, |state, cx| state.clear_logs(cx));
                     }),
-            )
-            .when(running, |row| row.child(live_badge(theme)));
+            );
+        let head = if running {
+            head.action(live_badge(theme))
+        } else {
+            head
+        };
 
         // How many lines the table shows ("3 of 10" when filtered), then
         // how many errors and warnings the buffer holds, whatever is shown.
@@ -591,14 +600,16 @@ impl Render for LogsPage {
             .and_then(|id| entry(logs.entries(), id))
             .map(|e| detail_card(e, &page, theme));
 
-        div()
-            .v_flex()
-            .size_full()
-            .gap_4()
-            .child(controls)
-            .child(meta)
-            .children(empty)
-            .children(table)
-            .children(detail)
+        page_layout(
+            head.context(meta),
+            div()
+                .v_flex()
+                .size_full()
+                .gap_4()
+                .child(controls)
+                .children(empty)
+                .children(table)
+                .children(detail),
+        )
     }
 }

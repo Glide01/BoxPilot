@@ -18,8 +18,10 @@ use crate::core::presentation::sanitize_port;
 use crate::core::settings::PROXY_PORT;
 use crate::i18n::s;
 use crate::state::AppState;
+use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    form_column, grouped_card, section_heading, setting_row, small_input, TextLabel,
+    form_column, grouped_card, page_header, page_layout, section_heading, setting_row, small_input,
+    TextLabel,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -196,8 +198,9 @@ impl Render for SettingsPage {
             .child(section(t.troubleshooting, troubleshooting_rows))
             .child(section(t.about, about_rows));
 
-        div().v_flex().size_full().child(
-            div().flex_1().min_h_0().child(
+        page_layout(
+            page_header(theme, ActivePage::Settings),
+            div().size_full().child(
                 div()
                     .w_full()
                     .child(form_column(cards))

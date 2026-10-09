@@ -33,9 +33,10 @@ use crate::core::timefmt::format_clock_ms;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
 use crate::ui::locale;
+use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, full_text_tooltip, live_badge, row_hover_bg,
-    segmented, tag_badge, warn_orange, Segment, TextLabel,
+    connect_button, empty_state, form_input, full_text_tooltip, live_badge, page_header,
+    page_layout, row_hover_bg, segmented, tag_badge, warn_orange, Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -556,7 +557,7 @@ impl Render for ConnectionsPage {
         // Close all stay out of the way of the empty state.
         let has_any = live && summary.open + summary.closed > 0;
 
-        // Live totals under the toolbar: open count, current rates, and the
+        // Live totals under the title: open count, current rates, and the
         // traffic so far — three groups set apart by space. On a narrow
         // window the totals give way first, then the rates; the count
         // stays whole.
@@ -644,7 +645,14 @@ impl Render for ConnectionsPage {
                     .ok();
             },
         ));
-        controls = controls.child(close_all).child(live_badge(theme));
+
+        let mut head = page_header(theme, ActivePage::Connections);
+        if has_any {
+            head = head.context(summary_items).action(close_all);
+        }
+        if live {
+            head = head.action(live_badge(theme));
+        }
 
         // The empty state goes on the page's root (see `empty_state`), the
         // list in the body under the header.
@@ -744,7 +752,7 @@ impl Render for ConnectionsPage {
             .children(list)
             .children(details);
 
-        div()
+        let body = div()
             .id("connections-page")
             .track_focus(&self.focus_handle)
             .when(self.selected.is_some(), |page| {
@@ -756,9 +764,10 @@ impl Render for ConnectionsPage {
             .v_flex()
             .size_full()
             .gap_4()
-            .when(has_any, |page| page.child(controls).child(summary_items))
+            .when(has_any, |page| page.child(controls))
             // Before the body, so the details panel stays above it.
             .children(empty)
-            .child(body)
+            .child(body);
+        page_layout(head, body)
     }
 }

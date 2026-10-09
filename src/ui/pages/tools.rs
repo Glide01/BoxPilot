@@ -11,9 +11,11 @@ use crate::core::network_tools::{
 use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
 use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
+use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    choice_select_with, connect_button, empty_state, form_column, grouped_card, plain_select,
-    section_heading, setting_row, small_input, stat, status_label, text_centered, TextLabel,
+    choice_select_with, connect_button, empty_state, form_column, grouped_card, page_header,
+    page_layout, plain_select, section_heading, setting_row, small_input, stat, status_label,
+    text_centered, TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -499,7 +501,10 @@ impl Render for ToolsPage {
                 .into_any_element()
         };
 
-        div().v_flex().size_full().child(body)
+        page_layout(
+            page_header(cx.theme(), ActivePage::Tools),
+            div().v_flex().size_full().child(body),
+        )
     }
 }
 

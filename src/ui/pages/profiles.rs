@@ -10,13 +10,14 @@ use crate::core::settings::{Profile, StatusLevel};
 use crate::i18n::s;
 use crate::state::app_state::FetchOrigin;
 use crate::state::AppState;
+use crate::ui::pages::ActivePage;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::toast;
 use crate::ui::widgets::{
     choice_select, dialog_button, empty_state, empty_state_button, form_button, form_input,
-    freshness_button, full_text_tooltip, grouped_card, minute_ticker, profile_source_line,
-    row_hover_bg, section_heading, setting_row, usage_meter, IconLabel, TextLabel,
-    CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
+    freshness_button, full_text_tooltip, grouped_card, minute_ticker, page_header, page_layout,
+    profile_source_line, row_hover_bg, section_heading, setting_row, usage_meter, IconLabel,
+    TextLabel, CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -576,23 +577,22 @@ impl Render for ProfilesPage {
                     .icon_label(IconName::Plus, s().profiles.add_title)
                     .on_click(add),
             );
-            return div().size_full().child(empty);
+            return page_layout(
+                page_header(theme, ActivePage::Profiles),
+                div().size_full().child(empty),
+            );
         }
 
         let list = div().v_flex().gap_2().w_full().children(rows);
-        div()
-            .v_flex()
-            .size_full()
-            .gap_4()
-            .child(
-                div().h_flex().justify_end().child(
-                    Button::new("profile-add")
-                        .primary()
-                        .small()
-                        .icon_label(IconName::Plus, s().profiles.add)
-                        .on_click(add),
-                ),
-            )
-            .child(div().flex_1().min_h_0().child(list.overflow_y_scrollbar()))
+        page_layout(
+            page_header(theme, ActivePage::Profiles).action(
+                Button::new("profile-add")
+                    .primary()
+                    .small()
+                    .icon_label(IconName::Plus, s().profiles.add)
+                    .on_click(add),
+            ),
+            div().size_full().child(list.overflow_y_scrollbar()),
+        )
     }
 }

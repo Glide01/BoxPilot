@@ -63,6 +63,15 @@ pub static EN: Strings = Strings {
         tools: "Tools",
         settings: "Settings",
         toggle_sidebar: "Show or hide labels",
+        home_hint: "Connection status and quick settings",
+        groups_hint: "Pick the node each group uses",
+        connections_hint: "Traffic passing through sing-box",
+        tailscale_hint: "Tailscale endpoints in the running config",
+        vpn_hint: "VPN endpoints in the running config",
+        profiles_hint: "Subscriptions and local configs",
+        logs_hint: "What sing-box reports while it runs",
+        tools_hint: "Test network quality and NAT type",
+        settings_hint: "Preferences for BoxPilot and sing-box",
     },
     home: Home {
         no_subscription_title: "No subscription yet",
@@ -241,7 +250,13 @@ pub static EN: Strings = Strings {
         empty_title: "No logs yet",
         empty_hint: "Connect to start streaming sing-box output.",
         search_placeholder: "Search logs (-word to exclude)",
-        lines: |n| if n == 1 { "1 line".into() } else { format!("{n} lines") },
+        lines: |n| {
+            if n == 1 {
+                "1 line".into()
+            } else {
+                format!("{n} lines")
+            }
+        },
         copy_shown: "Copy shown lines",
         no_match_title: "No matching lines",
         no_match_hint: "Try a different search or level.",

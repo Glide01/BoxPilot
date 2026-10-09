@@ -41,8 +41,7 @@ pub enum ActivePage {
 }
 
 impl ActivePage {
-    /// The page's name, as the sidebar, the breadcrumb and the page's title
-    /// show it.
+    /// The page's name, as the sidebar and the page's title show it.
     pub fn label(self) -> &'static str {
         let nav = &crate::i18n::s().nav;
         match self {
@@ -55,6 +54,23 @@ impl ActivePage {
             ActivePage::Logs => nav.logs,
             ActivePage::Tools => nav.tools,
             ActivePage::Settings => nav.settings,
+        }
+    }
+
+    /// What the page is for: the line under its title while it has
+    /// nothing live to put there.
+    pub fn hint(self) -> &'static str {
+        let nav = &crate::i18n::s().nav;
+        match self {
+            ActivePage::Home => nav.home_hint,
+            ActivePage::Groups => nav.groups_hint,
+            ActivePage::Connections => nav.connections_hint,
+            ActivePage::Tailscale => nav.tailscale_hint,
+            ActivePage::Vpn => nav.vpn_hint,
+            ActivePage::Profiles => nav.profiles_hint,
+            ActivePage::Logs => nav.logs_hint,
+            ActivePage::Tools => nav.tools_hint,
+            ActivePage::Settings => nav.settings_hint,
         }
     }
 }
