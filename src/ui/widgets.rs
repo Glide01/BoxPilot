@@ -58,10 +58,10 @@ use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
 use crate::ui::theme::{FORM_MAX_WIDTH, PANEL_PADDING_X, PANEL_PADDING_Y};
 use gpui::{
-    div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, Bounds, ClickEvent, Context,
-    Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
-    Pixels, Point, RenderOnce, ScrollHandle, SharedString, Stateful, StatefulInteractiveElement,
-    Styled, Task, TextStyle, Window,
+    canvas, div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, Bounds, ClickEvent,
+    Context, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Pixels, Point, RenderOnce, ScrollHandle, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, Task, TextStyle, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -552,7 +552,7 @@ impl RenderOnce for ScrollPage {
             .clone();
         // The header's bottom edge rises by what it loses and what it lifts.
         let travel = PAGE_HEADER_HEIGHT - COLLAPSED_HEADER_HEIGHT + COLLAPSED_HEADER_LIFT;
-        let scrolled = f32::from(-scroll.offset().y).max(0.);
+        let scrolled = settled_scroll(&scroll);
         let collapsed = (scrolled / travel).min(1.);
         let header_bottom = px(PAGE_HEADER_HEIGHT - travel * collapsed);
         // Nothing is under the header until it has collapsed: the body's
@@ -565,6 +565,21 @@ impl RenderOnce for ScrollPage {
         })
         .id("page-scrollbar")
         .viewport_from_layout();
+        // Layout clamps the offset after this render has read it (to a body
+        // that got shorter, say): if it settles elsewhere, draw again with
+        // it, or the header would stay collapsed over a body at the top.
+        let handle = scroll.clone();
+        let settle = canvas(
+            move |_, window, _| {
+                if (settled_scroll(&handle) - scrolled).abs() > 0.5 {
+                    let view = window.current_view();
+                    window.on_next_frame(move |_, cx| cx.notify(view));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_0();
         div()
             .relative()
             .size_full()
@@ -615,7 +630,16 @@ impl RenderOnce for ScrollPage {
                     .right_0()
                     .child(scrollbar),
             )
+            .child(settle)
     }
+}
+
+/// How far a [`scroll_page`]'s body is scrolled down, as layout will let
+/// it be: a wheel moves the offset as far as it turns, and only layout
+/// clamps it to the body's height — on a body that fits, a turn must not
+/// collapse the header over a body that never moved.
+fn settled_scroll(scroll: &ScrollHandle) -> f32 {
+    f32::from((-scroll.offset().y).min(scroll.max_offset().y)).max(0.)
 }
 
 /// A [`scroll_page`]'s scroll handle as its scrollbar sees it: the part
