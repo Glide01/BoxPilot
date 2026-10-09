@@ -366,9 +366,16 @@ pub struct Connections {
     /// The view choices; the segmented control adds each count.
     pub active_tab: &'static str,
     pub closed_tab: &'static str,
+    /// The sort keys.
     pub newest: &'static str,
     pub traffic: &'static str,
     pub speed: &'static str,
+    pub host: &'static str,
+    pub rule: &'static str,
+    pub chain: &'static str,
+    /// Tooltips of the sort direction button, by the current direction.
+    pub sort_ascending: &'static str,
+    pub sort_descending: &'static str,
     pub close_all: &'static str,
     pub close_connection: &'static str,
     /// A closed row's rate column.

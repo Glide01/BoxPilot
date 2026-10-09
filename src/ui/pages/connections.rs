@@ -1,5 +1,7 @@
 //! 连接页,日志浏览器式布局(与日志页一致):控制行(搜索框 + Active/Closed
-//! 切换 + Newest/Traffic/Speed 排序);页头一行汇总(打开数、实时速率、
+//! 切换 + 排序:下拉选排序键 Newest/Traffic/Speed/Host/Rule/Chain,旁边的
+//! 按钮切换升序 / 降序;换键时回到该键的自然方向,数值与时间大的在前、文字
+//! A→Z);页头一行汇总(打开数、实时速率、
 //! 总流量)和 Close all;下面是带表头的连接表,每行一行:建立时间(等宽,
 //! 毫秒部分淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
 //! (组 → 节点)、实时速率与累计流量(各两行:上行在上、下行在下;已关闭的
@@ -8,7 +10,7 @@
 //!
 //! 列表用 gpui 的 `uniform_list` 虚拟化:只渲染可见行,上千条已关闭 + 大量
 //! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)按
-//! `(revision, view, sort, query)` 缓存,只有数据或条件变了才重算;行内容在
+//! `(revision, view, sort, direction, query)` 缓存,只有数据或条件变了才重算;行内容在
 //! 渲染时按 id 从 `ConnectionTable` 现取,时长随渲染时刻走。
 //! 过滤 / 排序 / 显示字符串都是 `core::connections_view` 的纯函数。
 //!
@@ -27,7 +29,7 @@ use crate::core::bytefmt::{format_bytes, format_speed};
 use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
     chain_label, connection_age_ms, format_elapsed, host_label, process_name, select_connections,
-    summarize, ConnectionSort, ConnectionView,
+    summarize, ConnectionSort, ConnectionView, SortDirection,
 };
 use crate::core::singbox_api::Connection;
 use crate::core::timefmt::format_clock_ms;
@@ -36,8 +38,9 @@ use crate::state::{AppState, Connections};
 use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, full_text_tooltip, page_header, page_layout,
-    row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Segment, TextLabel,
+    choice_select, connect_button, empty_state, form_input, full_text_tooltip, page_header,
+    page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Segment,
+    TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -82,6 +85,7 @@ struct RowsKey {
     revision: u64,
     view: ConnectionView,
     sort: ConnectionSort,
+    direction: SortDirection,
     query: String,
 }
 
@@ -90,6 +94,7 @@ pub struct ConnectionsPage {
     filter_input: Entity<InputState>,
     view: ConnectionView,
     sort: ConnectionSort,
+    direction: SortDirection,
     scroll: UniformListScrollHandle,
     /// Ids of the rows to show, in display order, and what they came from.
     rows: Rc<Vec<String>>,
@@ -145,6 +150,7 @@ impl ConnectionsPage {
             filter_input,
             view: ConnectionView::default(),
             sort: ConnectionSort::default(),
+            direction: ConnectionSort::default().natural_direction(),
             scroll: UniformListScrollHandle::new(),
             rows: Rc::new(Vec::new()),
             rows_key: None,
@@ -236,12 +242,21 @@ impl ConnectionsPage {
         }
     }
 
+    /// A new key starts in its natural direction (newest / biggest first,
+    /// text A→Z); re-picking the current one keeps the direction.
     fn set_sort(&mut self, sort: ConnectionSort, cx: &mut Context<Self>) {
         if self.sort != sort {
             self.sort = sort;
+            self.direction = sort.natural_direction();
             self.scroll.scroll_to_item(0, ScrollStrategy::Top);
             cx.notify();
         }
+    }
+
+    fn reverse_sort(&mut self, cx: &mut Context<Self>) {
+        self.direction = self.direction.reversed();
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
     }
 
     /// Recompute the row order only when the data or the view settings moved.
@@ -251,15 +266,22 @@ impl ConnectionsPage {
             revision: state.revision,
             view: self.view,
             sort: self.sort,
+            direction: self.direction,
             query: self.filter_input.read(cx).value().to_string(),
         };
         if self.rows_key.as_ref() == Some(&key) {
             return;
         }
-        let ids = select_connections(state.table.iter(), key.view, &key.query, key.sort)
-            .into_iter()
-            .map(|c| c.id.clone())
-            .collect();
+        let ids = select_connections(
+            state.table.iter(),
+            key.view,
+            &key.query,
+            key.sort,
+            key.direction,
+        )
+        .into_iter()
+        .map(|c| c.id.clone())
+        .collect();
         self.rows = Rc::new(ids);
         self.rows_key = Some(key);
         // Remember where the selection is while it is listed (kept when it
@@ -573,8 +595,26 @@ fn column_header(theme: &Theme) -> Div {
 }
 
 impl Render for ConnectionsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_rows(cx);
+        let page = cx.entity().downgrade();
+        // Built before `theme` borrows `cx`: the dropdown keeps its state in
+        // the window.
+        let sort_select = {
+            let t = &s().connections;
+            let labels = [t.newest, t.traffic, t.speed, t.host, t.rule, t.chain];
+            let page = page.clone();
+            choice_select(
+                "connections-sort",
+                ConnectionSort::ALL.into_iter().zip(labels),
+                self.sort,
+                move |sort, _, cx| {
+                    page.update(cx, |this, cx| this.set_sort(sort, cx)).ok();
+                },
+                window,
+                cx,
+            )
+        };
         let connections = self.connections.clone();
         let state = connections.read(cx);
         let live = state.live;
@@ -634,7 +674,6 @@ impl Render for ConnectionsPage {
                 })
         };
 
-        let page = cx.entity().downgrade();
         let mut controls = div()
             .h_flex()
             .flex_wrap()
@@ -666,27 +705,37 @@ impl Render for ConnectionsPage {
                     .ok();
             },
         ));
-        const SORTS: [ConnectionSort; 3] = [
-            ConnectionSort::Newest,
-            ConnectionSort::Traffic,
-            ConnectionSort::Speed,
-        ];
-        let sort_page = page.clone();
-        controls = controls.child(segmented(
-            theme,
-            "connections-sort",
-            vec![
-                Segment::new(t.newest),
-                Segment::new(t.traffic),
-                Segment::new(t.speed),
-            ],
-            SORTS.iter().position(|sort| *sort == self.sort),
-            move |ix, _, cx| {
-                sort_page
-                    .update(cx, |this, cx| this.set_sort(SORTS[ix], cx))
-                    .ok();
-            },
-        ));
+        // The sort key's menu, then its direction, on one track.
+        let reverse_page = page.clone();
+        let (direction_icon, direction_tip) = match self.direction {
+            SortDirection::Ascending => ("icons/arrow-down-narrow-wide.svg", t.sort_ascending),
+            SortDirection::Descending => ("icons/arrow-down-wide-narrow.svg", t.sort_descending),
+        };
+        controls = controls.child(
+            div()
+                .flex_none()
+                .h_flex()
+                .items_center()
+                .gap_0p5()
+                .h(px(28.))
+                .pl_2p5()
+                .pr_0p5()
+                .rounded(theme.radius)
+                .bg(theme.tab_bar_segmented)
+                .child(sort_select)
+                .child(
+                    Button::new("connections-sort-direction")
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::empty().path(direction_icon))
+                        .tooltip(direction_tip)
+                        .on_click(move |_, _, cx| {
+                            reverse_page
+                                .update(cx, |this, cx| this.reverse_sort(cx))
+                                .ok();
+                        }),
+                ),
+        );
 
         let mut head = page_header(theme, ActivePage::Connections);
         if has_any {

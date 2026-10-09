@@ -11,6 +11,9 @@ const REFRESH_CW_SVG: &[u8] = include_bytes!("../../assets/icons/refresh-cw.svg"
 const GAUGE_SVG: &[u8] = include_bytes!("../../assets/icons/gauge.svg");
 const SHIELD_CHECK_SVG: &[u8] = include_bytes!("../../assets/icons/shield-check.svg");
 const ZAP_SVG: &[u8] = include_bytes!("../../assets/icons/zap.svg");
+/// The Connections page's sort direction: ascending, descending.
+const SORT_ASCENDING_SVG: &[u8] = include_bytes!("../../assets/icons/arrow-down-narrow-wide.svg");
+const SORT_DESCENDING_SVG: &[u8] = include_bytes!("../../assets/icons/arrow-down-wide-narrow.svg");
 /// Toast level glyphs, bold enough to read at 12px inside their disc.
 const TOAST_SUCCESS_SVG: &[u8] = include_bytes!("../../assets/icons/toast-success.svg");
 const TOAST_INFO_SVG: &[u8] = include_bytes!("../../assets/icons/toast-info.svg");
@@ -30,6 +33,8 @@ impl AssetSource for AppAssets {
             "icons/gauge.svg" => Ok(Some(Cow::Borrowed(GAUGE_SVG))),
             "icons/shield-check.svg" => Ok(Some(Cow::Borrowed(SHIELD_CHECK_SVG))),
             "icons/zap.svg" => Ok(Some(Cow::Borrowed(ZAP_SVG))),
+            "icons/arrow-down-narrow-wide.svg" => Ok(Some(Cow::Borrowed(SORT_ASCENDING_SVG))),
+            "icons/arrow-down-wide-narrow.svg" => Ok(Some(Cow::Borrowed(SORT_DESCENDING_SVG))),
             "icons/toast-success.svg" => Ok(Some(Cow::Borrowed(TOAST_SUCCESS_SVG))),
             "icons/toast-info.svg" => Ok(Some(Cow::Borrowed(TOAST_INFO_SVG))),
             "icons/toast-warning.svg" => Ok(Some(Cow::Borrowed(TOAST_WARNING_SVG))),

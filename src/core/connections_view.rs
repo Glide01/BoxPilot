@@ -5,7 +5,6 @@
 //! keeps working.
 
 use crate::core::singbox_api::Connection;
-use std::cmp::Reverse;
 
 /// Which half of the connection table the page lists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,57 +25,122 @@ impl ConnectionView {
     }
 }
 
-/// Row order.
+/// What the rows are ordered by. Each key has a natural direction
+/// (`natural_direction`): biggest / newest first for the figures, A→Z for
+/// the text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ConnectionSort {
-    /// Most recent first: opened (active) or closed (closed) last on top.
+    /// When it opened (active) or closed (closed); most recent first.
     #[default]
     Newest,
-    /// Most bytes moved (up + down totals) first.
+    /// Bytes moved, up + down totals; heaviest first.
     Traffic,
-    /// Fastest first: the current rate, up + down (`current_rate`).
+    /// The current rate, up + down (`current_rate`); fastest first.
     Speed,
+    /// The host as the row shows it (`host_label`), A→Z.
+    Host,
+    /// The matched rule (`rule_label`), A→Z.
+    Rule,
+    /// The outbound chain in reading order (`chain_label`), A→Z.
+    Chain,
+}
+
+impl ConnectionSort {
+    /// Every key, in the order the sort menu lists them.
+    pub const ALL: [ConnectionSort; 6] = [
+        ConnectionSort::Newest,
+        ConnectionSort::Traffic,
+        ConnectionSort::Speed,
+        ConnectionSort::Host,
+        ConnectionSort::Rule,
+        ConnectionSort::Chain,
+    ];
+
+    /// The direction a freshly chosen key sorts in.
+    pub fn natural_direction(self) -> SortDirection {
+        match self {
+            ConnectionSort::Newest | ConnectionSort::Traffic | ConnectionSort::Speed => {
+                SortDirection::Descending
+            }
+            ConnectionSort::Host | ConnectionSort::Rule | ConnectionSort::Chain => {
+                SortDirection::Ascending
+            }
+        }
+    }
+}
+
+/// Which way the sort key runs. Only the key flips: ties stay newest
+/// first, then by id, either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortDirection {
+    /// Smallest / oldest / A first.
+    Ascending,
+    /// Biggest / newest / Z first.
+    #[default]
+    Descending,
+}
+
+impl SortDirection {
+    pub fn reversed(self) -> Self {
+        match self {
+            SortDirection::Ascending => SortDirection::Descending,
+            SortDirection::Descending => SortDirection::Ascending,
+        }
+    }
+}
+
+/// A row's value under one sort key. Text compares case-insensitively.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum SortValue {
+    Time(i64),
+    Amount(u64),
+    Text(String),
+}
+
+fn sort_value(connection: &Connection, sort: ConnectionSort) -> SortValue {
+    match sort {
+        ConnectionSort::Newest => SortValue::Time(newest(connection)),
+        ConnectionSort::Traffic => SortValue::Amount(total_bytes(connection)),
+        ConnectionSort::Speed => SortValue::Amount(current_rate(connection)),
+        ConnectionSort::Host => SortValue::Text(host_label(connection).to_lowercase()),
+        ConnectionSort::Rule => SortValue::Text(rule_label(connection).to_lowercase()),
+        ConnectionSort::Chain => SortValue::Text(chain_label(connection).to_lowercase()),
+    }
+}
+
+/// When the connection last changed state: its close, else its open.
+fn newest(connection: &Connection) -> i64 {
+    connection.closed_at.unwrap_or(connection.created_at)
 }
 
 /// The connections `view` shows, filtered by `query` (see `matches_query`)
-/// and ordered by `sort`. Ties fall back to newest, then id, so rows don't
-/// shuffle between identical-looking refreshes.
+/// and ordered by `sort` in `direction`. Ties fall back to newest, then
+/// id, whatever the direction, so rows don't shuffle between
+/// identical-looking refreshes.
 pub fn select_connections<'a>(
     connections: impl IntoIterator<Item = &'a Connection>,
     view: ConnectionView,
     query: &str,
     sort: ConnectionSort,
+    direction: SortDirection,
 ) -> Vec<&'a Connection> {
     let terms = query_terms(query);
-    let mut rows: Vec<&Connection> = connections
+    // Each row's key once, not per comparison (text keys allocate).
+    let mut rows: Vec<(SortValue, &Connection)> = connections
         .into_iter()
         .filter(|c| view.includes(c) && matches_terms(c, &terms))
+        .map(|c| (sort_value(c, sort), c))
         .collect();
-    let newest = |c: &Connection| c.closed_at.unwrap_or(c.created_at);
-    match sort {
-        ConnectionSort::Newest => {
-            rows.sort_by(|a, b| (Reverse(newest(a)), &a.id).cmp(&(Reverse(newest(b)), &b.id)));
-        }
-        ConnectionSort::Traffic => {
-            rows.sort_by(|a, b| {
-                (Reverse(total_bytes(a)), Reverse(newest(a)), &a.id).cmp(&(
-                    Reverse(total_bytes(b)),
-                    Reverse(newest(b)),
-                    &b.id,
-                ))
-            });
-        }
-        ConnectionSort::Speed => {
-            rows.sort_by(|a, b| {
-                (Reverse(current_rate(a)), Reverse(newest(a)), &a.id).cmp(&(
-                    Reverse(current_rate(b)),
-                    Reverse(newest(b)),
-                    &b.id,
-                ))
-            });
-        }
-    }
-    rows
+    rows.sort_by(|(key_a, a), (key_b, b)| {
+        let by_key = match direction {
+            SortDirection::Ascending => key_a.cmp(key_b),
+            SortDirection::Descending => key_b.cmp(key_a),
+        };
+        by_key
+            .then_with(|| newest(b).cmp(&newest(a)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    rows.into_iter().map(|(_, c)| c).collect()
 }
 
 /// The connection's current rate, up + down, bytes/sec: the latest
@@ -292,6 +356,12 @@ mod tests {
         }
     }
 
+    /// `all`'s rows in `view`, unfiltered, by `sort` in its natural
+    /// direction.
+    fn sorted(all: &[Connection], view: ConnectionView, sort: ConnectionSort) -> Vec<&Connection> {
+        select_connections(all, view, "", sort, sort.natural_direction())
+    }
+
     fn ids(rows: &[&Connection]) -> Vec<String> {
         rows.iter().map(|c| c.id.clone()).collect()
     }
@@ -299,28 +369,28 @@ mod tests {
     #[test]
     fn views_split_open_and_closed() {
         let all = [conn("a", 1), closed("b", 2, 3)];
-        let active = select_connections(&all, ConnectionView::Active, "", ConnectionSort::Newest);
+        let active = sorted(&all, ConnectionView::Active, ConnectionSort::Newest);
         assert_eq!(ids(&active), ["a"]);
-        let gone = select_connections(&all, ConnectionView::Closed, "", ConnectionSort::Newest);
+        let gone = sorted(&all, ConnectionView::Closed, ConnectionSort::Newest);
         assert_eq!(ids(&gone), ["b"]);
     }
 
     #[test]
     fn newest_first_uses_close_time_for_closed() {
         let open = [conn("old", 100), conn("new", 300), conn("mid", 200)];
-        let rows = select_connections(&open, ConnectionView::Active, "", ConnectionSort::Newest);
+        let rows = sorted(&open, ConnectionView::Active, ConnectionSort::Newest);
         assert_eq!(ids(&rows), ["new", "mid", "old"]);
 
         // Opened first but closed last → on top of the closed tab.
         let gone = [closed("x", 100, 900), closed("y", 500, 600)];
-        let rows = select_connections(&gone, ConnectionView::Closed, "", ConnectionSort::Newest);
+        let rows = sorted(&gone, ConnectionView::Closed, ConnectionSort::Newest);
         assert_eq!(ids(&rows), ["x", "y"]);
     }
 
     #[test]
     fn ties_are_ordered_by_id_for_stable_rows() {
         let all = [conn("b", 100), conn("a", 100), conn("c", 100)];
-        let rows = select_connections(&all, ConnectionView::Active, "", ConnectionSort::Newest);
+        let rows = sorted(&all, ConnectionView::Active, ConnectionSort::Newest);
         assert_eq!(ids(&rows), ["a", "b", "c"]);
     }
 
@@ -335,7 +405,7 @@ mod tests {
         let mut tie_new = conn("tie-new", 200);
         tie_new.downlink_total = 50;
         let all = [light, heavy, tie_old, tie_new];
-        let rows = select_connections(&all, ConnectionView::Active, "", ConnectionSort::Traffic);
+        let rows = sorted(&all, ConnectionView::Active, ConnectionSort::Traffic);
         assert_eq!(ids(&rows), ["heavy", "tie-new", "tie-old", "light"]);
     }
 
@@ -351,8 +421,110 @@ mod tests {
         tie_new.downlink = 50;
         let idle = conn("idle", 400);
         let all = [slow, fast, tie_old, tie_new, idle];
-        let rows = select_connections(&all, ConnectionView::Active, "", ConnectionSort::Speed);
+        let rows = sorted(&all, ConnectionView::Active, ConnectionSort::Speed);
         assert_eq!(ids(&rows), ["fast", "tie-new", "tie-old", "slow", "idle"]);
+    }
+
+    #[test]
+    fn text_sorts_run_a_to_z_case_insensitively() {
+        let mut b = conn("1", 100);
+        b.domain = "Beta.example".into();
+        b.rule = "rule-set=b".into();
+        b.chain = vec!["Zeta".into()];
+        let mut a = conn("2", 200);
+        a.domain = "alpha.example".into();
+        a.chain = vec!["香港-01".into(), "Alpha".into()];
+        let mut c = conn("3", 300);
+        c.destination = "10.0.0.1:53".into();
+        c.rule = "network=udp".into();
+        c.chain = vec!["beta".into()];
+        let all = [b, a, c];
+        let host = sorted(&all, ConnectionView::Active, ConnectionSort::Host);
+        assert_eq!(ids(&host), ["3", "2", "1"], "10.0.0.1 < alpha < Beta");
+        // `final` (empty rule) sorts by its label.
+        let rule = sorted(&all, ConnectionView::Active, ConnectionSort::Rule);
+        assert_eq!(ids(&rule), ["2", "3", "1"]);
+        let chain = sorted(&all, ConnectionView::Active, ConnectionSort::Chain);
+        assert_eq!(
+            ids(&chain),
+            ["2", "3", "1"],
+            "Alpha → 香港-01 < beta < Zeta"
+        );
+    }
+
+    #[test]
+    fn natural_directions() {
+        use ConnectionSort::*;
+        for sort in [Newest, Traffic, Speed] {
+            assert_eq!(sort.natural_direction(), SortDirection::Descending);
+        }
+        for sort in [Host, Rule, Chain] {
+            assert_eq!(sort.natural_direction(), SortDirection::Ascending);
+        }
+        assert_eq!(ConnectionSort::ALL.len(), 6);
+        assert_eq!(
+            SortDirection::Ascending.reversed(),
+            SortDirection::Descending
+        );
+        assert_eq!(
+            SortDirection::Descending.reversed(),
+            SortDirection::Ascending
+        );
+    }
+
+    #[test]
+    fn reversing_flips_the_key_but_not_the_tie_breaks() {
+        let mut light = conn("light", 300);
+        light.uplink_total = 10;
+        let mut heavy = conn("heavy", 100);
+        heavy.downlink_total = 5_000;
+        let mut tie_old = conn("tie-old", 100);
+        tie_old.uplink_total = 50;
+        let mut tie_new = conn("tie-new", 200);
+        tie_new.downlink_total = 50;
+        let mut tie_new_b = conn("tie-new-b", 200);
+        tie_new_b.downlink_total = 50;
+        let all = [light, heavy, tie_old, tie_new_b, tie_new];
+        let rows = select_connections(
+            &all,
+            ConnectionView::Active,
+            "",
+            ConnectionSort::Traffic,
+            SortDirection::Ascending,
+        );
+        // Lightest first; the 50-byte ties still newest first, then by id.
+        assert_eq!(
+            ids(&rows),
+            ["light", "tie-new", "tie-new-b", "tie-old", "heavy"]
+        );
+
+        // Oldest first; equal times by id.
+        let all = [conn("b", 100), conn("new", 300), conn("a", 100)];
+        let rows = select_connections(
+            &all,
+            ConnectionView::Active,
+            "",
+            ConnectionSort::Newest,
+            SortDirection::Ascending,
+        );
+        assert_eq!(ids(&rows), ["a", "b", "new"]);
+
+        // Z→A; the same host keeps newest first.
+        let mut x_old = conn("x-old", 100);
+        x_old.domain = "x.example".into();
+        let mut x_new = conn("x-new", 200);
+        x_new.domain = "x.example".into();
+        let mut y = conn("y", 50);
+        y.domain = "y.example".into();
+        let all = [x_old, y, x_new];
+        let rows = select_connections(
+            &all,
+            ConnectionView::Active,
+            "",
+            ConnectionSort::Host,
+            SortDirection::Descending,
+        );
+        assert_eq!(ids(&rows), ["y", "x-new", "x-old"]);
     }
 
     #[test]
@@ -407,6 +579,7 @@ mod tests {
             ConnectionView::Active,
             "FINAL",
             ConnectionSort::Newest,
+            SortDirection::Descending,
         );
         assert_eq!(rows.len(), 1);
     }
