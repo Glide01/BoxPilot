@@ -179,6 +179,7 @@ pub static ZH_CN: Strings = Strings {
         sort_ascending: "升序（点击反转）",
         sort_descending: "降序（点击反转）",
         close_all: "全部关闭",
+        close_matching: |n| format!("关闭 {n} 个匹配项"),
         close_connection: "关闭连接",
         closed: "已关闭",
         empty_title: "没有连接",

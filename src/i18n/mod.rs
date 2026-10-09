@@ -377,6 +377,8 @@ pub struct Connections {
     pub sort_ascending: &'static str,
     pub sort_descending: &'static str,
     pub close_all: &'static str,
+    /// Close all while the filter narrows the list: "Close 3 matching".
+    pub close_matching: FmtN,
     pub close_connection: &'static str,
     /// A closed row's rate column.
     pub closed: &'static str,

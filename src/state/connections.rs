@@ -47,8 +47,8 @@ pub struct Connections {
     /// and `Drop` so the detached reader thread self-terminates.
     running: Arc<AtomicBool>,
     /// UI-thread task applying batches to `table` as they arrive — dropped (= cancelled)
-    /// by `stop()`. `close`/`close_all` are fire-and-forget `.detach()`
-    /// requests, bounded by the unary call timeout.
+    /// by `stop()`. `close`/`close_many`/`close_all` are fire-and-forget
+    /// `.detach()` requests, bounded by the unary call timeout.
     _drain: Option<Task<()>>,
 }
 
@@ -179,6 +179,28 @@ impl Connections {
                 api.close_connection(&id).map_err(|e| {
                     (crate::i18n::s().messages.close_connection_failed)(&e.to_string())
                 })
+            },
+            cx,
+        );
+    }
+
+    /// Close the open connections `ids` (Close all under a filter): one
+    /// background task closes them in turn, since the sing-box API closes
+    /// one id per call. Rows update from the stream. A failed call (an
+    /// already-closed id is not one) stops the rest — the API is likely
+    /// gone — and shows an error toast.
+    pub fn close_many(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        if !self.live || ids.is_empty() {
+            return;
+        }
+        let api = self.api;
+        self.request(
+            move || {
+                ids.iter()
+                    .try_for_each(|id| api.close_connection(id))
+                    .map_err(|e| {
+                        (crate::i18n::s().messages.close_connections_failed)(&e.to_string())
+                    })
             },
             cx,
         );

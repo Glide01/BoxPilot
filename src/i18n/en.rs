@@ -195,6 +195,7 @@ pub static EN: Strings = Strings {
         sort_ascending: "Ascending — click to reverse",
         sort_descending: "Descending — click to reverse",
         close_all: "Close all",
+        close_matching: |n| format!("Close {n} matching"),
         close_connection: "Close connection",
         closed: "closed",
         empty_title: "No connections",

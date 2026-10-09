@@ -300,6 +300,38 @@ pub fn format_elapsed(ms: i64) -> String {
     }
 }
 
+/// What the page's Close button closes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseTargets {
+    /// Nothing narrows the list: every open connection, in one
+    /// `CloseAllConnections` call.
+    All,
+    /// The open connections the filter keeps, by id (newest first),
+    /// whichever view is showing. Possibly none.
+    Matching(Vec<String>),
+}
+
+/// What Close all should close under the filter box text `query`: all
+/// open connections while it is blank, else only the open ones it
+/// matches — the rows the Active view lists.
+pub fn close_targets<'a>(
+    connections: impl IntoIterator<Item = &'a Connection>,
+    query: &str,
+) -> CloseTargets {
+    if query_terms(query).is_empty() {
+        return CloseTargets::All;
+    }
+    let sort = ConnectionSort::Newest;
+    let rows = select_connections(
+        connections,
+        ConnectionView::Active,
+        query,
+        sort,
+        sort.natural_direction(),
+    );
+    CloseTargets::Matching(rows.into_iter().map(|c| c.id.clone()).collect())
+}
+
 /// The page's summary header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionSummary {
@@ -582,6 +614,34 @@ mod tests {
             SortDirection::Descending,
         );
         assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn close_targets_all_without_a_filter() {
+        let all = [conn("a", 1), closed("b", 1, 2)];
+        assert_eq!(close_targets(&all, ""), CloseTargets::All);
+        assert_eq!(close_targets(&all, "  \t"), CloseTargets::All);
+    }
+
+    #[test]
+    fn close_targets_only_open_matches_under_a_filter() {
+        let mut hit_old = conn("hit-old", 100);
+        hit_old.domain = "ads.example".into();
+        let mut hit_new = conn("hit-new", 200);
+        hit_new.domain = "cdn.ads.example".into();
+        let mut miss = conn("miss", 300);
+        miss.domain = "example.org".into();
+        let mut hit_closed = closed("hit-closed", 50, 400);
+        hit_closed.domain = "ads.example".into();
+        let all = [hit_old, miss, hit_closed, hit_new];
+        assert_eq!(
+            close_targets(&all, "ADS"),
+            CloseTargets::Matching(vec!["hit-new".into(), "hit-old".into()])
+        );
+        assert_eq!(
+            close_targets(&all, "nothing-like-this"),
+            CloseTargets::Matching(Vec::new())
+        );
     }
 
     #[test]

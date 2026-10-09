@@ -1,9 +1,10 @@
 //! 连接页,日志浏览器式布局(与日志页一致):控制行(搜索框 + Active/Closed
 //! 切换 + 排序:下拉选排序键 Newest/Traffic/Speed/Host/Rule/Chain,旁边的
 //! 按钮切换升序 / 降序;换键时回到该键的自然方向,数值与时间大的在前、文字
-//! A→Z);页头一行汇总(打开数、实时速率、
-//! 总流量)和 Close all;下面是带表头的连接表,每行一行:建立时间(等宽,
-//! 毫秒部分淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
+//! A→Z);页头一行汇总(打开数、实时速率、总流量)和 Close all(筛选框有内容
+//! 时变成「Close N matching」,只关闭筛选匹配的打开连接:在一个后台任务里
+//! 逐个 `close`);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
+//! 淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
 //! (组 → 节点)、实时速率与累计流量(各两行:上行在上、下行在下;已关闭的
 //! 连接没有速率)、存活时长、关闭按钮(仅打开的连接)。网络/协议、入站、
 //! 规则在详情面板里。
@@ -28,8 +29,8 @@ use crate::actions::{
 use crate::core::bytefmt::{format_bytes, format_speed};
 use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
-    chain_label, connection_age_ms, format_elapsed, host_label, process_name, select_connections,
-    summarize, ConnectionSort, ConnectionView, SortDirection,
+    chain_label, close_targets, connection_age_ms, format_elapsed, host_label, process_name,
+    select_connections, summarize, CloseTargets, ConnectionSort, ConnectionView, SortDirection,
 };
 use crate::core::singbox_api::Connection;
 use crate::core::timefmt::format_clock_ms;
@@ -99,6 +100,8 @@ pub struct ConnectionsPage {
     /// Ids of the rows to show, in display order, and what they came from.
     rows: Rc<Vec<String>>,
     rows_key: Option<RowsKey>,
+    /// What Close all closes under the same filter (refreshed with `rows`).
+    close_targets: Rc<CloseTargets>,
     /// The connection the details panel shows; `None` = panel closed.
     selected: Option<SharedString>,
     /// Where `selected` last was in `rows`, so Up / Down carry on from there
@@ -154,6 +157,7 @@ impl ConnectionsPage {
             scroll: UniformListScrollHandle::new(),
             rows: Rc::new(Vec::new()),
             rows_key: None,
+            close_targets: Rc::new(CloseTargets::All),
             selected: None,
             selected_ix: None,
             details_opened: 0,
@@ -283,6 +287,7 @@ impl ConnectionsPage {
         .map(|c| c.id.clone())
         .collect();
         self.rows = Rc::new(ids);
+        self.close_targets = Rc::new(close_targets(state.table.iter(), &key.query));
         self.rows_key = Some(key);
         // Remember where the selection is while it is listed (kept when it
         // is not: Up / Down continue from there).
@@ -662,15 +667,27 @@ impl Render for ConnectionsPage {
                 ))
                 .flex_shrink(SHRINK_FIRST),
             );
+        // Under a filter, only the open connections it matches.
         let close_all = {
             let connections = connections.clone();
+            let targets = self.close_targets.clone();
+            let (label, none) = match &*targets {
+                CloseTargets::All => (SharedString::from(t.close_all), summary.open == 0),
+                CloseTargets::Matching(ids) => (
+                    SharedString::from((t.close_matching)(ids.len() as u64)),
+                    ids.is_empty(),
+                ),
+            };
             Button::new("connections-close-all")
                 .outline()
                 .small()
-                .text_label(t.close_all)
-                .disabled(summary.open == 0)
+                .text_label(label)
+                .disabled(none)
                 .on_click(move |_, _, cx| {
-                    connections.update(cx, |state, cx| state.close_all(cx));
+                    connections.update(cx, |state, cx| match &*targets {
+                        CloseTargets::All => state.close_all(cx),
+                        CloseTargets::Matching(ids) => state.close_many(ids.clone(), cx),
+                    });
                 })
         };
 

@@ -279,6 +279,9 @@ fn formatted_messages_fill_in_their_values() {
     );
     assert_eq!((ZH_CN.profiles.updated_today)("14:32"), "今天 14:32 更新。");
 
+    assert_eq!((EN.connections.close_matching)(3), "Close 3 matching");
+    assert_eq!((ZH_CN.connections.close_matching)(3), "关闭 3 个匹配项");
+
     assert_eq!((EN.logs.count_of)(3, 10), "3 of 10");
     assert_eq!((ZH_CN.logs.count_of)(3, 10), "3 / 10");
 
