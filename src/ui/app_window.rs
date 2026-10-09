@@ -228,7 +228,7 @@ fn open(cx: &mut App) {
     let bounds = main.last_bounds.unwrap_or_else(|| {
         WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(860.), px(620.) + bar_height),
+            size(px(1000.), px(700.) + bar_height),
             cx,
         ))
     });
@@ -236,7 +236,10 @@ fn open(cx: &mut App) {
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(bounds),
-            window_min_size: Some(size(px(720.), px(500.) + bar_height)),
+            // Narrowest: the Connections toolbar still fits beside the
+            // expanded sidebar. Shortest: the sidebar still holds every page
+            // (Tailscale and VPN included) above its toggle and status orb.
+            window_min_size: Some(size(px(880.), px(640.) + bar_height)),
             // Wayland only raises a window that has an app id, and the
             // `.desktop` file is matched by it. Ignored elsewhere.
             app_id: Some("boxpilot".into()),
