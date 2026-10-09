@@ -14,8 +14,11 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{tooltip::Tooltip, Icon, IconName, StyledExt};
 
-/// The collapsed rail: an item and its padding either side.
-pub const RAIL_WIDTH: f32 = 64.;
+/// The collapsed rail: an item and its padding either side — wider on
+/// macOS, where the traffic lights sit over it (from 12 px, three 14 px
+/// buttons 20 px apart, so out to 66 px): they keep as much room from the
+/// content panel as from the window's edge rather than running into it.
+pub const RAIL_WIDTH: f32 = if cfg!(target_os = "macos") { 80. } else { 64. };
 /// The expanded rail, wide enough for the longest label.
 pub const RAIL_EXPANDED_WIDTH: f32 = 208.;
 /// A nav item (and the mark and the orb) is a square this size.

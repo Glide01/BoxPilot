@@ -34,8 +34,9 @@ use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, control_input, empty_state, page_header, page_layout, row_hover_bg, segmented,
-    tag_badge, toolbar_search, warn_orange, Control, ControlSize, Segment, TextLabel,
+    connect_button, control_input, empty_state, page_header, page_layout, page_scrollbar,
+    row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Control, ControlSize, Segment,
+    TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -43,7 +44,6 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
-    scroll::ScrollableElement,
     theme::Theme,
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
 };
@@ -839,7 +839,7 @@ impl Render for LogsPage {
                         .min_h_0()
                         .pt_1()
                         .child(list)
-                        .vertical_scrollbar(&self.scroll),
+                        .child(page_scrollbar("logs-scrollbar", &self.scroll)),
                 )
                 .children(drag_cover);
             (None, Some(table))

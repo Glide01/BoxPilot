@@ -75,8 +75,8 @@ use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
     choice_select, connect_button, control_input, empty_state, full_text_tooltip, may_truncate,
-    page_header, page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange,
-    Control, ControlSize, IconLabel, Segment, TextLabel,
+    page_header, page_layout, page_scrollbar, row_hover_bg, segmented, tag_badge, toolbar_search,
+    warn_orange, Control, ControlSize, IconLabel, Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -1466,13 +1466,8 @@ impl Render for ConnectionsPage {
                 .child(measure)
                 .child(table)
                 .child(
-                    div()
-                        .absolute()
-                        .top(px(HEADER_HEIGHT + 4.))
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .vertical_scrollbar(&self.scroll),
+                    page_scrollbar("connections-scrollbar", &self.scroll)
+                        .top(px(HEADER_HEIGHT + 4.)),
                 )
                 .when(overflows, |list| list.horizontal_scrollbar(&self.h_scroll))
                 .children(drag_cover);

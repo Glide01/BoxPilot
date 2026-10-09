@@ -559,12 +559,14 @@ impl RenderOnce for ScrollPage {
         // top edge holds its bottom edge up till then.
         let under = ((scrolled - travel) / HEADER_DIVIDER_FADE).clamp(0., 1.);
         let divider = self.header.divider.opacity(under);
-        let scrollbar = Scrollbar::vertical(&BelowHeader {
-            scroll: scroll.clone(),
-            header: header_bottom,
-        })
-        .id("page-scrollbar")
-        .viewport_from_layout();
+        let scrollbar = page_scrollbar(
+            "page-scrollbar",
+            &BelowHeader {
+                scroll: scroll.clone(),
+                header: header_bottom,
+            },
+        )
+        .top(header_bottom);
         // Layout clamps the offset after this render has read it (to a body
         // that got shorter, say): if it settles elsewhere, draw again with
         // it, or the header would stay collapsed over a body at the top.
@@ -621,15 +623,7 @@ impl RenderOnce for ScrollPage {
                 )
             })
             // The scrollbar runs from the header down, not under it.
-            .child(
-                div()
-                    .absolute()
-                    .top(header_bottom)
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .child(scrollbar),
-            )
+            .child(scrollbar)
             .child(settle)
     }
 }
@@ -640,6 +634,26 @@ impl RenderOnce for ScrollPage {
 /// collapse the header over a body that never moved.
 fn settled_scroll(scroll: &ScrollHandle) -> f32 {
     f32::from((-scroll.offset().y).min(scroll.max_offset().y)).max(0.)
+}
+
+/// How far a [`page_scrollbar`] reaches past the page's right edge into
+/// the panel's padding: its 16 px track ends 6 px short of the panel's
+/// edge, clear of the cards and rows beside it.
+const SCROLLBAR_OUTSET: f32 = PANEL_PADDING_X - 6.;
+
+/// A page's vertical scrollbar for `scroll`: in the panel's right padding,
+/// beside the page's cards and rows rather than over their right edge
+/// (where it covered a card's border, a row's close button). An absolute
+/// layer over its parent, reaching out into the padding; set its `top` to
+/// start it below a header.
+pub fn page_scrollbar<H: ScrollbarHandle + Clone>(id: impl Into<ElementId>, scroll: &H) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left_0()
+        .right(px(-SCROLLBAR_OUTSET))
+        .child(Scrollbar::vertical(scroll).id(id).viewport_from_layout())
 }
 
 /// A [`scroll_page`]'s scroll handle as its scrollbar sees it: the part

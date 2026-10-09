@@ -29,14 +29,14 @@ use crate::ui::pages::ActivePage;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
     connect_button, control_input, empty_state, full_text_tooltip, page_header, page_layout,
-    segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel, Segment,
+    page_scrollbar, segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel,
+    Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
-    scroll::ScrollableElement,
     spinner::Spinner,
     theme::Theme,
     tooltip::Tooltip,
@@ -728,7 +728,7 @@ impl Render for GroupsPage {
                 .w_full()
                 .child(measure)
                 .child(list)
-                .vertical_scrollbar(&self.scroll)
+                .child(page_scrollbar("groups-scrollbar", &self.scroll))
                 .into_any_element()
         };
 
