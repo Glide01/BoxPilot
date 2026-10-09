@@ -5,20 +5,27 @@
 //! Newest/Traffic/Speed/Host/Rule/Chain,旁边的按钮切换升序 / 降序;换键时
 //! 回到该键的自然方向,数值与时间大的在前、文字 A→Z;控制行不折行,窄时
 //! 搜索框让位);页头一行汇总(打开数 —— 有过滤时换成「N of M shown」、实时
-//! 速率、总流量)和 Close all(过滤让一部分打开的连接不显示时变成
-//! 「Close N matching」,只关闭过滤后剩下的打开连接:在一个后台任务里逐个
-//! `close`);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
-//! 淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
-//! (组 → 节点)、实时速率与累计流量(各两行:上行在上、下行在下;已关闭的
-//! 连接没有速率)、存活时长、关闭按钮(仅打开的连接)。网络/协议、入站、
-//! 规则在详情面板里。
+//! 速率、总流量;暂停时前面加 Paused 徽标)、Pause / Resume 和 Close all
+//! (过滤让一部分打开的连接不显示时变成「Close N matching」,只关闭过滤后
+//! 剩下的打开连接:在一个后台任务里逐个 `close`);下面是带表头的连接表,
+//! 每行一行:建立时间(等宽,毫秒部分淡色)、网络徽标(TCP/UDP,与柱状图
+//! 同色)、主机 + 进程名、出站链(组 → 节点)、实时速率与累计流量(各两行:
+//! 上行在上、下行在下;已关闭的连接没有速率)、存活时长、关闭按钮(仅打开
+//! 的连接)。网络/协议、入站、规则在详情面板里。
 //!
 //! 列表用 gpui 的 `uniform_list` 虚拟化:只渲染可见行,上千条已关闭 + 大量
-//! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)和 Close all 的
-//! 目标按 `(revision, view, sort, direction, query, hide_direct)` 缓存,只有
-//! 数据或条件变了才重算;行内容在渲染时按 id 从 `ConnectionTable` 现取,
-//! 时长随渲染时刻走。
+//! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)按
+//! `(数据来源, view, sort, direction, query, hide_direct)` 缓存,Close all
+//! 的目标按 `(revision, query, hide_direct)` 缓存,只有数据或条件变了才
+//! 重算;行内容在渲染时按 id 从 `ConnectionTable` 现取,时长随渲染时刻走。
 //! 过滤 / 排序 / 显示字符串都是 `core::connections_view` 的纯函数。
+//!
+//! Pause 把当时的 `ConnectionTable` 复制一份(连同时刻)冻结在页面状态里
+//! (`Frozen`,不持久化),它就是列表的数据来源:哪些行、顺序、每行的值和
+//! 时长、两个视图的计数都来自这份副本,切视图 / 排序 / 过滤也在副本上重算;
+//! Resume 丢掉副本回到实时数据,sing-box 停止时也一样。页头汇总、Close all
+//! 的目标和详情面板始终跟实时数据走;暂停期间关闭了的连接(比如点了行上的
+//! 关闭按钮)那一行变成已关闭的样子,冻结的数值不变。
 //!
 //! Clicking a row opens the details panel (`connection_details`) over the
 //! right of the list and highlights the row; while it is open Esc closes it
@@ -38,7 +45,7 @@ use crate::core::connections_view::{
     select_connections, summarize, CloseTargets, ConnectionFilter, ConnectionSort, ConnectionView,
     SortDirection,
 };
-use crate::core::singbox_api::Connection;
+use crate::core::singbox_api::{Connection, ConnectionTable};
 use crate::core::timefmt::format_clock_ms;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
@@ -86,10 +93,26 @@ const DETAILS_MAX_FRACTION: f32 = 0.86;
 const DETAILS_SLIDE: Duration = Duration::from_millis(180);
 const DETAILS_SLIDE_PX: f32 = 28.;
 
+/// Where the listed rows come from: the live table at a revision, or the
+/// copy frozen by a pause.
+#[derive(Clone, Copy, PartialEq)]
+enum RowsSource {
+    Live(u64),
+    Frozen(u64),
+}
+
+/// While paused: the table as it was, and the moment, so rows (ages
+/// included) read as they did then. `pause` tells one pause from the next.
+struct Frozen {
+    table: Rc<ConnectionTable>,
+    now_ms: i64,
+    pause: u64,
+}
+
 /// What the cached row order was derived from.
 #[derive(Clone, PartialEq)]
 struct RowsKey {
-    revision: u64,
+    source: RowsSource,
     view: ConnectionView,
     sort: ConnectionSort,
     direction: SortDirection,
@@ -118,8 +141,15 @@ pub struct ConnectionsPage {
     /// Ids of the rows to show, in display order, and what they came from.
     rows: Rc<Vec<String>>,
     rows_key: Option<RowsKey>,
-    /// What Close all closes under the same filter (refreshed with `rows`).
+    /// What Close all closes under the same filter: always from the live
+    /// table, paused or not, and what it was derived from (live revision,
+    /// query, quick filter).
     close_targets: Rc<CloseTargets>,
+    targets_key: Option<(u64, String, bool)>,
+    /// `Some` while the list is paused (Pause / Resume).
+    frozen: Option<Frozen>,
+    /// Pauses so far.
+    pauses: u64,
     /// The connection the details panel shows; `None` = panel closed.
     selected: Option<SharedString>,
     /// Where `selected` last was in `rows`, so Up / Down carry on from there
@@ -137,9 +167,13 @@ impl ConnectionsPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let connections = app_state.read(cx).connections.clone();
         cx.observe(&connections, |this: &mut Self, connections, cx| {
-            // sing-box stopped: the list is gone, and the panel with it.
-            if !connections.read(cx).live && this.selected.is_some() {
-                this.close_details(cx);
+            // sing-box stopped: the list is gone, and the panel and any
+            // pause with it.
+            if !connections.read(cx).live {
+                this.frozen = None;
+                if this.selected.is_some() {
+                    this.close_details(cx);
+                }
             }
             cx.notify();
         })
@@ -177,6 +211,9 @@ impl ConnectionsPage {
             rows: Rc::new(Vec::new()),
             rows_key: None,
             close_targets: Rc::new(CloseTargets::All),
+            targets_key: None,
+            frozen: None,
+            pauses: 0,
             selected: None,
             selected_ix: None,
             details_opened: 0,
@@ -291,23 +328,52 @@ impl ConnectionsPage {
         cx.notify();
     }
 
-    /// Recompute the row order only when the data or the view settings moved.
+    /// Pause: freeze the list as it is (which rows, their order and their
+    /// values) until Resume. The details panel stays live.
+    fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        if self.frozen.take().is_none() {
+            self.pauses += 1;
+            self.frozen = Some(Frozen {
+                table: Rc::new(self.connections.read(cx).table.clone()),
+                now_ms: unix_millis_now(),
+                pause: self.pauses,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Recompute the row order only when the data or the view settings
+    /// moved, and Close all's targets only when the live data or the filter
+    /// did.
     fn refresh_rows(&mut self, cx: &App) {
         let hide_direct = self.app_state.read(cx).settings.connections_hide_direct;
         let state = self.connections.read(cx);
+        let source = match &self.frozen {
+            Some(frozen) => RowsSource::Frozen(frozen.pause),
+            None => RowsSource::Live(state.revision),
+        };
         let key = RowsKey {
-            revision: state.revision,
+            source,
             view: self.view,
             sort: self.sort,
             direction: self.direction,
             query: self.filter_input.read(cx).value().to_string(),
             hide_direct,
         };
+        let targets_key = (state.revision, key.query.clone(), hide_direct);
+        if self.targets_key.as_ref() != Some(&targets_key) {
+            self.close_targets = Rc::new(close_targets(state.table.iter(), key.filter()));
+            self.targets_key = Some(targets_key);
+        }
         if self.rows_key.as_ref() == Some(&key) {
             return;
         }
+        let table = match &self.frozen {
+            Some(frozen) => &*frozen.table,
+            None => &state.table,
+        };
         let ids = select_connections(
-            state.table.iter(),
+            table.iter(),
             key.view,
             key.filter(),
             key.sort,
@@ -317,7 +383,6 @@ impl ConnectionsPage {
         .map(|c| c.id.clone())
         .collect();
         self.rows = Rc::new(ids);
-        self.close_targets = Rc::new(close_targets(state.table.iter(), key.filter()));
         self.rows_key = Some(key);
         // Remember where the selection is while it is listed (kept when it
         // is not: Up / Down continue from there).
@@ -381,9 +446,13 @@ impl NetworkColors {
 
 /// One list row. Every row has the same structure (closed rows keep an
 /// empty slot where the close button goes) so heights stay uniform.
+/// `closed_since` marks a paused row whose connection has closed since the
+/// pause (its Close button was used, say): it reads as closed, its frozen
+/// figures kept.
 #[allow(clippy::too_many_arguments)]
 fn connection_row(
     connection: &Connection,
+    closed_since: bool,
     now_ms: i64,
     connections: &Entity<Connections>,
     page: &WeakEntity<ConnectionsPage>,
@@ -391,7 +460,7 @@ fn connection_row(
     networks: NetworkColors,
     theme: &Theme,
 ) -> Stateful<Div> {
-    let closed = connection.is_closed();
+    let closed = connection.is_closed() || closed_since;
     let hover_bg = row_hover_bg(theme);
     let (fg, muted) = if closed {
         (theme.muted_foreground, theme.muted_foreground.opacity(0.7))
@@ -654,6 +723,15 @@ impl Render for ConnectionsPage {
         let state = connections.read(cx);
         let live = state.live;
         let summary = summarize(state.table.iter());
+        // What the list holds: the live table, or its copy while paused.
+        let frozen = self
+            .frozen
+            .as_ref()
+            .map(|frozen| (frozen.table.clone(), frozen.now_ms));
+        let listed = match &frozen {
+            Some((table, _)) => summarize(table.iter()),
+            None => summary,
+        };
         let narrowed = self
             .rows_key
             .as_ref()
@@ -671,11 +749,12 @@ impl Render for ConnectionsPage {
         // rows the filter shows, while it narrows them), current rates,
         // and the traffic so far — three groups set apart by space. On a
         // narrow window the totals give way first, then the rates; the
-        // count stays whole.
+        // count stays whole. A paused list says so first; the totals stay
+        // live.
         let count = if narrowed {
             let in_view = match self.view {
-                ConnectionView::Active => summary.open,
-                ConnectionView::Closed => summary.closed,
+                ConnectionView::Active => listed.open,
+                ConnectionView::Closed => listed.closed,
             };
             (t.shown_of)(self.rows.len(), in_view)
         } else {
@@ -688,6 +767,13 @@ impl Render for ConnectionsPage {
             .min_w_0()
             .text_sm()
             .text_color(theme.muted_foreground)
+            .when(frozen.is_some(), |items| {
+                items.child(
+                    div()
+                        .flex_none()
+                        .child(tag_badge(theme, t.paused, warn_orange(theme))),
+                )
+            })
             .child(div().flex_shrink_0().whitespace_nowrap().child(count))
             .child(clipped(format!(
                 "↑ {}  ↓ {}",
@@ -767,8 +853,8 @@ impl Render for ConnectionsPage {
             theme,
             "connections-view",
             vec![
-                Segment::new(t.active_tab).count(summary.open),
-                Segment::new(t.closed_tab).count(summary.closed),
+                Segment::new(t.active_tab).count(listed.open),
+                Segment::new(t.closed_tab).count(listed.closed),
             ],
             VIEWS.iter().position(|view| *view == self.view),
             move |ix, _, cx| {
@@ -811,7 +897,25 @@ impl Render for ConnectionsPage {
 
         let mut head = page_header(theme, ActivePage::Connections);
         if has_any {
-            head = head.context(summary_items).action(close_all);
+            let pause_page = page.clone();
+            let paused = frozen.is_some();
+            let pause = Button::new("connections-pause")
+                .outline()
+                .small()
+                .selected(paused)
+                .toggled(paused)
+                .map(|button| {
+                    if paused {
+                        button.icon_label(IconName::Play, t.resume)
+                    } else {
+                        button.icon_label(IconName::Pause, t.pause)
+                    }
+                })
+                .tooltip(if paused { t.resume_hint } else { t.pause_hint })
+                .on_click(move |_, _, cx| {
+                    pause_page.update(cx, |this, cx| this.toggle_pause(cx)).ok();
+                });
+            head = head.context(summary_items).action(pause).action(close_all);
         }
 
         // The empty state goes on the page's root (see `empty_state`), the
@@ -836,15 +940,24 @@ impl Render for ConnectionsPage {
             let list_connections = connections.clone();
             let list_page = page.clone();
             let selected = self.selected.clone();
+            let frozen = frozen.clone();
             let list = uniform_list("connections-list", rows.len(), move |range, _, cx| {
-                let now_ms = unix_millis_now();
                 let networks = NetworkColors::new(cx.theme());
                 let theme = cx.theme();
                 let state = list_connections.read(cx);
+                let (table, now_ms) = match &frozen {
+                    Some((table, now_ms)) => (&**table, *now_ms),
+                    None => (&state.table, unix_millis_now()),
+                };
                 range
-                    .map(|ix| match state.table.get(&rows[ix]) {
+                    .map(|ix| match table.get(&rows[ix]) {
                         Some(connection) => connection_row(
                             connection,
+                            frozen.is_some()
+                                && state
+                                    .table
+                                    .get(&connection.id)
+                                    .is_none_or(Connection::is_closed),
                             now_ms,
                             &list_connections,
                             &list_page,

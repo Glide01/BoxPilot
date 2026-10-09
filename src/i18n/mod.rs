@@ -382,6 +382,13 @@ pub struct Connections {
     pub sort_ascending: &'static str,
     pub sort_descending: &'static str,
     pub close_all: &'static str,
+    /// Freezes the list (and its tooltip); Resume brings it back to live.
+    pub pause: &'static str,
+    pub pause_hint: &'static str,
+    pub resume: &'static str,
+    pub resume_hint: &'static str,
+    /// The summary's badge while paused.
+    pub paused: &'static str,
     /// Close all while the filter narrows the list: "Close 3 matching".
     pub close_matching: FmtN,
     pub close_connection: &'static str,
