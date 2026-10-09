@@ -84,6 +84,10 @@ pub const PANEL_RADIUS: f32 = 12.;
 /// (and the title bar or top edge); the sidebar's status tile ends on the
 /// same line.
 pub const PANEL_INSET: f32 = 8.;
+/// Room between the content panel's edges and the page in it: at its
+/// sides, and at its top and bottom.
+pub const PANEL_PADDING_X: f32 = 28.;
+pub const PANEL_PADDING_Y: f32 = 24.;
 
 /// Widest a form page's column (Settings, Tools) grows: past it, a label
 /// and its control drift apart across a wide window. Centred past it, page

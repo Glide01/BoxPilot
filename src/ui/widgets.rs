@@ -56,7 +56,7 @@ use crate::core::timefmt::{format_relative_time, from_unix_secs, to_unix_secs};
 use crate::i18n::s;
 use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
-use crate::ui::theme::FORM_MAX_WIDTH;
+use crate::ui::theme::{FORM_MAX_WIDTH, PANEL_PADDING_X, PANEL_PADDING_Y};
 use gpui::{
     div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, Bounds, ClickEvent, Context,
     Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
@@ -390,6 +390,13 @@ const COLLAPSED_HEADER_SPACE: f32 = 12.;
 const PAGE_HEADER_HEIGHT: f32 =
     PAGE_TITLE_HEIGHT + PAGE_CONTEXT_GAP + PAGE_CONTEXT_HEIGHT + PAGE_HEADER_SPACE;
 const COLLAPSED_HEADER_HEIGHT: f32 = COLLAPSED_TITLE_HEIGHT + COLLAPSED_HEADER_SPACE;
+/// How far a collapsed [`scroll_page`] header rises into the panel's top
+/// padding: its title then sits as far below the panel's edge as above the
+/// line under it, in a bar as tall as a window's toolbar.
+const COLLAPSED_HEADER_LIFT: f32 = PANEL_PADDING_Y - COLLAPSED_HEADER_SPACE;
+/// How far the body scrolls under a collapsed [`scroll_page`] header while
+/// the line under the header fades in.
+const HEADER_DIVIDER_FADE: f32 = 8.;
 
 /// Every page's head, the same on each: the page's title, one line of
 /// context under it — live figures when the page has them, else what the
@@ -402,6 +409,7 @@ pub fn page_header(theme: &Theme, page: ActivePage) -> PageHeader {
         context: page.hint().into_any_element(),
         muted: theme.muted_foreground,
         background: theme.background,
+        divider: theme.border,
         actions: Vec::new(),
         collapsed: 0.,
     }
@@ -415,6 +423,8 @@ pub struct PageHeader {
     muted: Hsla,
     /// The panel's colour, so a [`scroll_page`]'s body passes under it.
     background: Hsla,
+    /// The line under it while a [`scroll_page`]'s body is under it.
+    divider: Hsla,
     actions: Vec<AnyElement>,
     /// How far it has collapsed: 0 open, 1 down to its title line.
     collapsed: f32,
@@ -508,7 +518,8 @@ pub fn page_layout(header: PageHeader, body: impl IntoElement) -> Div {
 /// header collapses as it does — the context line fades out and the title
 /// shrinks to a line as tall as the header's actions — then stays at the
 /// top, small, while the body goes on scrolling under it. Scrolling back to
-/// the top opens it again.
+/// the top opens it again. While the body is under it, a hairline across
+/// the whole panel marks the header's edge, as a window's toolbar has.
 ///
 /// The header follows the scroll position rather than a timer, as large
 /// titles on macOS and iOS do: the body's top edge pushes the header's
@@ -539,13 +550,18 @@ impl RenderOnce for ScrollPage {
             })
             .read(cx)
             .clone();
-        let travel = PAGE_HEADER_HEIGHT - COLLAPSED_HEADER_HEIGHT;
+        // The header's bottom edge rises by what it loses and what it lifts.
+        let travel = PAGE_HEADER_HEIGHT - COLLAPSED_HEADER_HEIGHT + COLLAPSED_HEADER_LIFT;
         let scrolled = f32::from(-scroll.offset().y).max(0.);
         let collapsed = (scrolled / travel).min(1.);
-        let header_height = px(PAGE_HEADER_HEIGHT - travel * collapsed);
+        let header_bottom = px(PAGE_HEADER_HEIGHT - travel * collapsed);
+        // Nothing is under the header until it has collapsed: the body's
+        // top edge holds its bottom edge up till then.
+        let under = ((scrolled - travel) / HEADER_DIVIDER_FADE).clamp(0., 1.);
+        let divider = self.header.divider.opacity(under);
         let scrollbar = Scrollbar::vertical(&BelowHeader {
             scroll: scroll.clone(),
-            header: header_height,
+            header: header_bottom,
         })
         .id("page-scrollbar")
         .viewport_from_layout();
@@ -568,7 +584,7 @@ impl RenderOnce for ScrollPage {
             .child(
                 div()
                     .absolute()
-                    .top_0()
+                    .top(px(-COLLAPSED_HEADER_LIFT * collapsed))
                     .left_0()
                     .w_full()
                     .child(PageHeader {
@@ -576,11 +592,24 @@ impl RenderOnce for ScrollPage {
                         ..self.header
                     }),
             )
+            // On the header's last pixel, out to the panel's sides (the
+            // panel clips it at its border).
+            .when(under > 0., |page| {
+                page.child(
+                    div()
+                        .absolute()
+                        .top(header_bottom - px(1.))
+                        .left(px(-PANEL_PADDING_X))
+                        .right(px(-PANEL_PADDING_X))
+                        .h(px(1.))
+                        .bg(divider),
+                )
+            })
             // The scrollbar runs from the header down, not under it.
             .child(
                 div()
                     .absolute()
-                    .top(header_height)
+                    .top(header_bottom)
                     .bottom_0()
                     .left_0()
                     .right_0()

@@ -16,7 +16,7 @@ use crate::ui::pages::{
 use crate::ui::sidebar::{
     brand, rail_brand, sidebar, Badges, OptionalPages, SidebarColors, SidebarStatus, StatusDetail,
 };
-use crate::ui::theme::{PANEL_INSET, PANEL_RADIUS};
+use crate::ui::theme::{PANEL_INSET, PANEL_PADDING_X, PANEL_PADDING_Y, PANEL_RADIUS};
 use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
 use gpui::prelude::FluentBuilder;
@@ -545,9 +545,8 @@ impl Render for RootView {
                     .bg(panel_bg)
                     .shadow_xs()
                     .overflow_hidden()
-                    .px_7()
-                    .pt_6()
-                    .pb_6()
+                    .px(px(PANEL_PADDING_X))
+                    .py(px(PANEL_PADDING_Y))
                     // Toasts float at the panel's bottom centre.
                     .relative()
                     .child(
