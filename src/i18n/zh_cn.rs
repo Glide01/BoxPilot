@@ -167,6 +167,9 @@ pub static ZH_CN: Strings = Strings {
     connections: Connections {
         filter_placeholder: "按主机、规则、出站链、进程筛选…",
         open_count: |n| format!("{n} 个活动"),
+        shown_of: |shown, total| format!("显示 {shown} / {total}"),
+        hide_direct: "隐藏直连",
+        hide_direct_hint: "隐藏直连、拦截和 DNS 连接",
         total: "累计",
         active_tab: "活动",
         closed_tab: "已关闭",

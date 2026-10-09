@@ -252,6 +252,10 @@ pub struct AppSettings {
     /// for it, only for something newer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skipped_update_version: Option<String>,
+    /// The Connections page's quick filter: hide direct, block and DNS
+    /// connections (`connections_view::is_direct_or_dns`). Off by default.
+    #[serde(default)]
+    pub connections_hide_direct: bool,
 }
 
 /// Appearance setting. Unknown values (from a newer release) load as
@@ -313,6 +317,7 @@ impl Default for AppSettings {
             allow_lan: false,
             check_updates: true,
             skipped_update_version: None,
+            connections_hide_direct: false,
         };
         settings.normalize_profiles();
         settings
@@ -548,6 +553,7 @@ mod tests {
         assert!(!settings.allow_lan);
         assert!(settings.check_updates, "update checks default on");
         assert_eq!(settings.skipped_update_version, None);
+        assert!(!settings.connections_hide_direct);
         let saved = serde_json::to_value(&settings).unwrap();
         assert!(saved.get("skipped_update_version").is_none(), "{}", saved);
     }
@@ -947,6 +953,7 @@ mod tests {
             allow_lan: true,
             check_updates: false,
             skipped_update_version: Some("1.14.0".into()),
+            connections_hide_direct: true,
         };
         original.save(&dir);
         let loaded = AppSettings::load(&dir).settings;
@@ -962,6 +969,7 @@ mod tests {
         assert!(loaded.allow_lan);
         assert!(!loaded.check_updates);
         assert_eq!(loaded.skipped_update_version.as_deref(), Some("1.14.0"));
+        assert!(loaded.connections_hide_direct);
         let _ = fs::remove_dir_all(&dir);
     }
 

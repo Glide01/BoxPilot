@@ -183,6 +183,9 @@ pub static EN: Strings = Strings {
     connections: Connections {
         filter_placeholder: "Filter by host, rule, chain, process…",
         open_count: |n| format!("{n} open"),
+        shown_of: |shown, total| format!("{shown} of {total} shown"),
+        hide_direct: "Hide direct",
+        hide_direct_hint: "Hide direct, block and DNS connections",
         total: "total",
         active_tab: "Active",
         closed_tab: "Closed",

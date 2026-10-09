@@ -1602,6 +1602,17 @@ impl AppState {
         }
     }
 
+    /// The Connections page's "Hide direct" quick filter, remembered across
+    /// launches.
+    pub fn set_connections_hide_direct(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.connections_hide_direct == value {
+            return;
+        }
+        self.settings.connections_hide_direct = value;
+        self.save_settings();
+        cx.notify();
+    }
+
     /// The release to offer — newer than this BoxPilot and not skipped.
     /// Drives the Settings sidebar dot and the About card's Skip button.
     pub fn update_available(&self) -> Option<&ReleaseInfo> {

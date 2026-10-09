@@ -1,6 +1,7 @@
 //! Pure presentation logic for the Connections page: which connections a
-//! view shows (active/closed tab + text filter), in what order, the summary
-//! header, and each row's display strings. The page only places the results
+//! view shows (active/closed tab + text filter + the direct/DNS quick
+//! filter), in what order, what Close all closes, the summary header, and
+//! each row's display strings. The page only places the results
 //! in layout. No gpui dependency — keep it that way so the core test shim
 //! keeps working.
 
@@ -113,22 +114,71 @@ fn newest(connection: &Connection) -> i64 {
     connection.closed_at.unwrap_or(connection.created_at)
 }
 
-/// The connections `view` shows, filtered by `query` (see `matches_query`)
-/// and ordered by `sort` in `direction`. Ties fall back to newest, then
-/// id, whatever the direction, so rows don't shuffle between
-/// identical-looking refreshes.
+/// What narrows a view's rows beyond active / closed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionFilter<'q> {
+    /// The filter box text (`matches_query`).
+    pub query: &'q str,
+    /// The quick filter: leave out direct, block and DNS connections
+    /// (`is_direct_or_dns`).
+    pub hide_direct: bool,
+}
+
+impl ConnectionFilter<'_> {
+    /// Whether it leaves anything out at all.
+    pub fn narrows(&self) -> bool {
+        self.hide_direct || !query_terms(self.query).is_empty()
+    }
+
+    /// A per-call form with the query split once.
+    fn compiled(&self) -> CompiledFilter {
+        CompiledFilter {
+            terms: query_terms(self.query),
+            hide_direct: self.hide_direct,
+        }
+    }
+}
+
+struct CompiledFilter {
+    terms: Vec<String>,
+    hide_direct: bool,
+}
+
+impl CompiledFilter {
+    fn keeps(&self, connection: &Connection) -> bool {
+        !(self.hide_direct && is_direct_or_dns(connection))
+            && matches_terms(connection, &self.terms)
+    }
+}
+
+/// The quick filter's rule, after zashboard's default `direct|dns-out`:
+/// a connection that carries no proxied traffic of interest. That is
+/// one whose final outbound is of type `direct`, `block` or `dns` (the
+/// last two are the legacy special outbounds; tags are the user's to
+/// name, types are not), or a DNS query (sniffed protocol `dns`),
+/// whichever outbound or rule action took it.
+pub fn is_direct_or_dns(connection: &Connection) -> bool {
+    let quiet_type = ["direct", "block", "dns"]
+        .iter()
+        .any(|kind| connection.outbound_type.eq_ignore_ascii_case(kind));
+    quiet_type || connection.protocol.eq_ignore_ascii_case("dns")
+}
+
+/// The connections `view` shows, narrowed by `filter` and ordered by
+/// `sort` in `direction`. Ties fall back to newest, then id, whatever the
+/// direction, so rows don't shuffle between identical-looking refreshes.
 pub fn select_connections<'a>(
     connections: impl IntoIterator<Item = &'a Connection>,
     view: ConnectionView,
-    query: &str,
+    filter: ConnectionFilter,
     sort: ConnectionSort,
     direction: SortDirection,
 ) -> Vec<&'a Connection> {
-    let terms = query_terms(query);
+    let filter = filter.compiled();
     // Each row's key once, not per comparison (text keys allocate).
     let mut rows: Vec<(SortValue, &Connection)> = connections
         .into_iter()
-        .filter(|c| view.includes(c) && matches_terms(c, &terms))
+        .filter(|c| view.includes(c) && filter.keeps(c))
         .map(|c| (sort_value(c, sort), c))
         .collect();
     rows.sort_by(|(key_a, a), (key_b, b)| {
@@ -303,29 +353,43 @@ pub fn format_elapsed(ms: i64) -> String {
 /// What the page's Close button closes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloseTargets {
-    /// Nothing narrows the list: every open connection, in one
-    /// `CloseAllConnections` call.
+    /// Every open connection, in one `CloseAllConnections` call: nothing
+    /// narrows the list, or nothing open is left out by it.
     All,
     /// The open connections the filter keeps, by id (newest first),
-    /// whichever view is showing. Possibly none.
+    /// whichever view is showing — some open ones stay. Possibly none.
     Matching(Vec<String>),
 }
 
-/// What Close all should close under the filter box text `query`: all
-/// open connections while it is blank, else only the open ones it
-/// matches — the rows the Active view lists.
+/// What Close all should close under `filter`: the open connections it
+/// keeps — the rows the Active view lists.
 pub fn close_targets<'a>(
     connections: impl IntoIterator<Item = &'a Connection>,
-    query: &str,
+    filter: ConnectionFilter,
 ) -> CloseTargets {
-    if query_terms(query).is_empty() {
+    if !filter.narrows() {
+        return CloseTargets::All;
+    }
+    let compiled = filter.compiled();
+    let mut open = 0;
+    let mut kept = Vec::new();
+    for connection in connections {
+        if connection.is_closed() {
+            continue;
+        }
+        open += 1;
+        if compiled.keeps(connection) {
+            kept.push(connection);
+        }
+    }
+    if kept.len() == open {
         return CloseTargets::All;
     }
     let sort = ConnectionSort::Newest;
     let rows = select_connections(
-        connections,
+        kept,
         ConnectionView::Active,
-        query,
+        ConnectionFilter::default(),
         sort,
         sort.natural_direction(),
     );
@@ -391,7 +455,35 @@ mod tests {
     /// `all`'s rows in `view`, unfiltered, by `sort` in its natural
     /// direction.
     fn sorted(all: &[Connection], view: ConnectionView, sort: ConnectionSort) -> Vec<&Connection> {
-        select_connections(all, view, "", sort, sort.natural_direction())
+        select_connections(
+            all,
+            view,
+            ConnectionFilter::default(),
+            sort,
+            sort.natural_direction(),
+        )
+    }
+
+    fn query(text: &str) -> ConnectionFilter<'_> {
+        ConnectionFilter {
+            query: text,
+            hide_direct: false,
+        }
+    }
+
+    const HIDE_DIRECT: ConnectionFilter<'static> = ConnectionFilter {
+        query: "",
+        hide_direct: true,
+    };
+
+    /// An open connection out through `outbound` of type `kind`.
+    fn via(id: &str, created_at: i64, outbound: &str, kind: &str) -> Connection {
+        Connection {
+            outbound: outbound.into(),
+            outbound_type: kind.into(),
+            chain: vec![outbound.into()],
+            ..conn(id, created_at)
+        }
     }
 
     fn ids(rows: &[&Connection]) -> Vec<String> {
@@ -520,7 +612,7 @@ mod tests {
         let rows = select_connections(
             &all,
             ConnectionView::Active,
-            "",
+            ConnectionFilter::default(),
             ConnectionSort::Traffic,
             SortDirection::Ascending,
         );
@@ -535,7 +627,7 @@ mod tests {
         let rows = select_connections(
             &all,
             ConnectionView::Active,
-            "",
+            ConnectionFilter::default(),
             ConnectionSort::Newest,
             SortDirection::Ascending,
         );
@@ -552,7 +644,7 @@ mod tests {
         let rows = select_connections(
             &all,
             ConnectionView::Active,
-            "",
+            ConnectionFilter::default(),
             ConnectionSort::Host,
             SortDirection::Descending,
         );
@@ -609,7 +701,7 @@ mod tests {
         let rows = select_connections(
             [&c],
             ConnectionView::Active,
-            "FINAL",
+            query("FINAL"),
             ConnectionSort::Newest,
             SortDirection::Descending,
         );
@@ -619,8 +711,8 @@ mod tests {
     #[test]
     fn close_targets_all_without_a_filter() {
         let all = [conn("a", 1), closed("b", 1, 2)];
-        assert_eq!(close_targets(&all, ""), CloseTargets::All);
-        assert_eq!(close_targets(&all, "  \t"), CloseTargets::All);
+        assert_eq!(close_targets(&all, query("")), CloseTargets::All);
+        assert_eq!(close_targets(&all, query("  \t")), CloseTargets::All);
     }
 
     #[test]
@@ -635,13 +727,103 @@ mod tests {
         hit_closed.domain = "ads.example".into();
         let all = [hit_old, miss, hit_closed, hit_new];
         assert_eq!(
-            close_targets(&all, "ADS"),
+            close_targets(&all, query("ADS")),
             CloseTargets::Matching(vec!["hit-new".into(), "hit-old".into()])
         );
         assert_eq!(
-            close_targets(&all, "nothing-like-this"),
+            close_targets(&all, query("nothing-like-this")),
             CloseTargets::Matching(Vec::new())
         );
+    }
+
+    #[test]
+    fn quick_filter_hides_direct_block_and_dns() {
+        assert!(is_direct_or_dns(&via("a", 1, "direct", "direct")));
+        assert!(is_direct_or_dns(&via("b", 1, "直连", "direct")), "by type");
+        assert!(is_direct_or_dns(&via("c", 1, "REJECT", "block")));
+        assert!(is_direct_or_dns(&via("d", 1, "dns-out", "dns")));
+        assert!(is_direct_or_dns(&via("e", 1, "x", "Direct")));
+        let mut query = via("f", 1, "香港-01", "shadowsocks");
+        query.protocol = "dns".into();
+        assert!(is_direct_or_dns(&query), "a DNS query, even proxied");
+
+        assert!(!is_direct_or_dns(&via("g", 1, "香港-01", "shadowsocks")));
+        // A node named like a special outbound is still a proxy.
+        assert!(!is_direct_or_dns(&via("h", 1, "direct", "vless")));
+        let mut tls = via("i", 1, "香港-01", "trojan");
+        tls.protocol = "tls".into();
+        assert!(!is_direct_or_dns(&tls));
+    }
+
+    #[test]
+    fn quick_filter_narrows_both_views_and_combines_with_the_query() {
+        let mut proxied = via("proxied", 3, "香港-01", "shadowsocks");
+        proxied.domain = "example.com".into();
+        let mut direct = via("direct", 2, "direct", "direct");
+        direct.domain = "example.com".into();
+        let mut gone_direct = via("gone-direct", 1, "direct", "direct");
+        gone_direct.closed_at = Some(5);
+        let mut gone_proxied = via("gone-proxied", 1, "香港-01", "shadowsocks");
+        gone_proxied.closed_at = Some(4);
+        let all = [proxied, direct, gone_direct, gone_proxied];
+        let newest = ConnectionSort::Newest;
+        let pick = |view, filter| {
+            ids(&select_connections(
+                &all,
+                view,
+                filter,
+                newest,
+                newest.natural_direction(),
+            ))
+        };
+        assert_eq!(pick(ConnectionView::Active, HIDE_DIRECT), ["proxied"]);
+        assert_eq!(pick(ConnectionView::Closed, HIDE_DIRECT), ["gone-proxied"]);
+        assert_eq!(
+            pick(ConnectionView::Active, query("example")),
+            ["proxied", "direct"]
+        );
+        let both = ConnectionFilter {
+            query: "example",
+            hide_direct: true,
+        };
+        assert_eq!(pick(ConnectionView::Active, both), ["proxied"]);
+    }
+
+    #[test]
+    fn filters_narrow_only_when_set() {
+        assert!(!ConnectionFilter::default().narrows());
+        assert!(!query(" ").narrows());
+        assert!(query("a").narrows());
+        assert!(HIDE_DIRECT.narrows());
+    }
+
+    #[test]
+    fn close_targets_leave_out_what_the_quick_filter_hides() {
+        let all = [
+            via("proxied-old", 1, "香港-01", "shadowsocks"),
+            via("direct", 2, "direct", "direct"),
+            via("proxied-new", 3, "香港-01", "vmess"),
+            closed("gone", 1, 9),
+        ];
+        assert_eq!(
+            close_targets(&all, HIDE_DIRECT),
+            CloseTargets::Matching(vec!["proxied-new".into(), "proxied-old".into()])
+        );
+    }
+
+    #[test]
+    fn close_targets_all_when_the_filter_keeps_every_open_one() {
+        let mut gone_direct = via("gone", 1, "direct", "direct");
+        gone_direct.closed_at = Some(3);
+        let all = [
+            via("a", 1, "香港-01", "shadowsocks"),
+            via("b", 2, "香港-01", "shadowsocks"),
+            gone_direct,
+        ];
+        // It hides only a closed one: every open connection still goes.
+        assert_eq!(close_targets(&all, HIDE_DIRECT), CloseTargets::All);
+        assert_eq!(close_targets(&all, query("香港")), CloseTargets::All);
+        assert_eq!(close_targets([], HIDE_DIRECT), CloseTargets::All);
     }
 
     #[test]

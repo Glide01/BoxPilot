@@ -1,18 +1,23 @@
-//! 连接页,日志浏览器式布局(与日志页一致):控制行(搜索框 + Active/Closed
-//! 切换 + 排序:下拉选排序键 Newest/Traffic/Speed/Host/Rule/Chain,旁边的
-//! 按钮切换升序 / 降序;换键时回到该键的自然方向,数值与时间大的在前、文字
-//! A→Z);页头一行汇总(打开数、实时速率、总流量)和 Close all(筛选框有内容
-//! 时变成「Close N matching」,只关闭筛选匹配的打开连接:在一个后台任务里
-//! 逐个 `close`);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
+//! 连接页,日志浏览器式布局(与日志页一致):控制行(搜索框 + Hide direct
+//! 快速过滤开关(隐藏直连 / 拦截 / DNS 连接,规则见
+//! `connections_view::is_direct_or_dns`;开关记在设置
+//! `connections_hide_direct` 里)+ Active/Closed 切换 + 排序:下拉选排序键
+//! Newest/Traffic/Speed/Host/Rule/Chain,旁边的按钮切换升序 / 降序;换键时
+//! 回到该键的自然方向,数值与时间大的在前、文字 A→Z;控制行不折行,窄时
+//! 搜索框让位);页头一行汇总(打开数 —— 有过滤时换成「N of M shown」、实时
+//! 速率、总流量)和 Close all(过滤让一部分打开的连接不显示时变成
+//! 「Close N matching」,只关闭过滤后剩下的打开连接:在一个后台任务里逐个
+//! `close`);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
 //! 淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
 //! (组 → 节点)、实时速率与累计流量(各两行:上行在上、下行在下;已关闭的
 //! 连接没有速率)、存活时长、关闭按钮(仅打开的连接)。网络/协议、入站、
 //! 规则在详情面板里。
 //!
 //! 列表用 gpui 的 `uniform_list` 虚拟化:只渲染可见行,上千条已关闭 + 大量
-//! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)按
-//! `(revision, view, sort, direction, query)` 缓存,只有数据或条件变了才重算;行内容在
-//! 渲染时按 id 从 `ConnectionTable` 现取,时长随渲染时刻走。
+//! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)和 Close all 的
+//! 目标按 `(revision, view, sort, direction, query, hide_direct)` 缓存,只有
+//! 数据或条件变了才重算;行内容在渲染时按 id 从 `ConnectionTable` 现取,
+//! 时长随渲染时刻走。
 //! 过滤 / 排序 / 显示字符串都是 `core::connections_view` 的纯函数。
 //!
 //! Clicking a row opens the details panel (`connection_details`) over the
@@ -30,7 +35,8 @@ use crate::core::bytefmt::{format_bytes, format_speed};
 use crate::core::connection_details::{step_selection, Step};
 use crate::core::connections_view::{
     chain_label, close_targets, connection_age_ms, format_elapsed, host_label, process_name,
-    select_connections, summarize, CloseTargets, ConnectionSort, ConnectionView, SortDirection,
+    select_connections, summarize, CloseTargets, ConnectionFilter, ConnectionSort, ConnectionView,
+    SortDirection,
 };
 use crate::core::singbox_api::Connection;
 use crate::core::timefmt::format_clock_ms;
@@ -40,8 +46,8 @@ use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
     choice_select, connect_button, empty_state, form_input, full_text_tooltip, page_header,
-    page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Segment,
-    TextLabel,
+    page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, IconLabel,
+    Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -50,7 +56,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
     scroll::ScrollableElement,
     theme::Theme,
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt,
 };
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -88,9 +94,21 @@ struct RowsKey {
     sort: ConnectionSort,
     direction: SortDirection,
     query: String,
+    hide_direct: bool,
+}
+
+impl RowsKey {
+    fn filter(&self) -> ConnectionFilter<'_> {
+        ConnectionFilter {
+            query: &self.query,
+            hide_direct: self.hide_direct,
+        }
+    }
 }
 
 pub struct ConnectionsPage {
+    /// Holds the remembered quick filter (`connections_hide_direct`).
+    app_state: Entity<AppState>,
     connections: Entity<Connections>,
     filter_input: Entity<InputState>,
     view: ConnectionView,
@@ -149,6 +167,7 @@ impl ConnectionsPage {
         .detach();
 
         Self {
+            app_state,
             connections,
             filter_input,
             view: ConnectionView::default(),
@@ -263,8 +282,18 @@ impl ConnectionsPage {
         cx.notify();
     }
 
+    /// Flip the quick filter ("Hide direct"), remembered in the settings.
+    fn toggle_hide_direct(&mut self, cx: &mut Context<Self>) {
+        let hide = !self.app_state.read(cx).settings.connections_hide_direct;
+        self.app_state
+            .update(cx, |state, cx| state.set_connections_hide_direct(hide, cx));
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
+    }
+
     /// Recompute the row order only when the data or the view settings moved.
     fn refresh_rows(&mut self, cx: &App) {
+        let hide_direct = self.app_state.read(cx).settings.connections_hide_direct;
         let state = self.connections.read(cx);
         let key = RowsKey {
             revision: state.revision,
@@ -272,6 +301,7 @@ impl ConnectionsPage {
             sort: self.sort,
             direction: self.direction,
             query: self.filter_input.read(cx).value().to_string(),
+            hide_direct,
         };
         if self.rows_key.as_ref() == Some(&key) {
             return;
@@ -279,7 +309,7 @@ impl ConnectionsPage {
         let ids = select_connections(
             state.table.iter(),
             key.view,
-            &key.query,
+            key.filter(),
             key.sort,
             key.direction,
         )
@@ -287,7 +317,7 @@ impl ConnectionsPage {
         .map(|c| c.id.clone())
         .collect();
         self.rows = Rc::new(ids);
-        self.close_targets = Rc::new(close_targets(state.table.iter(), &key.query));
+        self.close_targets = Rc::new(close_targets(state.table.iter(), key.filter()));
         self.rows_key = Some(key);
         // Remember where the selection is while it is listed (kept when it
         // is not: Up / Down continue from there).
@@ -624,10 +654,11 @@ impl Render for ConnectionsPage {
         let state = connections.read(cx);
         let live = state.live;
         let summary = summarize(state.table.iter());
-        let query_empty = self
+        let narrowed = self
             .rows_key
             .as_ref()
-            .is_none_or(|k| k.query.trim().is_empty());
+            .is_some_and(|key| key.filter().narrows());
+        let hide_direct = self.rows_key.as_ref().is_some_and(|key| key.hide_direct);
         let theme = cx.theme();
         let t = &s().connections;
 
@@ -636,10 +667,20 @@ impl Render for ConnectionsPage {
         // Close all stay out of the way of the empty state.
         let has_any = live && summary.open + summary.closed > 0;
 
-        // Live totals under the title: open count, current rates, and the
-        // traffic so far — three groups set apart by space. On a narrow
-        // window the totals give way first, then the rates; the count
-        // stays whole.
+        // Live totals under the title: open count (how many of the view's
+        // rows the filter shows, while it narrows them), current rates,
+        // and the traffic so far — three groups set apart by space. On a
+        // narrow window the totals give way first, then the rates; the
+        // count stays whole.
+        let count = if narrowed {
+            let in_view = match self.view {
+                ConnectionView::Active => summary.open,
+                ConnectionView::Closed => summary.closed,
+            };
+            (t.shown_of)(self.rows.len(), in_view)
+        } else {
+            (t.open_count)(summary.open as u64)
+        };
         let summary_items = div()
             .h_flex()
             .items_center()
@@ -647,12 +688,7 @@ impl Render for ConnectionsPage {
             .min_w_0()
             .text_sm()
             .text_color(theme.muted_foreground)
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .child((t.open_count)(summary.open as u64)),
-            )
+            .child(div().flex_shrink_0().whitespace_nowrap().child(count))
             .child(clipped(format!(
                 "↑ {}  ↓ {}",
                 format_speed(summary.up_rate),
@@ -691,9 +727,11 @@ impl Render for ConnectionsPage {
                 })
         };
 
+        // One line, even beside the expanded sidebar in the narrowest
+        // window: the search box gives way (to its minimum) rather than
+        // the switches wrapping under it.
         let mut controls = div()
             .h_flex()
-            .flex_wrap()
             .items_center()
             .gap_2()
             .w_full()
@@ -706,6 +744,23 @@ impl Render for ConnectionsPage {
             ))
             // Switches to the right, under the header's actions.
             .child(div().flex_1());
+        let hide_page = page.clone();
+        controls = controls.child(
+            div().flex_none().child(
+                Button::new("connections-hide-direct")
+                    .outline()
+                    .small()
+                    .selected(hide_direct)
+                    .toggled(hide_direct)
+                    .icon_label(IconName::EyeOff, t.hide_direct)
+                    .tooltip(t.hide_direct_hint)
+                    .on_click(move |_, _, cx| {
+                        hide_page
+                            .update(cx, |this, cx| this.toggle_hide_direct(cx))
+                            .ok();
+                    }),
+            ),
+        );
         const VIEWS: [ConnectionView; 2] = [ConnectionView::Active, ConnectionView::Closed];
         let view_page = page.clone();
         controls = controls.child(segmented(
@@ -766,13 +821,13 @@ impl Render for ConnectionsPage {
                 .action(connect_button("connections-connect"));
             (Some(empty), None)
         } else if self.rows.is_empty() {
-            let (title, hint) = match (query_empty, self.view) {
+            let (title, hint) = match (narrowed, self.view) {
                 // Nothing at all yet (the toolbar is hidden): whatever the
                 // view and filter left from before, wait for the first one.
                 _ if !has_any => (t.no_active_title, t.no_active_hint),
-                (false, _) => (t.no_match_title, t.no_match_hint),
-                (true, ConnectionView::Active) => (t.no_active_title, t.no_active_hint),
-                (true, ConnectionView::Closed) => (t.no_closed_title, t.no_closed_hint),
+                (true, _) => (t.no_match_title, t.no_match_hint),
+                (false, ConnectionView::Active) => (t.no_active_title, t.no_active_hint),
+                (false, ConnectionView::Closed) => (t.no_closed_title, t.no_closed_hint),
             };
             let empty = empty_state(theme, IconName::Network, title, hint);
             (Some(empty), None)

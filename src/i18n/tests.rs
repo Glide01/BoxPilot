@@ -109,6 +109,8 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.connections.rule,
         t.connections.sort_ascending,
         t.connections.sort_descending,
+        t.connections.hide_direct,
+        t.connections.hide_direct_hint,
         t.connection_details.close_panel,
         t.connection_details.gone_title,
         t.connection_details.gone_hint,
@@ -281,6 +283,8 @@ fn formatted_messages_fill_in_their_values() {
 
     assert_eq!((EN.connections.close_matching)(3), "Close 3 matching");
     assert_eq!((ZH_CN.connections.close_matching)(3), "关闭 3 个匹配项");
+    assert_eq!((EN.connections.shown_of)(3, 10), "3 of 10 shown");
+    assert_eq!((ZH_CN.connections.shown_of)(3, 10), "显示 3 / 10");
 
     assert_eq!((EN.logs.count_of)(3, 10), "3 of 10");
     assert_eq!((ZH_CN.logs.count_of)(3, 10), "3 / 10");

@@ -362,6 +362,11 @@ pub struct Connections {
     pub filter_placeholder: &'static str,
     /// "3 open" — the rest of the summary line is rates and totals.
     pub open_count: FmtN,
+    /// In its place while a filter narrows the list: "3 of 10 shown".
+    pub shown_of: fn(usize, usize) -> String,
+    /// The quick filter's toggle, and its tooltip saying what it hides.
+    pub hide_direct: &'static str,
+    pub hide_direct_hint: &'static str,
     pub total: &'static str,
     /// The view choices; the segmented control adds each count.
     pub active_tab: &'static str,
