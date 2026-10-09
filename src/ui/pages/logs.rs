@@ -26,8 +26,8 @@ use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, page_header, page_layout, row_hover_bg, segmented,
-    tag_badge, toolbar_search, warn_orange, Segment, TextLabel,
+    connect_button, control_input, empty_state, page_header, page_layout, row_hover_bg, segmented,
+    tag_badge, toolbar_search, warn_orange, Control, ControlSize, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -391,7 +391,7 @@ fn detail_card(entry: &LogEntry, page: &WeakEntity<LogsPage>, theme: &Theme) -> 
                 .child(
                     Button::new("log-copy-line")
                         .ghost()
-                        .xsmall()
+                        .icon_control(ControlSize::Mini)
                         .icon(IconName::Copy)
                         .tooltip(s().common.copy)
                         .on_click(move |_, _, cx| copy_to_clipboard(text.clone(), cx)),
@@ -399,7 +399,7 @@ fn detail_card(entry: &LogEntry, page: &WeakEntity<LogsPage>, theme: &Theme) -> 
                 .child(
                     Button::new("log-close-line")
                         .ghost()
-                        .xsmall()
+                        .icon_control(ControlSize::Mini)
                         .icon(IconName::Close)
                         .tooltip(s().logs.close_line)
                         .on_click(move |_, _, cx| {
@@ -468,17 +468,20 @@ impl Render for LogsPage {
             .gap_2()
             .w_full()
             .child(toolbar_search(
-                form_input(&self.search).cleanable(true).prefix(
-                    Icon::new(IconName::Search)
-                        .small()
-                        .text_color(theme.muted_foreground),
-                ),
+                control_input(&self.search, ControlSize::Regular)
+                    .cleanable(true)
+                    .prefix(
+                        Icon::new(IconName::Search)
+                            .small()
+                            .text_color(theme.muted_foreground),
+                    ),
             ))
             // Switches to the right, under the header's actions.
             .child(div().flex_1())
             .child(segmented(
                 theme,
                 "log-levels",
+                ControlSize::Regular,
                 levels,
                 LEVEL_CHOICES
                     .iter()
@@ -492,7 +495,7 @@ impl Render for LogsPage {
             .action(
                 Button::new("logs-copy")
                     .outline()
-                    .small()
+                    .icon_control(ControlSize::Regular)
                     .icon(IconName::Copy)
                     .tooltip(t.copy_shown)
                     .disabled(self.rows.is_empty())
@@ -506,7 +509,7 @@ impl Render for LogsPage {
             .action(
                 Button::new("logs-clear")
                     .outline()
-                    .small()
+                    .control(ControlSize::Regular)
                     .text_label(t.clear)
                     .on_click(move |_, _, cx| {
                         app_state_entity.update(cx, |state, cx| state.clear_logs(cx));

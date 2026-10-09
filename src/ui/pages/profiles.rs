@@ -16,8 +16,8 @@ use crate::ui::toast;
 use crate::ui::widgets::{
     choice_select, dialog_button, empty_state, empty_state_button, form_button, form_input,
     freshness_button, full_text_tooltip, grouped_card, minute_ticker, page_header, page_layout,
-    profile_source_line, row_hover_bg, section_heading, setting_row, usage_meter, IconLabel,
-    TextLabel, CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
+    profile_source_line, row_hover_bg, section_heading, segmented, setting_row, usage_meter,
+    Control, ControlSize, IconLabel, Segment, TextLabel, CONTROL_LINE_HEIGHT, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -26,8 +26,7 @@ use gpui_component::{
     input::InputState,
     scroll::ScrollableElement,
     switch::Switch,
-    tab::TabBar,
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
 };
 use std::time::SystemTime;
 
@@ -64,10 +63,7 @@ impl ProfilesPage {
         cx: &mut App,
     ) {
         let editing_id = profile.as_ref().map(|p| p.id.clone());
-        let delete_name = profile
-            .as_ref()
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
+        let delete_name = profile.as_ref().map(|p| p.name.clone()).unwrap_or_default();
         // 草稿模型(core/profile_draft)播种字段;Add 默认 Remote,Edit 锁定原类型。
         let draft = ProfileDraft::from_profile(profile.as_ref());
         let t = s();
@@ -169,18 +165,21 @@ impl ProfilesPage {
                 let kind_cell = kind_cell.clone();
                 // 包一层 h_flex:分段控件本身无显式宽度,直接放进外层 v_flex 会被
                 // 拉伸成整行;放进 row 里则按内容收窄并左对齐。
-                div().h_flex().child(
-                    TabBar::new("profile-kind")
-                        .segmented()
-                        .selected_index(kind)
-                        .on_click(move |ix: &usize, window, cx| {
-                            let ix = *ix;
-                            kind_cell.update(cx, |k, _| *k = ix);
-                            // builder 每帧重跑,refresh 强制重渲以切换下方字段。
-                            window.refresh();
-                        })
-                        .children(vec![t.profiles.kind_subscription, t.profiles.kind_local]),
-                )
+                div().h_flex().child(segmented(
+                    theme,
+                    "profile-kind",
+                    ControlSize::Field,
+                    vec![
+                        Segment::new(t.profiles.kind_subscription),
+                        Segment::new(t.profiles.kind_local),
+                    ],
+                    Some(kind),
+                    move |ix, window, cx| {
+                        kind_cell.update(cx, |k, _| *k = ix);
+                        // builder 每帧重跑,refresh 强制重渲以切换下方字段。
+                        window.refresh();
+                    },
+                ))
             });
 
             let name_field = field(
@@ -264,11 +263,8 @@ impl ProfilesPage {
                                             });
                                             // 名称留空则用文件名兜底。
                                             if let Some(stem) = stem {
-                                                let empty = name_input
-                                                    .read(cx)
-                                                    .value()
-                                                    .trim()
-                                                    .is_empty();
+                                                let empty =
+                                                    name_input.read(cx).value().trim().is_empty();
                                                 if empty {
                                                     name_input.update(cx, |st, cx| {
                                                         st.set_value(stem, window, cx)
@@ -288,7 +284,11 @@ impl ProfilesPage {
                     .h_flex()
                     .gap_2()
                     .w_full()
-                    .child(div().flex_1().child(form_input(&path_input).cleanable(true)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(form_input(&path_input).cleanable(true)),
+                    )
                     .child(choose_file)
                     .into_any_element(),
             );
@@ -409,12 +409,14 @@ impl ProfilesPage {
         // the name's line, not on the whole row.
         let radio = div()
             .flex_none()
-            .mt(px((CONTROL_LINE_HEIGHT - 18.) / 2.))
+            .mt((CONTROL_LINE_HEIGHT - px(18.)) / 2.)
             .size(px(18.))
             .rounded_full()
             .map(|this| {
                 if is_active {
-                    this.border(px(5.)).border_color(primary).bg(theme.background)
+                    this.border(px(5.))
+                        .border_color(primary)
+                        .bg(theme.background)
                 } else {
                     this.border(px(1.5)).border_color(theme.input)
                 }
@@ -427,7 +429,7 @@ impl ProfilesPage {
             .h_flex()
             .items_center()
             .gap_2()
-            .h(px(CONTROL_LINE_HEIGHT))
+            .h(CONTROL_LINE_HEIGHT)
             .child(full_text_tooltip(
                 div()
                     .flex_1()
@@ -468,7 +470,7 @@ impl ProfilesPage {
                     .child(
                         Button::new(("profile-edit", ix))
                             .ghost()
-                            .small()
+                            .icon_control(ControlSize::Inline)
                             .icon(Icon::default().path("icons/pencil.svg"))
                             .tooltip(t.profiles.edit_title)
                             .on_click(move |_, window, cx| {
@@ -588,7 +590,7 @@ impl Render for ProfilesPage {
             page_header(theme, ActivePage::Profiles).action(
                 Button::new("profile-add")
                     .primary()
-                    .small()
+                    .control(ControlSize::Regular)
                     .icon_label(IconName::Plus, s().profiles.add)
                     .on_click(add),
             ),

@@ -23,7 +23,8 @@ use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
 use crate::ui::toast;
 use crate::ui::widgets::{
-    dialog_button, empty_state, meta_row, page_header, page_layout, status_label, TextLabel,
+    dialog_button, empty_state, meta_row, page_header, page_layout, status_label, Control,
+    ControlSize, TextLabel,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -33,7 +34,7 @@ use gpui_component::{
     progress::Progress,
     scroll::ScrollableElement,
     theme::Theme,
-    ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, IconName, StyledExt, WindowExt,
 };
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -236,7 +237,7 @@ fn overview_card(
         let url = status.auth_url.clone();
         Button::new(id(ei, "login"))
             .primary()
-            .small()
+            .control(ControlSize::Regular)
             .text_label(s().tailscale.log_in)
             .tooltip(s().tailscale.log_in_tooltip)
             .on_click(move |_, _, cx| cx.open_url(&url))
@@ -249,7 +250,7 @@ fn overview_card(
         let busy = state.is_busy(&TailscaleAction::Logout { tag: tag.clone() });
         Button::new(id(ei, "logout"))
             .outline()
-            .small()
+            .control(ControlSize::Regular)
             .text_label(s().tailscale.log_out)
             .loading(busy)
             .disabled(busy)
@@ -369,7 +370,7 @@ fn exit_node_card(
     let has_current = current.is_some();
     let picker = Button::new(id(ei, "exit-node"))
         .outline()
-        .small()
+        .control(ControlSize::Regular)
         .text_label(
             current
                 .clone()
@@ -419,14 +420,14 @@ fn ping_card(ei: usize, ping: &PingSession, entity: &Entity<TailscaleState>, the
         let entity = entity.clone();
         Button::new(id(ei, "ping-stop"))
             .outline()
-            .small()
+            .control(ControlSize::Regular)
             .text_label(s().common.stop)
             .on_click(move |_, _, cx| entity.update(cx, |state, cx| state.stop_ping(cx)))
     } else {
         let entity = entity.clone();
         Button::new(id(ei, "ping-close"))
             .outline()
-            .small()
+            .control(ControlSize::Regular)
             .text_label(s().common.close)
             .on_click(move |_, _, cx| entity.update(cx, |state, cx| state.dismiss_ping(cx)))
     };
@@ -508,7 +509,7 @@ fn taildrop_card(
         let busy = state.is_busy(&TailscaleAction::MarkRead { tag: tag.clone() });
         Button::new(id(ei, "mark-read"))
             .outline()
-            .small()
+            .control(ControlSize::Regular)
             .text_label(s().tailscale.mark_read)
             .loading(busy)
             .disabled(busy)
@@ -589,7 +590,7 @@ fn receiving_row(
         let (tag, sender_id, name) = (tag.to_string(), file.sender_id.clone(), file.name.clone());
         Button::new(id(ei, format!("recv-cancel-{}", i)))
             .ghost()
-            .small()
+            .control(ControlSize::Inline)
             .text_label(s().common.cancel)
             .loading(busy)
             .disabled(busy)
@@ -655,7 +656,7 @@ fn file_row(
         let (tag, name) = (tag.to_string(), file.name.clone());
         Button::new(id(ei, format!("file-save-{}", i)))
             .outline()
-            .small()
+            .control(ControlSize::Inline)
             .text_label(s().common.save_as)
             .loading(downloading)
             .disabled(downloading)
@@ -668,7 +669,7 @@ fn file_row(
         let (tag, name) = (tag.to_string(), file.name.clone());
         Button::new(id(ei, format!("file-delete-{}", i)))
             .ghost()
-            .small()
+            .control(ControlSize::Inline)
             .text_label(s().common.delete)
             .loading(deleting)
             .disabled(deleting || downloading)
@@ -805,7 +806,7 @@ fn certificate_card(
                 .child(
                     Button::new(id(ei, format!("cert-{}", i)))
                         .outline()
-                        .small()
+                        .control(ControlSize::Inline)
                         .text_label(s().tailscale.get_certificate)
                         .loading(busy)
                         .disabled(busy)
@@ -1041,7 +1042,7 @@ fn peer_row(
         let name = name.clone();
         Button::new(id(ei, format!("peer-ping-{}", key)))
             .ghost()
-            .small()
+            .control(ControlSize::Inline)
             .text_label(s().tailscale.ping)
             .on_click(move |_, _, cx| {
                 entity.update(cx, |state, cx| {

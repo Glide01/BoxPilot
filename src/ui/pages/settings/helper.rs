@@ -11,7 +11,7 @@ use crate::core::privileged_helper::macos_status::HelperStatus;
 use crate::core::privileged_helper::{process_is_elevated, HELPER_INSTALLED_BY_APP};
 use crate::i18n::s;
 use crate::state::{AppState, HelperChange};
-use crate::ui::widgets::{setting_row, IconLabel, TextLabel};
+use crate::ui::widgets::{setting_row, Control, ControlSize, IconLabel, TextLabel};
 use crate::ui::RootView;
 use gpui::{
     div, prelude::FluentBuilder, AnyElement, Context, Entity, IntoElement, ParentElement,
@@ -20,7 +20,7 @@ use gpui::{
 use gpui_component::{
     button::{Button, ButtonVariants},
     spinner::Spinner,
-    ActiveTheme, Disableable, Sizable, StyledExt,
+    ActiveTheme, Disableable, StyledExt,
 };
 
 /// This slot's rows, in display order; empty = nothing to show.
@@ -60,7 +60,7 @@ pub(super) fn rows(
 
     let button = |id: &'static str, label: &'static str, busy: bool| {
         Button::new(id)
-            .small()
+            .control(ControlSize::Regular)
             .map(|button| {
                 if busy {
                     button.icon_label(Spinner::new(), label)

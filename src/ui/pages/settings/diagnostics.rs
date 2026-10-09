@@ -6,10 +6,10 @@ use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::{
     config_viewer,
-    widgets::{setting_row, TextLabel},
+    widgets::{setting_row, Control, ControlSize, TextLabel},
 };
 use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
-use gpui_component::{button::Button, ActiveTheme, Sizable};
+use gpui_component::{button::Button, ActiveTheme};
 
 /// This slot's rows, in display order; empty = nothing to show.
 pub(super) fn rows(
@@ -26,7 +26,7 @@ pub(super) fn rows(
     .child(
         Button::new("view-running-config")
             .outline()
-            .small()
+            .control(ControlSize::Regular)
             .text_label(s().common.view)
             .on_click(move |_, window, cx| config_viewer::open(app_state.clone(), window, cx)),
     )

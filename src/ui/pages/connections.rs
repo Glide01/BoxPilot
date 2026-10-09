@@ -74,9 +74,9 @@ use crate::state::{AppState, Connections};
 use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    choice_select, connect_button, empty_state, form_input, full_text_tooltip, may_truncate,
+    choice_select, connect_button, control_input, empty_state, full_text_tooltip, may_truncate,
     page_header, page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange,
-    IconLabel, Segment, TextLabel,
+    Control, ControlSize, IconLabel, Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -862,7 +862,7 @@ fn connection_row(
         slot.child(
             Button::new(SharedString::from(format!("conn-close-{}", connection.id)))
                 .ghost()
-                .xsmall()
+                .icon_control(ControlSize::Mini)
                 .icon(IconName::Close)
                 .tooltip(s().connections.close_connection)
                 .on_click(move |_, _, cx| {
@@ -1201,7 +1201,7 @@ impl Render for ConnectionsPage {
             };
             Button::new("connections-close-all")
                 .outline()
-                .small()
+                .control(ControlSize::Regular)
                 .text_label(label)
                 .disabled(none)
                 .on_click(move |_, _, cx| {
@@ -1221,11 +1221,13 @@ impl Render for ConnectionsPage {
             .gap_2()
             .w_full()
             .child(toolbar_search(
-                form_input(&self.filter_input).cleanable(true).prefix(
-                    Icon::new(IconName::Search)
-                        .small()
-                        .text_color(theme.muted_foreground),
-                ),
+                control_input(&self.filter_input, ControlSize::Regular)
+                    .cleanable(true)
+                    .prefix(
+                        Icon::new(IconName::Search)
+                            .small()
+                            .text_color(theme.muted_foreground),
+                    ),
             ))
             // Switches to the right, under the header's actions.
             .child(div().flex_1());
@@ -1234,7 +1236,7 @@ impl Render for ConnectionsPage {
             div().flex_none().child(
                 Button::new("connections-hide-direct")
                     .outline()
-                    .small()
+                    .control(ControlSize::Regular)
                     .selected(hide_direct)
                     .toggled(hide_direct)
                     .icon_label(IconName::EyeOff, t.hide_direct)
@@ -1251,6 +1253,7 @@ impl Render for ConnectionsPage {
         controls = controls.child(segmented(
             theme,
             "connections-view",
+            ControlSize::Regular,
             vec![
                 Segment::new(t.active_tab).count(listed.open),
                 Segment::new(t.closed_tab).count(listed.closed),
@@ -1274,7 +1277,7 @@ impl Render for ConnectionsPage {
                 .h_flex()
                 .items_center()
                 .gap_0p5()
-                .h(px(28.))
+                .h(ControlSize::Regular.height())
                 .pl_2p5()
                 .pr_0p5()
                 .rounded(theme.radius)
@@ -1283,7 +1286,7 @@ impl Render for ConnectionsPage {
                 .child(
                     Button::new("connections-sort-direction")
                         .ghost()
-                        .xsmall()
+                        .icon_control(ControlSize::Inline)
                         .icon(Icon::empty().path(direction_icon))
                         .tooltip(direction_tip)
                         .on_click(move |_, _, cx| {
@@ -1301,7 +1304,7 @@ impl Render for ConnectionsPage {
             div().flex_none().child(
                 Button::new("connections-columns")
                     .outline()
-                    .small()
+                    .icon_control(ControlSize::Regular)
                     .icon(Icon::empty().path("icons/columns-3.svg"))
                     .tooltip(t.columns)
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
@@ -1316,7 +1319,7 @@ impl Render for ConnectionsPage {
             let paused = frozen.is_some();
             let pause = Button::new("connections-pause")
                 .outline()
-                .small()
+                .control(ControlSize::Regular)
                 .selected(paused)
                 .toggled(paused)
                 .map(|button| {

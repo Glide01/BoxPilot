@@ -28,8 +28,8 @@ use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    connect_button, empty_state, form_input, full_text_tooltip, page_header, page_layout,
-    segmented, text_centered, toolbar_search, IconLabel, Segment,
+    connect_button, control_input, empty_state, full_text_tooltip, page_header, page_layout,
+    segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -273,7 +273,7 @@ impl GroupsPage {
             let name = group.name.clone();
             Button::new(("group-test", gi))
                 .ghost()
-                .small()
+                .icon_control(ControlSize::Inline)
                 .map(|button| {
                     if is_testing {
                         button.icon(Spinner::new())
@@ -629,11 +629,13 @@ impl Render for GroupsPage {
                 .gap_2()
                 .w_full()
                 .child(toolbar_search(
-                    form_input(&self.search).cleanable(true).prefix(
-                        Icon::new(IconName::Search)
-                            .small()
-                            .text_color(theme.muted_foreground),
-                    ),
+                    control_input(&self.search, ControlSize::Regular)
+                        .cleanable(true)
+                        .prefix(
+                            Icon::new(IconName::Search)
+                                .small()
+                                .text_color(theme.muted_foreground),
+                        ),
                 ))
                 // Sorting to the right, under the header's actions.
                 .child(div().flex_1())
@@ -648,6 +650,7 @@ impl Render for GroupsPage {
             toolbar = toolbar.child(segmented(
                 theme,
                 "groups-sort",
+                ControlSize::Regular,
                 vec![Segment::new(t.sort_default), Segment::new(t.sort_delay)],
                 SORTS.iter().position(|sort| *sort == self.sort),
                 move |ix, _, cx| {
@@ -663,7 +666,7 @@ impl Render for GroupsPage {
             page_head = page_head.action(
                 Button::new("groups-test-all")
                     .outline()
-                    .small()
+                    .control(ControlSize::Regular)
                     .map(|button| {
                         if testing_all {
                             button.icon_label(Spinner::new(), t.test_all)

@@ -13,9 +13,9 @@ use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    choice_select_with, connect_button, empty_state, form_column, grouped_card, page_header,
-    page_layout, plain_select, section_heading, setting_row, small_input, stat, status_label,
-    text_centered, TextLabel,
+    choice_select_with, connect_button, control_input, empty_state, form_column, grouped_card,
+    page_header, page_layout, plain_select, section_heading, segmented, setting_row, stat,
+    status_label, text_centered, Control, ControlSize, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -28,7 +28,6 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectItem, SelectState},
     spinner::Spinner,
     switch::Switch,
-    tab::{Tab, TabBar},
     theme::Theme,
     ActiveTheme, Disableable, Icon, IndexPath, Sizable, StyledExt,
 };
@@ -208,7 +207,7 @@ impl ToolsPage {
         cx: &mut Context<Self>,
     ) -> Button {
         let t = s();
-        let button = Button::new(id).small();
+        let button = Button::new(id).control(ControlSize::Regular);
         if running {
             button
                 .outline()
@@ -256,6 +255,7 @@ impl ToolsPage {
         );
         let serial = self.serial;
         let http3 = self.http3;
+        let page_mode = cx.entity().downgrade();
         let theme = cx.theme();
 
         let options = grouped_card(
@@ -271,19 +271,23 @@ impl ToolsPage {
                     ))
                     .into_any_element(),
                 setting_row(theme, t.tools.mode, None)
-                    .child(
-                        TabBar::new("nq-mode")
-                            .segmented()
-                            .selected_index(if serial { 1 } else { 0 })
-                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                                this.serial = *ix == 1;
-                                cx.notify();
-                            }))
-                            .children(
-                                [t.tools.parallel, t.tools.serial]
-                                    .map(|label| Tab::new().label(label).disabled(running)),
-                            ),
-                    )
+                    .child(segmented(
+                        theme,
+                        "nq-mode",
+                        ControlSize::Regular,
+                        [t.tools.parallel, t.tools.serial]
+                            .map(|label| Segment::new(label).disabled(running))
+                            .into(),
+                        Some(if serial { 1 } else { 0 }),
+                        move |ix, _, cx| {
+                            page_mode
+                                .update(cx, |this, cx| {
+                                    this.serial = ix == 1;
+                                    cx.notify();
+                                })
+                                .ok();
+                        },
+                    ))
                     .into_any_element(),
                 setting_row(theme, t.tools.max_runtime, None)
                     .child(runtime)
@@ -585,7 +589,7 @@ fn text_field(input: &Entity<InputState>, disabled: bool) -> Div {
     div()
         .w(px(FIELD_WIDTH))
         .on_mouse_down_out(|_, window, cx| window.blur(cx))
-        .child(small_input(input).disabled(disabled))
+        .child(control_input(input, ControlSize::Regular).disabled(disabled))
 }
 
 fn hint(theme: &Theme, text: &'static str) -> Div {

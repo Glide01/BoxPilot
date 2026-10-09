@@ -15,7 +15,7 @@ use crate::core::privileged_helper::{
 };
 use crate::i18n::s;
 use crate::state::AppState;
-use crate::ui::widgets::{status_label, IconLabel};
+use crate::ui::widgets::{status_label, Control, ControlSize, IconLabel};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -389,7 +389,7 @@ impl ConfigViewer {
                     .child(
                         Button::new("config-search")
                             .ghost()
-                            .small()
+                            .control(ControlSize::Regular)
                             .icon_label(IconName::Search, t.common.search)
                             // The keys come from the editor's own binding:
                             // ⌘F on macOS, Ctrl+F elsewhere.
@@ -402,7 +402,7 @@ impl ConfigViewer {
                     .child(
                         Button::new("config-open-folder")
                             .outline()
-                            .small()
+                            .control(ControlSize::Regular)
                             .icon_label(IconName::FolderOpen, t.config_viewer.open_folder)
                             .tooltip(t.config_viewer.open_folder_tooltip)
                             .on_click(move |_, _, cx| cx.reveal_path(&file)),
@@ -410,7 +410,7 @@ impl ConfigViewer {
                     .child(
                         Button::new("config-copy")
                             .primary()
-                            .small()
+                            .control(ControlSize::Regular)
                             .min_w(px(84.))
                             .when_else(
                                 self.copied,

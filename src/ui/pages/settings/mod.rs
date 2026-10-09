@@ -20,8 +20,8 @@ use crate::i18n::s;
 use crate::state::AppState;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    form_column, grouped_card, page_header, page_layout, section_heading, setting_row, small_input,
-    TextLabel,
+    control_input, form_column, grouped_card, page_header, page_layout, section_heading,
+    setting_row, Control, ControlSize, TextLabel,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -29,7 +29,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
     scroll::ScrollableElement,
     switch::Switch,
-    ActiveTheme, Disableable, Sizable, StyledExt,
+    ActiveTheme, Disableable, StyledExt,
 };
 
 pub struct SettingsPage {
@@ -44,7 +44,8 @@ impl SettingsPage {
         cx.observe(&process, |_, _, cx| cx.notify()).detach();
 
         let proxy_port = app_state.read(cx).settings.proxy_port;
-        let port_input = Self::port_field(proxy_port, PROXY_PORT, AppState::set_proxy_port, window, cx);
+        let port_input =
+            Self::port_field(proxy_port, PROXY_PORT, AppState::set_proxy_port, window, cx);
 
         Self {
             app_state,
@@ -137,7 +138,7 @@ impl Render for SettingsPage {
                 div()
                     .w(px(96.))
                     .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                    .child(small_input(&self.port_input).cleanable(false)),
+                    .child(control_input(&self.port_input, ControlSize::Regular).cleanable(false)),
             )
             .into_any_element()];
         network_rows.extend(lan_rows);
@@ -182,7 +183,7 @@ impl Render for SettingsPage {
                 .child(
                     Button::new("clear-cache")
                         .outline()
-                        .small()
+                        .control(ControlSize::Regular)
                         .text_label(t.clear_cache_action)
                         .disabled(!can_clear)
                         .on_click(move |_, _, cx| {

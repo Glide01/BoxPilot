@@ -6,7 +6,7 @@
 use super::SettingsPage;
 use crate::i18n::s;
 use crate::state::{app_state::UpdateCheck, AppState};
-use crate::ui::widgets::{setting_row, IconLabel, TextLabel};
+use crate::ui::widgets::{setting_row, Control, ControlSize, IconLabel, TextLabel};
 use gpui::{
     div, prelude::FluentBuilder, AnyElement, Context, Entity, Hsla, IntoElement, ParentElement,
     SharedString, Styled, Window,
@@ -15,7 +15,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     spinner::Spinner,
     switch::Switch,
-    ActiveTheme, Sizable, StyledExt,
+    ActiveTheme, StyledExt,
 };
 
 /// This slot's rows, in display order; empty = nothing to show.
@@ -66,7 +66,7 @@ pub(super) fn rows(
     if let Some(info) = release {
         let url = info.url.clone();
         let download = Button::new("update-download")
-            .small()
+            .control(ControlSize::Regular)
             .text_label(t.download)
             .tooltip(url.clone())
             .on_click(move |_, _, cx| cx.open_url(&url));
@@ -83,7 +83,7 @@ pub(super) fn rows(
             actions = actions.child(
                 Button::new("update-skip")
                     .outline()
-                    .small()
+                    .control(ControlSize::Regular)
                     .text_label(t.skip)
                     .on_click(move |_, _, cx| {
                         let version = version.clone();
@@ -97,7 +97,7 @@ pub(super) fn rows(
     actions = actions.child(
         Button::new("update-check-now")
             .outline()
-            .small()
+            .control(ControlSize::Regular)
             // A loading button is inert; the spinner says why.
             .map(|button| {
                 if checking {

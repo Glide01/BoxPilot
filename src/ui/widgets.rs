@@ -10,13 +10,32 @@
 //! " · ". State reads as coloured text or a small dot beside it
 //! ([`status_label`]), not as filled badges.
 //!
-//! Buttons: actions in a page header, a card header or a toolbar are all
-//! `small`. `primary` marks the one action a page or card is there for
+//! Sizes: every control (button, field, segmented control, dropdown) takes
+//! its height from where it sits, never from the component's own default,
+//! so controls side by side always line up. [`ControlSize`] has the
+//! scale:
+//!
+//! | Size      | Height | Where                                              |
+//! |-----------|--------|----------------------------------------------------|
+//! | `Mini`    | 20px   | icon buttons in a table row or a dense panel       |
+//! | `Inline`  | 24px   | controls inside a line of content (a list row, a   |
+//! |           |        | profile's name line, a group's header)             |
+//! | `Regular` | 28px   | page header actions, toolbars, card and section    |
+//! |           |        | headers, setting rows, dialog footers              |
+//! | `Field`   | 32px   | a dialog's form: its fields and the buttons and    |
+//! |           |        | switches set among them; an empty state's action   |
+//!
+//! Buttons size with [`Control::control`] (labelled) or
+//! [`Control::icon_control`] (icon only, square), fields with
+//! [`control_input`], segmented controls with [`segmented`]'s size. All
+//! but `Mini` set their text at 14px; an icon-only button's icon is 16px
+//! from `Regular` up.
+//!
+//! Buttons: `primary` marks the one action a page or card is there for
 //! (Add a profile, Start a test, Sign in); every other labelled action is
 //! `outline` (Test all, Close all, Clear). `ghost` is for icon-only buttons
 //! and for quiet actions inside list rows. An empty state's call to action
-//! is [`empty_state_button`]: primary, a touch roomier than a header
-//! button, with the same text size. A label goes on with
+//! is [`empty_state_button`]: primary, `Field` tall. A label goes on with
 //! [`TextLabel::text_label`], not `.label(..)`, so its letters sit in the
 //! middle of the button; an icon goes in front of it with
 //! [`IconLabel::icon_label`], not `.icon(..).label(..)`, and in front of
@@ -25,7 +44,7 @@
 //! Words: a label says what a control is; a hint, when one is needed at
 //! all, is one short line. No paragraphs of explanation on a page.
 //!
-//! Choices: a setting with two options is a switch or a segmented control;
+//! Choices: a setting with two options is a switch or a [`segmented`] control;
 //! one with three or more is a [`choice_select`] dropdown. A dropdown in a
 //! setting row is a [`plain_select`]: no box, the current choice and a
 //! caret, as wide as that text.
@@ -261,6 +280,85 @@ impl IconLabel for Button {
     }
 }
 
+/// How tall a control is, by the place it sits in (see the module docs).
+/// Controls in one place take one size, whatever their kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlSize {
+    /// Icon buttons in a table row or a dense panel: 20px.
+    Mini,
+    /// Inside a line of content: 24px.
+    Inline,
+    /// Page header actions, toolbars, card headers, setting rows, dialog
+    /// footers: 28px.
+    Regular,
+    /// A dialog's form fields and what sits among them: 32px.
+    Field,
+}
+
+impl ControlSize {
+    pub const fn height(self) -> Pixels {
+        px(match self {
+            ControlSize::Mini => 20.,
+            ControlSize::Inline => 24.,
+            ControlSize::Regular => 28.,
+            ControlSize::Field => 32.,
+        })
+    }
+
+    /// A labelled button's side padding.
+    fn padding_x(self) -> Pixels {
+        px(match self {
+            ControlSize::Mini => 4.,
+            ControlSize::Inline => 8.,
+            ControlSize::Regular => 10.,
+            ControlSize::Field => 12.,
+        })
+    }
+
+    /// The component size that sets a labelled control's text (and its
+    /// icon, caret and gaps): 12px text at `Mini`, 14px above it.
+    /// gpui-component's medium jumps to 16px for buttons, louder than
+    /// every label and field around them.
+    fn text_size(self) -> Size {
+        match self {
+            ControlSize::Mini => Size::XSmall,
+            _ => Size::Small,
+        }
+    }
+
+    /// The component size that sets an icon-only button's icon: 16px from
+    /// `Regular` up, where the 14px of a label's icon looks lost in the
+    /// square.
+    fn icon_size(self) -> Size {
+        match self {
+            ControlSize::Mini => Size::XSmall,
+            ControlSize::Inline => Size::Small,
+            ControlSize::Regular | ControlSize::Field => Size::Medium,
+        }
+    }
+}
+
+/// [`ControlSize`] for buttons.
+pub trait Control {
+    /// A labelled button (text, icon and text, or a dropdown with its
+    /// caret) `size` tall.
+    fn control(self, size: ControlSize) -> Self;
+    /// An icon-only button: a square `size` on a side.
+    fn icon_control(self, size: ControlSize) -> Self;
+}
+
+impl Control for Button {
+    fn control(self, size: ControlSize) -> Self {
+        self.with_size(size.text_size())
+            .h(size.height())
+            .px(size.padding_x())
+    }
+
+    fn icon_control(self, size: ControlSize) -> Self {
+        self.with_size(size.icon_size()).size(size.height())
+    }
+}
+
 /// A form page's column (Settings, Tools): the panel's full width up to
 /// [`FORM_MAX_WIDTH`], centred in it past that, inside the page's scrolled
 /// area.
@@ -309,7 +407,7 @@ impl PageHeader {
     }
 
     /// An action on the header's right, after those added before it:
-    /// `small` buttons, as every header's are.
+    /// [`ControlSize::Regular`] buttons, as every header's are.
     pub fn action(mut self, action: impl IntoElement) -> Self {
         self.actions.push(action.into_any_element());
         self
@@ -488,13 +586,12 @@ impl RenderOnce for EmptyState {
     }
 }
 
-/// An empty state's call to action, unlabelled: a primary button with a
-/// header button's text size (gpui-component's medium size jumps to 16px
-/// text, which reads louder than everything around it), given a little
-/// more room. The caller adds the label, icon and handler and passes it to
+/// An empty state's call to action, unlabelled: a primary
+/// [`ControlSize::Field`] button, a step up from a header's, with the same
+/// text size. The caller adds the label, icon and handler and passes it to
 /// [`EmptyState::action`].
 pub fn empty_state_button(id: impl Into<ElementId>) -> Button {
-    Button::new(id).primary().small().h(px(30.)).px_3()
+    Button::new(id).primary().control(ControlSize::Field)
 }
 
 /// The primary "Connect" action an empty state offers when what it lacks
@@ -523,12 +620,7 @@ pub fn setting_row(theme: &Theme, label: &'static str, description: Option<&'sta
                 .flex_1()
                 .min_w_0()
                 .gap_0p5()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.foreground)
-                        .child(label),
-                )
+                .child(div().text_sm().text_color(theme.foreground).child(label))
                 .children(description.map(|text| {
                     div()
                         .text_xs()
@@ -691,6 +783,9 @@ pub struct Segment {
     /// A count shown after the label in muted text ("Active  12"); `None`
     /// (or zero, see [`Segment::count`]) shows the label alone.
     pub count: Option<usize>,
+    /// Greyed out and closed to clicks (a choice this system can't have,
+    /// or one a running test holds).
+    pub disabled: bool,
 }
 
 impl Segment {
@@ -699,6 +794,7 @@ impl Segment {
             label: label.into(),
             tooltip: None,
             count: None,
+            disabled: false,
         }
     }
 
@@ -713,62 +809,85 @@ impl Segment {
         self.count = (count > 0).then_some(count);
         self
     }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
 }
 
-/// A compact segmented control (sort orders, views, log levels): a muted
-/// track, the selected choice raised on it. Same look as gpui-component's
-/// segmented `TabBar`, sized for toolbars, and with per-choice tooltips.
+/// The app's one segmented control (a mode, a view, a sort order, a log
+/// level): a muted track, the selected choice raised on it. `size` tall,
+/// as every control beside it ([`ControlSize`]): the choices sit 2px in
+/// from the track's edge, their text the size of a button's beside them.
 pub fn segmented(
     theme: &Theme,
     id: impl Into<ElementId>,
+    size: ControlSize,
     segments: Vec<Segment>,
     selected: Option<usize>,
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let on_select = Rc::new(on_select);
     let (fg, muted_fg, raised) = (theme.foreground, theme.muted_foreground, theme.background);
+    let inset = px(2.);
     div()
         .id(id)
         .h_flex()
         .flex_shrink_0()
         .items_center()
-        .gap_0p5()
-        .p_0p5()
+        .h(size.height())
+        .gap(inset)
+        .p(inset)
         .rounded(theme.radius)
         .bg(theme.tab_bar_segmented)
+        .map(|track| match size.text_size() {
+            Size::XSmall => track.text_xs(),
+            _ => track.text_sm(),
+        })
         .children(segments.into_iter().enumerate().map(|(ix, segment)| {
             let active = selected == Some(ix);
             let on_select = on_select.clone();
-            div()
-                .id(ix)
-                .h(px(24.))
-                .px_2p5()
-                .flex()
+            let label = segment.label.clone();
+            let text = div()
+                .h_flex()
                 .items_center()
                 .gap_1p5()
-                .rounded(theme.radius - px(2.))
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
                 .whitespace_nowrap()
-                .cursor_pointer()
+                .child(segment.label)
+                .children(
+                    segment
+                        .count
+                        .map(|count| div().text_color(muted_fg).child(count.to_string())),
+                );
+            div()
+                .id(ix)
+                .h_full()
+                .px(size.padding_x())
+                .flex()
+                .items_center()
+                .rounded(theme.radius - inset)
                 .map(|this| {
                     if active {
                         this.bg(raised).text_color(fg).shadow_xs()
+                    } else if segment.disabled {
+                        this.text_color(muted_fg.opacity(0.5))
                     } else {
-                        this.text_color(muted_fg).hover(move |s| s.text_color(fg))
+                        this.text_color(muted_fg)
+                            .cursor_pointer()
+                            .hover(move |s| s.text_color(fg))
                     }
                 })
                 .when_some(segment.tooltip, |this, tip| {
                     this.tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                 })
-                .on_click(move |_, window, cx| on_select(ix, window, cx))
-                .child(segment.label)
-                .children(segment.count.map(|count| {
-                    div()
-                        .font_weight(FontWeight::NORMAL)
-                        .text_color(muted_fg)
-                        .child(count.to_string())
-                }))
+                .when(!segment.disabled, |this| {
+                    this.on_click(move |_, window, cx| on_select(ix, window, cx))
+                })
+                .child(OnLetters {
+                    text: label,
+                    child: text.into_any_element(),
+                })
         }))
 }
 
@@ -1024,7 +1143,9 @@ pub fn capitalize_first(text: &str) -> String {
 /// otherwise leave stale.
 pub fn minute_ticker<T: 'static>(cx: &mut Context<T>) -> Task<()> {
     cx.spawn(async move |this, cx| loop {
-        cx.background_executor().timer(Duration::from_secs(60)).await;
+        cx.background_executor()
+            .timer(Duration::from_secs(60))
+            .await;
         if this.update(cx, |_, cx| cx.notify()).is_err() {
             break;
         }
@@ -1122,10 +1243,10 @@ pub fn usage_meter(
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
 }
 
-/// Height of a line that holds small buttons beside text (a profile's name
-/// with its update and edit buttons): a small button's height, so the text
-/// and the buttons share one centre line.
-pub const CONTROL_LINE_HEIGHT: f32 = 24.;
+/// Height of a line that holds [`ControlSize::Inline`] buttons beside text
+/// (a profile's name with its update and edit buttons): the buttons'
+/// height, so the text and the buttons share one centre line.
+pub const CONTROL_LINE_HEIGHT: Pixels = ControlSize::Inline.height();
 
 /// A profile's update button: how fresh it is and the action that
 /// refreshes it, one quiet control ("⟳ 25 min ago"), the same on Home and
@@ -1145,7 +1266,7 @@ pub fn freshness_button(
     let label = capitalize_first(&freshness.label);
     let button = Button::new(id)
         .ghost()
-        .small()
+        .control(ControlSize::Inline)
         .text_color(theme.muted_foreground);
     let button = match freshness.state {
         // Not `loading` / `disabled`: either stops the button tracking the
@@ -1209,50 +1330,53 @@ pub fn profile_source_line(theme: &Theme, id: impl Into<ElementId>, info: Profil
 const INPUT_LINE_HEIGHT: f32 = 20.;
 
 /// Vertical padding that fits [`INPUT_LINE_HEIGHT`] inside an input
-/// `height` tall with a 1px border.
-fn input_py(height: f32) -> Pixels {
-    px((height - 2. - INPUT_LINE_HEIGHT) / 2.)
+/// `height` tall with a 1px border (as much as fits, in a short one).
+fn input_py(height: Pixels) -> Pixels {
+    ((height - px(2. + INPUT_LINE_HEIGHT)) / 2.).max(Pixels::ZERO)
 }
 
-/// A single-line input whose text isn't clipped. gpui-component pads a
-/// medium input 8px top and bottom inside its 32px, leaving 14px for a 20px
-/// line, and clips the text to that box: Chinese characters lose their
-/// bottom edge (Latin letters mostly fit). This pads it to fit the line.
+/// A single-line input `size` tall ([`ControlSize`]): `Field` in a
+/// dialog's form ([`form_input`]), `Regular` in a toolbar or a setting
+/// row. Its text isn't clipped: gpui-component pads a medium input 8px top
+/// and bottom inside its 32px, leaving 14px for a 20px line, and clips the
+/// text to that box, so Chinese characters lose their bottom edge (Latin
+/// letters mostly fit). This pads it to fit the line.
+pub fn control_input(state: &Entity<InputState>, size: ControlSize) -> Input {
+    let component_size = match size {
+        ControlSize::Field => Size::Medium,
+        _ => Size::Small,
+    };
+    // `Styled::h`: `Input::h` sets only a multi-line input's height.
+    Styled::h(Input::new(state).with_size(component_size), size.height())
+        .py(input_py(size.height()))
+}
+
+/// A field in a dialog's form: [`control_input`] at [`ControlSize::Field`].
 pub fn form_input(state: &Entity<InputState>) -> Input {
-    Input::new(state).py(input_py(32.))
+    control_input(state, ControlSize::Field)
 }
-
-/// [`form_input`] at the small size (24px, padded 2px: 18px for the line).
-pub fn small_input(state: &Entity<InputState>) -> Input {
-    Input::new(state).small().py(input_py(24.))
-}
-
-/// A dialog button's height: a little under a [`form_input`]'s 32px, so
-/// the footer's actions don't outweigh the fields above them.
-const DIALOG_BUTTON_HEIGHT: Pixels = px(28.);
 
 /// The narrowest a dialog's button gets, so short labels side by side
 /// ("Cancel" / "Save", "取消" / "保存") come out one width, as the system's
 /// own dialogs do. Longer labels widen their button as usual.
 const DIALOG_BUTTON_MIN_WIDTH: Pixels = px(72.);
 
-/// A button in a dialog, unlabelled: [`DIALOG_BUTTON_HEIGHT`] tall, with the
-/// small size's 14px text — gpui-component's medium size jumps to 16px,
-/// larger than every label and field around it (as [`empty_state_button`]
-/// notes) — and at least [`DIALOG_BUTTON_MIN_WIDTH`] wide. A button beside a
+/// A button in a dialog's footer, unlabelled: [`ControlSize::Regular`], a
+/// step under the fields above it so the footer's actions don't outweigh
+/// them, and at least [`DIALOG_BUTTON_MIN_WIDTH`] wide. A button beside a
 /// field takes [`form_button`] instead.
 pub fn dialog_button(button: Button) -> Button {
     button
-        .small()
-        .h(DIALOG_BUTTON_HEIGHT)
-        .px_3()
+        .control(ControlSize::Regular)
         .min_w(DIALOG_BUTTON_MIN_WIDTH)
 }
 
-/// [`dialog_button`] at a [`form_input`]'s 32px, for a button in a row with
+/// [`dialog_button`] at [`ControlSize::Field`], for a button in a row with
 /// a field ("Browse…"), so their edges line up.
 pub fn form_button(button: Button) -> Button {
-    dialog_button(button).h(px(32.))
+    button
+        .control(ControlSize::Field)
+        .min_w(DIALOG_BUTTON_MIN_WIDTH)
 }
 
 /// Room a dialog's content leaves below its last control.

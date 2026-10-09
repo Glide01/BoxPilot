@@ -20,8 +20,9 @@ use crate::ui::pages::ActivePage;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
     empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
-    minute_ticker, page_header, page_layout, profile_source_line, section_heading, setting_row,
-    shorten, stat, usage_meter, IconLabel, TextLabel, CONTROL_LINE_HEIGHT,
+    minute_ticker, page_header, page_layout, profile_source_line, section_heading, segmented,
+    setting_row, shorten, stat, usage_meter, Control, ControlSize, IconLabel, Segment, TextLabel,
+    CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -30,7 +31,6 @@ use gpui_component::{
     scroll::ScrollableElement,
     spinner::Spinner,
     switch::Switch,
-    tab::{Tab, TabBar},
     theme::Theme,
     tooltip::Tooltip,
     ActiveTheme, Icon, IconName, Sizable, StyledExt, ThemeStyled,
@@ -104,21 +104,22 @@ fn clash_mode_row(theme: &Theme, clash_mode: Entity<ClashMode>, cx: &App) -> Opt
     }
     let modes = state.modes.clone();
     let selected = state.current_index();
-    let tab_modes = modes.clone();
+    let segments = modes.iter().cloned().map(Segment::new).collect();
     Some(
         setting_row(theme, s().home.clash_mode, None)
-            .child(
-                TabBar::new("clash-mode")
-                    .segmented()
-                    .when_some(selected, |this, ix| this.selected_index(ix))
-                    .on_click(move |ix: &usize, _, cx| {
-                        let Some(mode) = modes.get(*ix).cloned() else {
-                            return;
-                        };
-                        clash_mode.update(cx, |state, cx| state.select(mode, cx));
-                    })
-                    .children(tab_modes),
-            )
+            .child(segmented(
+                theme,
+                "clash-mode",
+                ControlSize::Regular,
+                segments,
+                selected,
+                move |ix, _, cx| {
+                    let Some(mode) = modes.get(ix).cloned() else {
+                        return;
+                    };
+                    clash_mode.update(cx, |state, cx| state.select(mode, cx));
+                },
+            ))
             .into_any_element(),
     )
 }
@@ -423,17 +424,20 @@ impl Render for HomePage {
                 t.home.proxy_mode,
                 (!tun_available).then_some(t.home.tun_needs_helper),
             )
-            .child(
-                TabBar::new("proxy-mode")
-                    .segmented()
-                    .selected_index(if proxy_mode { 1 } else { 0 })
-                    .on_click(move |ix: &usize, _, cx| {
-                        let value = *ix == 1;
-                        app_state_mode.update(cx, |state, cx| state.set_proxy_mode(value, cx));
-                    })
-                    .child(Tab::new().label(t.home.mode_tun).disabled(!tun_available))
-                    .child(Tab::new().label(t.home.mode_proxy)),
-            )
+            .child(segmented(
+                theme,
+                "proxy-mode",
+                ControlSize::Regular,
+                vec![
+                    Segment::new(t.home.mode_tun).disabled(!tun_available),
+                    Segment::new(t.home.mode_proxy),
+                ],
+                Some(if proxy_mode { 1 } else { 0 }),
+                move |ix, _, cx| {
+                    let value = ix == 1;
+                    app_state_mode.update(cx, |state, cx| state.set_proxy_mode(value, cx));
+                },
+            ))
             .into_any_element(),
             setting_row(theme, t.home.system_proxy, None)
                 .child(Switch::new("system-proxy").checked(system_proxy).on_click(
@@ -457,7 +461,7 @@ impl Render for HomePage {
         let long_name = may_truncate(&profile_name, PROFILE_NAME_ROOM);
         let profile_switcher = Button::new("home-profile-switcher")
             .ghost()
-            .small()
+            .control(ControlSize::Inline)
             .dropdown_caret(true)
             .text_label(profile_name.clone())
             .font_weight(FontWeight::MEDIUM)
@@ -533,7 +537,7 @@ impl Render for HomePage {
                                     .relative()
                                     .flex_1()
                                     .min_w_0()
-                                    .h(px(CONTROL_LINE_HEIGHT))
+                                    .h(CONTROL_LINE_HEIGHT)
                                     .child(
                                         div()
                                             .absolute()

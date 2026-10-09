@@ -25,7 +25,7 @@ use crate::core::timefmt::format_local_datetime;
 use crate::i18n::s;
 use crate::state::proxy_groups::{GroupSource, ProxyGroups};
 use crate::state::Connections;
-use crate::ui::widgets::{shorten, status_label, TextLabel};
+use crate::ui::widgets::{shorten, status_label, Control, ControlSize, TextLabel};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -199,7 +199,7 @@ impl ConnectionDetailsPanel {
             .child(
                 Button::new("conn-details-dismiss")
                     .ghost()
-                    .xsmall()
+                    .icon_control(ControlSize::Mini)
                     .icon(IconName::Close)
                     .tooltip(t.close_panel)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(DetailsDismissed))),
@@ -246,7 +246,7 @@ impl ConnectionDetailsPanel {
                     .child(
                         Button::new(SharedString::from(format!("conn-hop-{ix}")))
                             .ghost()
-                            .small()
+                            .control(ControlSize::Inline)
                             .dropdown_caret(true)
                             .text_label(hop.tag.clone())
                             .tooltip(t.switch_node)
@@ -285,7 +285,7 @@ impl ConnectionDetailsPanel {
         let copy_value = text.to_string();
         let button = Button::new(SharedString::from(format!("conn-copy-{field:?}")))
             .ghost()
-            .xsmall()
+            .icon_control(ControlSize::Mini)
             .icon(
                 Icon::new(if copied {
                     IconName::Check
@@ -461,7 +461,7 @@ impl Render for ConnectionDetailsPanel {
                             Button::new("conn-details-close-connection")
                                 .outline()
                                 .danger()
-                                .small()
+                                .control(ControlSize::Regular)
                                 .text_label(s().connections.close_connection)
                                 .on_click(cx.listener(|this, _, _, cx| this.close_connection(cx))),
                         )

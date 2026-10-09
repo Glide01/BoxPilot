@@ -28,7 +28,7 @@ use crate::ui::pages::ActivePage;
 use crate::ui::toast;
 use crate::ui::widgets::{
     dialog_button, empty_state, form_input, meta_row, page_header, page_layout, select_widths,
-    IconLabel, TextLabel, DIALOG_BODY_BOTTOM,
+    Control, ControlSize, IconLabel, TextLabel, DIALOG_BODY_BOTTOM,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -750,7 +750,7 @@ impl VpnPage {
                 card.key_prefix, ix
             )))
             .primary()
-            .small()
+            .control(ControlSize::Regular)
             .text_label(s().vpn.sign_in)
             .loading(busy)
             .disabled(busy)

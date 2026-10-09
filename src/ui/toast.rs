@@ -24,6 +24,7 @@
 use crate::core::settings::StatusLevel;
 use crate::i18n::s;
 use crate::ui::theme::{self, CARD_RADIUS};
+use crate::ui::widgets::{Control, ControlSize};
 use gpui::{
     div, prelude::FluentBuilder as _, px, Animation, AnimationExt, App, AppContext, Context,
     ElementId, Entity, Global, InteractiveElement, IntoElement, ParentElement, Render,
@@ -32,7 +33,7 @@ use gpui::{
 use gpui_component::{
     animation::cubic_bezier,
     button::{Button, ButtonVariants},
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, Icon, IconName,
 };
 use std::time::Duration;
 
@@ -237,7 +238,7 @@ impl Render for Toasts {
 
         let close = Button::new("toast-close")
             .ghost()
-            .xsmall()
+            .icon_control(ControlSize::Mini)
             .icon(IconName::Close)
             .text_color(theme.muted_foreground)
             .accessibility_label(s().common.close)
