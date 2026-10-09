@@ -80,6 +80,8 @@ pub struct Script {
     pub exit_code: Option<i32>,
     /// Fail the spawn.
     pub fail_spawn: bool,
+    /// How long it takes to exit once asked to stop.
+    pub stop_delay: Duration,
 }
 
 /// What one spawn was given.
@@ -197,6 +199,7 @@ impl Supervisor for FakeSupervisor {
                 Some(code) => code,
                 None => {
                     thread_control.wait_for(|state| state.stop_requested);
+                    thread::sleep(script.stop_delay);
                     1
                 }
             };

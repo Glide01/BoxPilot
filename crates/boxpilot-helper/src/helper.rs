@@ -245,15 +245,22 @@ impl<S: Supervisor> HelperCore<S> {
         &self.supervisor
     }
 
-    /// Stop the sing-box connection `owner` started (any, for `None`), and
-    /// return once it has exited. Waits out a start under way first, and a
-    /// stop another thread began.
+    /// Stop the sing-box that runs or is starting now, if connection `owner`
+    /// started it (any, for `None`), and return once it has exited. Waits
+    /// out a start under way first, and a stop another thread began. Only
+    /// that run: a start another connection makes once the slot is free
+    /// isn't this stop's to undo.
     fn stop_where(&self, owner: Option<ConnId>) {
         let mut state = self.shared.lock();
+        if owner.is_some_and(|conn| state.slot.owner() != Some(conn)) {
+            return;
+        }
+        let Some(target) = state.slot.run() else {
+            return;
+        };
         loop {
             match &mut state.slot {
-                Slot::Idle => return,
-                slot if owner.is_some_and(|conn| slot.owner() != Some(conn)) => return,
+                slot if slot.run() != Some(target) => return,
                 Slot::Running { process, .. } if process.is_some() => {
                     let mut process = process.take().expect("checked to be Some");
                     drop(state);
@@ -267,7 +274,11 @@ impl<S: Supervisor> HelperCore<S> {
     }
 
     /// Take the slot for a start by `conn`: its run number, or the `busy`
-    /// reply. `conn`'s own running sing-box is stopped first.
+    /// reply. `conn`'s own running sing-box is stopped first. Another
+    /// connection's that is being stopped (its connection ended, or a
+    /// `stop` came) is waited out: the slot is about to be free, and the
+    /// start is, often, that same user's next one, after a stop their
+    /// BoxPilot gave up waiting for.
     fn claim(&self, conn: ConnId) -> Result<u64, Reply> {
         let mut state = self.shared.lock();
         loop {
@@ -278,6 +289,11 @@ impl<S: Supervisor> HelperCore<S> {
                     state.slot = Slot::Starting { conn, run };
                     return Ok(run);
                 }
+                Slot::Running {
+                    conn: owner,
+                    process: None,
+                    ..
+                } if *owner != conn => state = self.shared.wait(state),
                 slot if slot.owner() != Some(conn) => {
                     return Err(Reply::error(
                         ErrorCode::Busy,
@@ -448,7 +464,10 @@ impl<S: Supervisor> Helper for HelperCore<S> {
     }
 
     fn shutdown(&self) {
-        self.stop_where(None);
+        // Whatever runs, a start that took the slot meanwhile included.
+        while !self.is_idle() {
+            self.stop_where(None);
+        }
     }
 }
 

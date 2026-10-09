@@ -428,6 +428,76 @@ fn another_connection_is_busy_and_may_stop_the_first() {
     started(second.ask(&plain_start()));
 }
 
+/// Wait for the core to have asked `n` sing-boxes to stop in all.
+fn wait_stops(harness: &Harness, n: usize) {
+    let deadline = Instant::now() + PATIENCE;
+    while harness.fake().stops.load(Ordering::SeqCst) < n {
+        assert!(
+            Instant::now() < deadline,
+            "sing-box was never asked to stop"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A start from another connection while the first's sing-box is being
+/// stopped, because its connection ended, waits for that stop rather than
+/// being turned away: it is often the same user's BoxPilot, starting again
+/// after a stop it gave up waiting for.
+#[test]
+fn a_start_waits_out_another_connections_sing_box_being_stopped() {
+    let harness = Harness::new();
+    harness.fake().set_script(Script {
+        stop_delay: Duration::from_millis(300),
+        ..Script::default()
+    });
+    let (mut first, first_served) = harness.connect(admin());
+    let (mut second, _second_served) = harness.connect(admin());
+    first.hello();
+    second.hello();
+    started(first.ask(&plain_start()));
+    first.close();
+    wait_stops(&harness, 1);
+    started(second.ask(&plain_start()));
+    assert_eq!(first_served.join().unwrap(), Ended::Eof);
+    assert_eq!(
+        status(&mut second),
+        (
+            RunState::Running,
+            Some(ExitInfo {
+                code: Some(1),
+                signal: None
+            })
+        )
+    );
+    assert_eq!(harness.fake().spawned().len(), 2);
+}
+
+/// A `stop` stops the sing-box that ran when it came, and only that one: a
+/// start another connection makes as it exits keeps running.
+#[test]
+fn a_stop_leaves_alone_a_run_started_once_it_is_done() {
+    let harness = Harness::new();
+    harness.fake().set_script(Script {
+        stop_delay: Duration::from_millis(300),
+        ..Script::default()
+    });
+    let (mut first, _first_served) = harness.connect(admin());
+    let (mut second, _second_served) = harness.connect(other_admin());
+    let (mut third, _third_served) = harness.connect(admin());
+    first.hello();
+    second.hello();
+    third.hello();
+    started(first.ask(&plain_start()));
+    second.send(&Request::Stop);
+    wait_stops(&harness, 1);
+    started(third.ask(&plain_start()));
+    assert_eq!(second.reply(), Reply::Stopped);
+    assert_eq!(first.event(), exited(1));
+    assert_eq!(status(&mut third).0, RunState::Running);
+    assert_eq!(harness.fake().stops.load(Ordering::SeqCst), 1);
+}
+
 #[test]
 fn stop_with_nothing_running_is_stopped() {
     let harness = Harness::new();
