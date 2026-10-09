@@ -20,19 +20,18 @@ use crate::ui::pages::ActivePage;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
     empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
-    minute_ticker, page_header, page_layout, profile_source_line, scroll_page, section_heading,
-    segmented, setting_row, shorten, stat, usage_meter, Control, ControlSize, IconLabel, Segment,
-    TextLabel, CONTROL_LINE_HEIGHT,
+    minute_ticker, page_header, page_layout, power_button, profile_source_line, scroll_page,
+    section_heading, segmented, setting_row, shorten, stat, usage_meter, Control, ControlSize,
+    IconLabel, Segment, TextLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     button::{Button, ButtonVariants},
     menu::{DropdownMenu, PopupMenuItem},
-    spinner::Spinner,
     switch::Switch,
     theme::Theme,
     tooltip::Tooltip,
-    ActiveTheme, Icon, IconName, Sizable, StyledExt, ThemeStyled,
+    ActiveTheme, Icon, IconName, StyledExt, ThemeStyled,
 };
 use std::time::SystemTime;
 
@@ -51,14 +50,6 @@ const PROFILE_MENU_MAX_WIDTH: f32 = 360.;
 const PROFILE_MENU_NAME_ROOM: usize = 40;
 /// Tallest the profile switcher's menu grows before it scrolls.
 const PROFILE_MENU_MAX_HEIGHT: f32 = 320.;
-
-/// `color` raised `amount` in lightness (HSL), for the top of a gradient.
-fn lighter(color: Hsla, amount: f32) -> Hsla {
-    Hsla {
-        l: (color.l + amount).min(1.),
-        ..color
-    }
-}
 
 pub struct HomePage {
     app_state: Entity<AppState>,
@@ -213,78 +204,13 @@ impl Render for HomePage {
         let theme = cx.theme();
 
         // —— 电源按钮(三态:断开 / 启动中 / 已连接) ——
-        // Keyed by status: a new state is a new element, so a tooltip shown
-        // while the pointer stays on the button (built once, from the old
-        // status) goes away instead of still offering "Connect" after the
-        // click connected.
-        let power_base = div()
-            .id(("power-button", status as usize))
-            .flex_none()
-            .size(px(POWER_BUTTON_DIAMETER))
-            .rounded_full()
-            .flex()
-            .items_center()
-            .justify_center();
-
-        let power_button = match status {
-            ConnectionStatus::Starting => power_base
-                // A faint accent wash: blue-50 / blue-200 on white, a dim
-                // navy on the dark background. A click cancels the start.
-                .bg(theme.primary.opacity(0.08))
-                .border_2()
-                .border_color(theme.primary.opacity(0.35))
-                .hover(|style| style.border_color(theme.primary))
-                .child(
-                    Spinner::new()
-                        .with_size(px(POWER_ICON_SIZE))
-                        .color(theme.primary),
-                ),
-            ConnectionStatus::Connected => power_base
-                .bg(linear_gradient(
-                    180.,
-                    // 上浅下深:顶部比 primary 亮一档(浅色下约 blue-500)。
-                    linear_color_stop(lighter(theme.primary, 0.08), 0.),
-                    linear_color_stop(theme.primary, 1.),
-                ))
-                // Hover: the same gradient in the theme's hover accent, like
-                // a primary button.
-                .hover(|style| {
-                    style.bg(linear_gradient(
-                        180.,
-                        linear_color_stop(lighter(theme.primary_hover, 0.08), 0.),
-                        linear_color_stop(theme.primary_hover, 1.),
-                    ))
-                })
-                // A soft lift, not a glow: on the dark background a wide
-                // accent shadow reads as a halo, so it stays faint there.
-                .shadow(vec![BoxShadow {
-                    color: theme
-                        .primary
-                        .opacity(if theme.is_dark() { 0.2 } else { 0.28 }),
-                    offset: point(px(0.), px(3.)),
-                    blur_radius: px(10.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
-                .child(
-                    Icon::default()
-                        .path("icons/power.svg")
-                        .with_size(px(POWER_ICON_SIZE))
-                        .text_color(theme.primary_foreground),
-                ),
-            ConnectionStatus::Disconnected => power_base
-                .bg(theme.background)
-                .border_2()
-                .border_color(theme.border)
-                .shadow_sm()
-                .hover(|s| s.border_color(theme.primary).text_color(theme.primary))
-                .text_color(theme.muted_foreground)
-                .child(
-                    Icon::default()
-                        .path("icons/power.svg")
-                        .with_size(px(POWER_ICON_SIZE)),
-                ),
-        };
+        let power_button = power_button(
+            "power-button",
+            status,
+            POWER_BUTTON_DIAMETER,
+            POWER_ICON_SIZE,
+            theme,
+        );
 
         // Always takes a click: connect, disconnect, or, while starting
         // (the Linux TUN gate and the macOS helper's included), cancel the

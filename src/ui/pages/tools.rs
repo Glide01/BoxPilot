@@ -13,9 +13,9 @@ use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    choice_select_with, connect_button, control_input, empty_state, form_column, grouped_card,
-    page_header, page_layout, plain_select, scroll_page, section_heading, segmented, setting_row,
-    stat, status_label, text_centered, Control, ControlSize, Segment, TextLabel,
+    choice_select_with, control_input, empty_state, form_column, grouped_card, page_header,
+    page_layout, plain_select, scroll_page, section_heading, segmented, setting_row, stat,
+    status_label, text_centered, Control, ControlSize, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale};
 use gpui::prelude::FluentBuilder;
@@ -482,8 +482,7 @@ impl Render for ToolsPage {
                 Icon::empty().path("icons/gauge.svg"),
                 s().tools.not_running_title,
                 s().tools.not_running_hint,
-            )
-            .action(connect_button("tools-connect"));
+            );
             return page_layout(
                 page_header(cx.theme(), ActivePage::Tools),
                 div().v_flex().size_full().child(empty),

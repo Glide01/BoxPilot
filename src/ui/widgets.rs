@@ -49,8 +49,8 @@
 //! setting row is a [`plain_select`]: no box, the current choice and a
 //! caret, as wide as that text.
 
-use crate::actions::{ToggleProcess, KEY_CONTEXT};
-use crate::core::presentation::{Freshness, FreshnessState, ProfileRowInfo};
+use crate::actions::KEY_CONTEXT;
+use crate::core::presentation::{ConnectionStatus, Freshness, FreshnessState, ProfileRowInfo};
 use crate::core::sub_usage::{expiry_date_utc, SubscriptionUsage, UsageLevel};
 use crate::core::timefmt::{format_relative_time, from_unix_secs, to_unix_secs};
 use crate::i18n::s;
@@ -58,10 +58,11 @@ use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
 use crate::ui::theme::{FORM_MAX_WIDTH, PANEL_PADDING_X, PANEL_PADDING_Y};
 use gpui::{
-    canvas, div, prelude::FluentBuilder, px, rems, Action, AnyElement, App, Bounds, ClickEvent,
-    Context, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Point, RenderOnce, ScrollHandle, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Task, TextStyle, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, prelude::FluentBuilder, px, rems,
+    Action, AnyElement, App, Bounds, BoxShadow, ClickEvent, Context, Div, ElementId, Entity,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Point, RenderOnce,
+    ScrollHandle, SharedString, Stateful, StatefulInteractiveElement, Styled, Task, TextStyle,
+    Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -740,7 +741,7 @@ pub struct EmptyState {
 
 impl EmptyState {
     /// The page's way out of being empty: a button
-    /// ([`empty_state_button`], [`connect_button`]).
+    /// ([`empty_state_button`]).
     pub fn action(mut self, action: impl IntoElement) -> Self {
         self.action = Some(action.into_any_element());
         self
@@ -801,21 +802,112 @@ impl RenderOnce for EmptyState {
     }
 }
 
+/// sing-box's power button, Home's and (smaller) the sidebar's: outlined
+/// while disconnected, a spinner in a faint accent ring while starting (a
+/// click cancels the start), a filled accent disc while connected. The
+/// same size in every state, so it never jumps under the pointer that just
+/// clicked it. Keyed by status: a new state is a new element, so a tooltip
+/// shown while the pointer stays on it (built once, from the old status)
+/// goes away instead of still offering "Connect" after the click
+/// connected. The caller adds the click, the tooltip and any focus.
+pub fn power_button(
+    id: &'static str,
+    status: ConnectionStatus,
+    diameter: f32,
+    icon_size: f32,
+    theme: &Theme,
+) -> Stateful<Div> {
+    // The big button's 2 px ring and lift, thinner and closer when small.
+    let large = diameter >= 48.;
+    let base = div()
+        .id((id, status as usize))
+        .flex_none()
+        .size(px(diameter))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .map(|button| {
+            if status == ConnectionStatus::Connected {
+                button
+            } else if large {
+                button.border_2()
+            } else {
+                button.border_1()
+            }
+        });
+    let power = || {
+        Icon::default()
+            .path("icons/power.svg")
+            .with_size(px(icon_size))
+    };
+    match status {
+        ConnectionStatus::Starting => base
+            // A faint accent wash: blue-50 / blue-200 on white, a dim navy
+            // on the dark background.
+            .bg(theme.primary.opacity(0.08))
+            .border_color(theme.primary.opacity(0.35))
+            .hover(|style| style.border_color(theme.primary))
+            .child(Spinner::new().with_size(px(icon_size)).color(theme.primary)),
+        ConnectionStatus::Connected => base
+            .bg(linear_gradient(
+                180.,
+                // 上浅下深:顶部比 primary 亮一档(浅色下约 blue-500)。
+                linear_color_stop(lighter(theme.primary, 0.08), 0.),
+                linear_color_stop(theme.primary, 1.),
+            ))
+            // Hover: the same gradient in the theme's hover accent, like a
+            // primary button.
+            .hover(|style| {
+                style.bg(linear_gradient(
+                    180.,
+                    linear_color_stop(lighter(theme.primary_hover, 0.08), 0.),
+                    linear_color_stop(theme.primary_hover, 1.),
+                ))
+            })
+            // A soft lift, not a glow: on the dark background a wide accent
+            // shadow reads as a halo, so it stays faint there.
+            .shadow(vec![BoxShadow {
+                color: theme
+                    .primary
+                    .opacity(if theme.is_dark() { 0.2 } else { 0.28 }),
+                offset: point(px(0.), px(if large { 3. } else { 1. })),
+                blur_radius: px(if large { 10. } else { 4. }),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .child(power().text_color(theme.primary_foreground)),
+        ConnectionStatus::Disconnected => base
+            .bg(theme.background)
+            .border_color(theme.border)
+            .map(|button| {
+                if large {
+                    button.shadow_sm()
+                } else {
+                    button.shadow_xs()
+                }
+            })
+            .hover(|s| s.border_color(theme.primary).text_color(theme.primary))
+            .text_color(theme.muted_foreground)
+            .child(power()),
+    }
+}
+
+/// `color` raised `amount` in lightness (HSL), for the top of a gradient.
+fn lighter(color: Hsla, amount: f32) -> Hsla {
+    Hsla {
+        l: (color.l + amount).min(1.),
+        ..color
+    }
+}
+
 /// An empty state's call to action, unlabelled: a primary
 /// [`ControlSize::Field`] button, a step up from a header's, with the same
 /// text size. The caller adds the label, icon and handler and passes it to
 /// [`EmptyState::action`].
 pub fn empty_state_button(id: impl Into<ElementId>) -> Button {
     Button::new(id).primary().control(ControlSize::Field)
-}
-
-/// The primary "Connect" action an empty state offers when what it lacks
-/// only exists while sing-box runs. Dispatches `ToggleProcess`, the same
-/// action as the Home power button and its shortcut.
-pub fn connect_button(id: &'static str) -> Button {
-    empty_state_button(id)
-        .icon_label(Icon::default().path("icons/power.svg"), s().status.connect)
-        .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleProcess), cx))
 }
 
 /// A labeled settings row: label (+ optional hint) on the left, the caller's

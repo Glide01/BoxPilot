@@ -28,9 +28,8 @@ use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    connect_button, control_input, empty_state, full_text_tooltip, page_header, page_layout,
-    page_scrollbar, segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel,
-    Segment,
+    control_input, empty_state, full_text_tooltip, page_header, page_layout, page_scrollbar,
+    segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -683,9 +682,7 @@ impl Render for GroupsPage {
         }
 
         let body = if !has_groups {
-            empty_state(theme, IconName::Globe, t.empty_title, t.empty_hint)
-                .when(!live, |this| this.action(connect_button("groups-connect")))
-                .into_any_element()
+            empty_state(theme, IconName::Globe, t.empty_title, t.empty_hint).into_any_element()
         } else if self.layout.rows.is_empty() {
             empty_state(theme, IconName::Search, t.no_match_title, t.no_match_hint)
                 .into_any_element()

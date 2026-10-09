@@ -15,13 +15,15 @@ use crate::ui::pages::{
 };
 use crate::ui::sidebar::{
     brand, rail_brand, sidebar, Badges, OptionalPages, SidebarColors, SidebarStatus, StatusDetail,
+    POWER_ICON_SIZE as SIDEBAR_POWER_ICON_SIZE, POWER_SIZE as SIDEBAR_POWER_SIZE,
 };
 use crate::ui::theme::{PANEL_INSET, PANEL_PADDING_X, PANEL_PADDING_Y, PANEL_RADIUS};
 use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
+use crate::ui::widgets::power_button;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{ActiveTheme, StyledExt};
+use gpui_component::{tooltip::Tooltip, ActiveTheme, StyledExt};
 
 /// Top-level view: sidebar navigation + the active page, owns the
 /// keyboard-shortcut action handlers and the toast routing. All page
@@ -423,11 +425,6 @@ impl Render for RootView {
         let is_running = self.app_state.read(cx).process.read(cx).is_running();
         let theme = cx.theme();
         let status = ConnectionStatus::from_flags(is_starting, is_running);
-        let dot_color = match status {
-            ConnectionStatus::Starting => theme.warning,
-            ConnectionStatus::Connected => theme.success,
-            ConnectionStatus::Disconnected => theme.muted_foreground,
-        };
         let chrome = theme.sidebar;
         let fg = theme.foreground;
         let muted = theme.muted_foreground;
@@ -440,7 +437,7 @@ impl Render for RootView {
             tile_border: theme.border,
         };
         let (panel_bg, panel_border) = (theme.background, theme.border);
-        // 状态球的第二行:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
+        // 电源按钮旁的文字:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
         let detail = if is_running {
             let traffic = self.app_state.read(cx).traffic.read(cx);
             StatusDetail::Speed(format_speed(traffic.down), format_speed(traffic.up))
@@ -450,11 +447,36 @@ impl Render for RootView {
                 _ => StatusDetail::None,
             }
         };
+        let expanded = self.sidebar_expanded;
+        // Collapsed, the button's tooltip carries the status beside it;
+        // expanded, it says what a click does, as Home's does.
+        let tip: Option<SharedString> = (!expanded).then(|| match detail.line() {
+            Some(line) => format!("{}\n{line}", status.label()).into(),
+            None => status.label().into(),
+        });
+        let app_state = self.app_state.clone();
+        let power = power_button(
+            "sidebar-power",
+            status,
+            SIDEBAR_POWER_SIZE,
+            SIDEBAR_POWER_ICON_SIZE,
+            theme,
+        )
+        // A click doesn't take the focus from the page.
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_click(move |_, _, cx| {
+            app_state.update(cx, |state, cx| state.toggle_process(cx));
+        })
+        .tooltip(move |window, cx| match &tip {
+            Some(tip) => Tooltip::new(tip.clone()).build(window, cx),
+            None => Tooltip::new(status.power_action_label())
+                .action(&ToggleProcess, Some(KEY_CONTEXT))
+                .build(window, cx),
+        })
+        .into_any_element();
         let status = SidebarStatus {
-            dot: dot_color,
             label: status.label(),
             detail,
-            connected: status == ConnectionStatus::Connected,
         };
 
         let view = cx.entity().downgrade();
@@ -482,7 +504,6 @@ impl Render for RootView {
         // the traffic lights, beside a panel that runs up to the top.
         let strip = title_bar::draws_strip(window);
         let title_bar = strip.then(|| title_bar::title_bar(brand(true), window, cx));
-        let expanded = self.sidebar_expanded;
         let header = (!strip).then(|| {
             let name = rail_brand(expanded, colors);
             if cfg!(target_os = "macos") {
@@ -525,6 +546,7 @@ impl Render for RootView {
                         .ok();
                     }
                 },
+                power,
             ))
             // Cached: the page re-renders only when it notifies (each page
             // observes the entities it reads), not on every root re-render —

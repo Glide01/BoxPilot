@@ -34,9 +34,8 @@ use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
-    connect_button, control_input, empty_state, page_header, page_layout, page_scrollbar,
-    row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Control, ControlSize, Segment,
-    TextLabel,
+    control_input, empty_state, page_header, page_layout, page_scrollbar, row_hover_bg, segmented,
+    tag_badge, toolbar_search, warn_orange, Control, ControlSize, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -633,16 +632,17 @@ impl Render for LogsPage {
         let t = &s().logs;
 
         let total = logs.entries().len();
-        let stopped = self.app_state.read(cx).process.read(cx).is_stopped();
 
         // No lines yet: nothing to search, filter, copy or clear.
         if total == 0 {
             return page_layout(
                 page_header(theme, ActivePage::Logs),
-                div().size_full().child(
-                    empty_state(theme, IconName::SquareTerminal, t.empty_title, t.empty_hint)
-                        .when(stopped, |this| this.action(connect_button("logs-connect"))),
-                ),
+                div().size_full().child(empty_state(
+                    theme,
+                    IconName::SquareTerminal,
+                    t.empty_title,
+                    t.empty_hint,
+                )),
             );
         }
 

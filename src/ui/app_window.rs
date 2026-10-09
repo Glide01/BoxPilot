@@ -238,7 +238,7 @@ fn open(cx: &mut App) {
             window_bounds: Some(bounds),
             // Narrowest: the Connections toolbar still fits beside the
             // expanded sidebar. Shortest: the sidebar still holds every page
-            // (Tailscale and VPN included) above its toggle and status orb.
+            // (Tailscale and VPN included) above its toggle and sing-box switch.
             window_min_size: Some(size(px(880.), px(640.) + bar_height)),
             // Wayland only raises a window that has an app id, and the
             // `.desktop` file is matched by it. Ignored elsewhere.
