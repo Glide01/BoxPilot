@@ -1,6 +1,7 @@
 pub mod atomic_write;
 pub mod bytefmt;
 pub mod config_view;
+pub mod connection_columns;
 pub mod connection_details;
 pub mod connections_view;
 pub mod deeplink;

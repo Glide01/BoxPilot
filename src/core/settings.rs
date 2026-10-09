@@ -1,4 +1,5 @@
 use crate::core::atomic_write::{write_atomic, FileAccess};
+use crate::core::connection_columns::ColumnSettings;
 use crate::core::sub_usage::SubscriptionUsage;
 use crate::core::timefmt::to_unix_secs;
 use serde::{Deserialize, Serialize};
@@ -263,6 +264,11 @@ pub struct AppSettings {
     /// new one. Off by default.
     #[serde(default)]
     pub close_connections_on_switch: bool,
+    /// The Connections table's columns: which show and how wide the user
+    /// made them (`connection_columns::ColumnSettings`). Absent: the
+    /// default columns at their default widths.
+    #[serde(default)]
+    pub connections_columns: ColumnSettings,
 }
 
 /// Appearance setting. Unknown values (from a newer release) load as
@@ -326,6 +332,7 @@ impl Default for AppSettings {
             skipped_update_version: None,
             connections_hide_direct: false,
             close_connections_on_switch: false,
+            connections_columns: ColumnSettings::default(),
         };
         settings.normalize_profiles();
         settings
@@ -521,6 +528,7 @@ fn back_up_bad_file(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::connection_columns::ColumnId;
 
     /// A first run starts in TUN mode, except on macOS, where TUN waits
     /// for the privileged helper's install.
@@ -563,6 +571,7 @@ mod tests {
         assert_eq!(settings.skipped_update_version, None);
         assert!(!settings.connections_hide_direct);
         assert!(!settings.close_connections_on_switch);
+        assert_eq!(settings.connections_columns, ColumnSettings::default());
         let saved = serde_json::to_value(&settings).unwrap();
         assert!(saved.get("skipped_update_version").is_none(), "{}", saved);
     }
@@ -964,6 +973,10 @@ mod tests {
             skipped_update_version: Some("1.14.0".into()),
             connections_hide_direct: true,
             close_connections_on_switch: true,
+            connections_columns: serde_json::from_str(
+                r#"{"visible": ["host", "rule"], "widths": {"rule": 210}}"#,
+            )
+            .unwrap(),
         };
         original.save(&dir);
         let loaded = AppSettings::load(&dir).settings;
@@ -981,6 +994,9 @@ mod tests {
         assert_eq!(loaded.skipped_update_version.as_deref(), Some("1.14.0"));
         assert!(loaded.connections_hide_direct);
         assert!(loaded.close_connections_on_switch);
+        assert_eq!(loaded.connections_columns, original.connections_columns);
+        assert!(!loaded.connections_columns.is_visible(ColumnId::Time));
+        assert_eq!(loaded.connections_columns.width(ColumnId::Rule), 210.);
         let _ = fs::remove_dir_all(&dir);
     }
 
