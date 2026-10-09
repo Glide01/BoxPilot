@@ -34,6 +34,8 @@ pub enum ConnectionSort {
     Newest,
     /// Most bytes moved (up + down totals) first.
     Traffic,
+    /// Fastest first: the current rate, up + down (`current_rate`).
+    Speed,
 }
 
 /// The connections `view` shows, filtered by `query` (see `matches_query`)
@@ -64,8 +66,26 @@ pub fn select_connections<'a>(
                 ))
             });
         }
+        ConnectionSort::Speed => {
+            rows.sort_by(|a, b| {
+                (Reverse(current_rate(a)), Reverse(newest(a)), &a.id).cmp(&(
+                    Reverse(current_rate(b)),
+                    Reverse(newest(b)),
+                    &b.id,
+                ))
+            });
+        }
     }
     rows
+}
+
+/// The connection's current rate, up + down, bytes/sec: the latest
+/// per-second delta sing-box reported. 0 once closed.
+pub fn current_rate(connection: &Connection) -> u64 {
+    if connection.is_closed() {
+        return 0;
+    }
+    connection.uplink.saturating_add(connection.downlink)
 }
 
 fn total_bytes(connection: &Connection) -> u64 {
@@ -317,6 +337,33 @@ mod tests {
         let all = [light, heavy, tie_old, tie_new];
         let rows = select_connections(&all, ConnectionView::Active, "", ConnectionSort::Traffic);
         assert_eq!(ids(&rows), ["heavy", "tie-new", "tie-old", "light"]);
+    }
+
+    #[test]
+    fn speed_sort_puts_fastest_first_then_newest() {
+        let mut slow = conn("slow", 300);
+        slow.uplink = 10;
+        let mut fast = conn("fast", 100);
+        fast.downlink = 5_000;
+        let mut tie_old = conn("tie-old", 100);
+        tie_old.uplink = 50;
+        let mut tie_new = conn("tie-new", 200);
+        tie_new.downlink = 50;
+        let idle = conn("idle", 400);
+        let all = [slow, fast, tie_old, tie_new, idle];
+        let rows = select_connections(&all, ConnectionView::Active, "", ConnectionSort::Speed);
+        assert_eq!(ids(&rows), ["fast", "tie-new", "tie-old", "slow", "idle"]);
+    }
+
+    #[test]
+    fn closed_connections_have_no_rate() {
+        let mut open = conn("a", 1);
+        open.uplink = 3;
+        open.downlink = 4;
+        assert_eq!(current_rate(&open), 7);
+        let mut gone = closed("b", 1, 2);
+        gone.uplink = 3;
+        assert_eq!(current_rate(&gone), 0);
     }
 
     #[test]

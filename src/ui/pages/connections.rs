@@ -1,9 +1,10 @@
 //! 连接页,日志浏览器式布局(与日志页一致):控制行(搜索框 + Active/Closed
-//! 切换 + Newest/Traffic 排序 + Close all + Live 徽标);一行汇总(打开数、
-//! 实时速率、总流量);下面是带表头的连接表,每行一行:建立时间(等宽,毫秒部分
-//! 淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
-//! (组 → 节点)、累计流量、存活时长、关闭按钮(仅打开的连接)。网络/协议、
-//! 入站、规则与实时速率在详情面板里。
+//! 切换 + Newest/Traffic/Speed 排序);页头一行汇总(打开数、实时速率、
+//! 总流量)和 Close all;下面是带表头的连接表,每行一行:建立时间(等宽,
+//! 毫秒部分淡色)、网络徽标(TCP/UDP,与柱状图同色)、主机 + 进程名、出站链
+//! (组 → 节点)、实时速率与累计流量(各两行:上行在上、下行在下;已关闭的
+//! 连接没有速率)、存活时长、关闭按钮(仅打开的连接)。网络/协议、入站、
+//! 规则在详情面板里。
 //!
 //! 列表用 gpui 的 `uniform_list` 虚拟化:只渲染可见行,上千条已关闭 + 大量
 //! 打开的连接也不卡。过滤 / 排序结果(按 id 的有序列表)按
@@ -53,11 +54,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Fixed row height — `uniform_list` lays every row out at the first row's
 /// size, so all rows must match.
 const ROW_HEIGHT: f32 = 36.;
-/// Column widths shared by the header and the rows.
+/// Column widths and the space between columns, shared by the header and
+/// the rows. Sized so the host and chain keep some room in an 880px window
+/// beside the expanded sidebar.
+const COLUMN_GAP: f32 = 8.;
 const TIME_WIDTH: f32 = 104.;
 const NETWORK_WIDTH: f32 = 56.;
-const TRAFFIC_WIDTH: f32 = 156.;
-const AGE_WIDTH: f32 = 64.;
+/// The rate and traffic cells stack up over down, so they fit the widest
+/// figure (`↑ 1023.9 KB/s`, `↑ 1023.9 MB`) in the mono font, not a pair.
+const RATE_WIDTH: f32 = 96.;
+const TRAFFIC_WIDTH: f32 = 84.;
+/// Line height in the stacked cells: two lines inside `ROW_HEIGHT`.
+const STACKED_LINE: f32 = 14.;
+const AGE_WIDTH: f32 = 56.;
 const CLOSE_WIDTH: f32 = 28.;
 /// The details panel's width; on a narrow window it takes most of the list
 /// (`DETAILS_MAX_FRACTION`), leaving the selected row's start in view.
@@ -402,19 +411,23 @@ fn connection_row(
         .text_xs()
         .text_color(muted);
 
-    let traffic = div()
-        .flex_none()
-        .w(px(TRAFFIC_WIDTH))
-        .text_right()
-        .whitespace_nowrap()
-        .text_xs()
-        .font_family(theme.mono_font_family.clone())
+    // The current rate, up over down; a line that is idle this second
+    // fades, and a closed connection has none.
+    let idle = muted.opacity(0.5);
+    let rate_line = |arrow: &str, rate: u64| {
+        div()
+            .text_color(if rate == 0 { idle } else { fg })
+            .child(format!("{arrow} {}", format_speed(rate)))
+    };
+    let rate = stacked_cell(RATE_WIDTH, theme).when(!closed, |cell| {
+        cell.child(rate_line("↑", connection.uplink))
+            .child(rate_line("↓", connection.downlink))
+    });
+
+    let traffic = stacked_cell(TRAFFIC_WIDTH, theme)
         .text_color(muted)
-        .child(format!(
-            "↑ {}  ↓ {}",
-            format_bytes(connection.uplink_total),
-            format_bytes(connection.downlink_total)
-        ));
+        .child(format!("↑ {}", format_bytes(connection.uplink_total)))
+        .child(format!("↓ {}", format_bytes(connection.downlink_total)));
 
     let age = div()
         .flex_none()
@@ -452,7 +465,7 @@ fn connection_row(
         .px_3()
         .h_flex()
         .items_center()
-        .gap_3()
+        .gap(px(COLUMN_GAP))
         .rounded(px(8.))
         .border_1()
         .cursor_pointer()
@@ -485,9 +498,24 @@ fn connection_row(
         .child(badge)
         .child(host)
         .child(chain)
+        .child(rate)
         .child(traffic)
         .child(age)
         .child(close_slot)
+}
+
+/// A fixed-width, right-aligned cell of two small mono lines (up over
+/// down).
+fn stacked_cell(width: f32, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .w(px(width))
+        .v_flex()
+        .items_end()
+        .whitespace_nowrap()
+        .text_xs()
+        .line_height(px(STACKED_LINE))
+        .font_family(theme.mono_font_family.clone())
 }
 
 /// The list's column headings, on the rows' columns.
@@ -502,7 +530,7 @@ fn column_header(theme: &Theme) -> Div {
         .px(px(13.))
         .h_flex()
         .items_center()
-        .gap_3()
+        .gap(px(COLUMN_GAP))
         .text_xs()
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.muted_foreground)
@@ -522,6 +550,12 @@ fn column_header(theme: &Theme) -> Div {
                 .flex_basis(px(0.))
                 .min_w_0()
                 .overflow_hidden(),
+        )
+        .child(
+            heading(t.col_speed)
+                .flex_none()
+                .w(px(RATE_WIDTH))
+                .text_right(),
         )
         .child(
             heading(t.col_traffic)
@@ -632,12 +666,20 @@ impl Render for ConnectionsPage {
                     .ok();
             },
         ));
-        const SORTS: [ConnectionSort; 2] = [ConnectionSort::Newest, ConnectionSort::Traffic];
+        const SORTS: [ConnectionSort; 3] = [
+            ConnectionSort::Newest,
+            ConnectionSort::Traffic,
+            ConnectionSort::Speed,
+        ];
         let sort_page = page.clone();
         controls = controls.child(segmented(
             theme,
             "connections-sort",
-            vec![Segment::new(t.newest), Segment::new(t.traffic)],
+            vec![
+                Segment::new(t.newest),
+                Segment::new(t.traffic),
+                Segment::new(t.speed),
+            ],
             SORTS.iter().position(|sort| *sort == self.sort),
             move |ix, _, cx| {
                 sort_page

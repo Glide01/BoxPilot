@@ -104,6 +104,8 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.groups.timeout,
         t.connections.filter_placeholder,
         t.connections.close_all,
+        t.connections.speed,
+        t.connections.col_speed,
         t.connection_details.close_panel,
         t.connection_details.gone_title,
         t.connection_details.gone_hint,

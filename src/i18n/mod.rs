@@ -368,6 +368,7 @@ pub struct Connections {
     pub closed_tab: &'static str,
     pub newest: &'static str,
     pub traffic: &'static str,
+    pub speed: &'static str,
     pub close_all: &'static str,
     pub close_connection: &'static str,
     /// A closed row's rate column.
@@ -385,6 +386,7 @@ pub struct Connections {
     pub col_network: &'static str,
     pub col_host: &'static str,
     pub col_chain: &'static str,
+    pub col_speed: &'static str,
     pub col_traffic: &'static str,
     pub col_duration: &'static str,
 }
