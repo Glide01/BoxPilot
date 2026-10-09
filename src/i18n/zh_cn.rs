@@ -495,6 +495,8 @@ pub static ZH_CN: Strings = Strings {
         },
         lan_off_at: |at| format!("允许局域网中的其他设备通过 {at} 使用代理。"),
         lan_off: "允许局域网中的其他设备使用代理。",
+        close_on_switch: "切换节点时断开连接",
+        close_on_switch_hint: "断开该分组仍走旧节点的连接，让应用通过新节点重连。",
         ipv6: "IPv6",
         ipv6_hint: "在 TUN 模式下代理 IPv6 流量。",
         clear_cache: "清除缓存",

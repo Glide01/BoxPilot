@@ -256,6 +256,13 @@ pub struct AppSettings {
     /// connections (`connections_view::is_direct_or_dns`). Off by default.
     #[serde(default)]
     pub connections_hide_direct: bool,
+    /// Settings › Network "Close connections when switching node": once a
+    /// group's node is switched (Groups page or connection details), close
+    /// the open connections the group still sends the old way
+    /// (`connections_view::switched_away`), so apps reconnect through the
+    /// new one. Off by default.
+    #[serde(default)]
+    pub close_connections_on_switch: bool,
 }
 
 /// Appearance setting. Unknown values (from a newer release) load as
@@ -318,6 +325,7 @@ impl Default for AppSettings {
             check_updates: true,
             skipped_update_version: None,
             connections_hide_direct: false,
+            close_connections_on_switch: false,
         };
         settings.normalize_profiles();
         settings
@@ -554,6 +562,7 @@ mod tests {
         assert!(settings.check_updates, "update checks default on");
         assert_eq!(settings.skipped_update_version, None);
         assert!(!settings.connections_hide_direct);
+        assert!(!settings.close_connections_on_switch);
         let saved = serde_json::to_value(&settings).unwrap();
         assert!(saved.get("skipped_update_version").is_none(), "{}", saved);
     }
@@ -954,6 +963,7 @@ mod tests {
             check_updates: false,
             skipped_update_version: Some("1.14.0".into()),
             connections_hide_direct: true,
+            close_connections_on_switch: true,
         };
         original.save(&dir);
         let loaded = AppSettings::load(&dir).settings;
@@ -970,6 +980,7 @@ mod tests {
         assert!(!loaded.check_updates);
         assert_eq!(loaded.skipped_update_version.as_deref(), Some("1.14.0"));
         assert!(loaded.connections_hide_direct);
+        assert!(loaded.close_connections_on_switch);
         let _ = fs::remove_dir_all(&dir);
     }
 

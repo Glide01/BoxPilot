@@ -107,6 +107,8 @@ impl Render for SettingsPage {
         let app_state_clear = self.app_state.clone();
         let app_state_ipv6 = self.app_state.clone();
         let tun_ipv6 = state.settings.tun_ipv6;
+        let app_state_close_on_switch = self.app_state.clone();
+        let close_on_switch = state.settings.close_connections_on_switch;
         let sing_box_version = state
             .sing_box_version
             .clone()
@@ -139,6 +141,20 @@ impl Render for SettingsPage {
             )
             .into_any_element()];
         network_rows.extend(lan_rows);
+        network_rows.push(
+            setting_row(theme, t.close_on_switch, Some(t.close_on_switch_hint))
+                .child(
+                    Switch::new("close-on-switch")
+                        .checked(close_on_switch)
+                        .on_click(move |checked: &bool, _, cx| {
+                            let value = *checked;
+                            app_state_close_on_switch.update(cx, |state, cx| {
+                                state.set_close_connections_on_switch(value, cx)
+                            });
+                        }),
+                )
+                .into_any_element(),
+        );
 
         // macOS: the privileged helper first; TUN depends on it there.
         let mut tun_rows = helper_rows;

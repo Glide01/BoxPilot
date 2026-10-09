@@ -1,3 +1,4 @@
+use crate::core::connections_view::switched_away;
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
 use crate::core::orchestration::{
     config_change_action, fetch_result_applies, process_edge_effects, ApiPortRetry,
@@ -38,7 +39,7 @@ use crate::state::connections::Connections;
 use crate::state::log_buffer::LogBuffer;
 use crate::state::network_tools::NetworkTools;
 use crate::state::process_session::{ApiPortLost, HelperApi, Launch, PendingStart, ProcessSession};
-use crate::state::proxy_groups::ProxyGroups;
+use crate::state::proxy_groups::{NodeSwitched, ProxyGroups};
 use crate::state::tailscale::TailscaleState;
 use crate::state::traffic::Traffic;
 use crate::state::vpn::VpnStatus;
@@ -480,6 +481,16 @@ impl AppState {
                     this.redo_start_if_api_port_lost(cx);
                 }
             })
+            .detach();
+
+            // A node switched, from the Groups page or a connection's
+            // details: maybe close what still takes the old way.
+            cx.subscribe(
+                &proxy_groups,
+                |this: &mut AppState, _, switched: &NodeSwitched, cx| {
+                    this.close_switched_away(switched, cx)
+                },
+            )
             .detach();
 
             // A run through the privileged helper listens where the helper
@@ -1611,6 +1622,32 @@ impl AppState {
         self.settings.connections_hide_direct = value;
         self.save_settings();
         cx.notify();
+    }
+
+    /// Settings › Network "Close connections when switching node".
+    pub fn set_close_connections_on_switch(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.close_connections_on_switch == value {
+            return;
+        }
+        self.settings.close_connections_on_switch = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// After a switch sing-box accepted: when the setting is on, close the
+    /// open connections the group still sends the old way
+    /// (`switched_away`), so they reconnect through the new node.
+    fn close_switched_away(&mut self, switched: &NodeSwitched, cx: &mut Context<Self>) {
+        if !self.settings.close_connections_on_switch {
+            return;
+        }
+        let ids = switched_away(
+            self.connections.read(cx).table.iter(),
+            &switched.group,
+            &switched.node,
+        );
+        self.connections
+            .update(cx, |connections, cx| connections.close_many(ids, cx));
     }
 
     /// The release to offer — newer than this BoxPilot and not skipped.

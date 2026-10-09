@@ -404,6 +404,31 @@ pub fn close_targets<'a>(
     CloseTargets::Matching(rows.into_iter().map(|c| c.id.clone()).collect())
 }
 
+/// The open connections that switching `group` to `node` leaves on the
+/// old way, for Settings' "Close connections when switching node": those
+/// whose chain passes through `group` on to another of its members. One
+/// the group already hands to `node` (opened while `node` was picked
+/// before) is left alone, as is every connection that doesn't go through
+/// the group — through an inner group of its own, say.
+pub fn switched_away<'a>(
+    connections: impl IntoIterator<Item = &'a Connection>,
+    group: &str,
+    node: &str,
+) -> Vec<String> {
+    connections
+        .into_iter()
+        .filter(|connection| !connection.is_closed())
+        .filter(|connection| {
+            let hops = chain_hops(connection);
+            match hops.iter().position(|hop| *hop == group) {
+                Some(ix) => hops.get(ix + 1) != Some(&node),
+                None => false,
+            }
+        })
+        .map(|connection| connection.id.clone())
+        .collect()
+}
+
 /// The page's summary header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionSummary {
@@ -742,6 +767,41 @@ mod tests {
             close_targets(&all, query("nothing-like-this")),
             CloseTargets::Matching(Vec::new())
         );
+    }
+
+    /// An open connection through `hops`, in reading order.
+    fn through(id: &str, hops: &[&str]) -> Connection {
+        Connection {
+            chain: hops.iter().rev().map(|hop| hop.to_string()).collect(),
+            ..conn(id, 1)
+        }
+    }
+
+    #[test]
+    fn switching_a_group_leaves_behind_what_it_sent_elsewhere() {
+        let all = [
+            through("old", &["节点选择", "auto", "香港-01"]),
+            through("already", &["节点选择", "auto", "日本-01"]),
+            through("inner-only", &["auto", "香港-01"]),
+            through("other", &["Media", "美国-01"]),
+            through("direct", &["direct"]),
+            Connection {
+                closed_at: Some(2),
+                ..through("closed", &["节点选择", "auto", "香港-01"])
+            },
+        ];
+        // The inner group: whoever reaches it, from whichever group.
+        assert_eq!(
+            switched_away(&all, "auto", "日本-01"),
+            ["old", "inner-only"]
+        );
+        // The outer one: everything through it that went another way.
+        assert_eq!(
+            switched_away(&all, "节点选择", "direct"),
+            ["old", "already"]
+        );
+        assert!(switched_away(&all, "节点选择", "auto").is_empty());
+        assert!(switched_away(&all, "Nowhere", "x").is_empty());
     }
 
     #[test]

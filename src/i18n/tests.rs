@@ -140,6 +140,8 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.settings.follow_system,
         t.settings.appearance,
         t.settings.allow_lan,
+        t.settings.close_on_switch,
+        t.settings.close_on_switch_hint,
         t.settings.clear_cache_hint,
         t.settings.clear_cache_hint_connected,
         t.settings.clear_cache_action,

@@ -706,6 +706,10 @@ pub struct Settings {
     pub lan_on_port: fn(u16) -> String,
     pub lan_off_at: Fmt1,
     pub lan_off: &'static str,
+    /// Settings › Network: close a group's connections when its node is
+    /// switched.
+    pub close_on_switch: &'static str,
+    pub close_on_switch_hint: &'static str,
     pub ipv6: &'static str,
     pub ipv6_hint: &'static str,
     pub clear_cache: &'static str,

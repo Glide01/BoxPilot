@@ -536,6 +536,9 @@ pub static EN: Strings = Strings {
         },
         lan_off_at: |at| format!("Let other devices on your network use the proxy at {at}."),
         lan_off: "Let other devices on your network use the proxy.",
+        close_on_switch: "Close connections when switching node",
+        close_on_switch_hint: "Closes the group's connections still on the old node, so apps \
+                               reconnect through the new one.",
         ipv6: "IPv6",
         ipv6_hint: "Proxies IPv6 traffic in TUN mode.",
         clear_cache: "Clear cache",

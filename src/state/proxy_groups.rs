@@ -126,6 +126,16 @@ pub struct ProxyGroups {
 
 impl EventEmitter<StatusEvent> for ProxyGroups {}
 
+/// A `select` sing-box accepted: `group` now sends its new connections to
+/// `node`. Its open ones keep their way; `AppState` closes them when the
+/// settings say so.
+pub struct NodeSwitched {
+    pub group: String,
+    pub node: String,
+}
+
+impl EventEmitter<NodeSwitched> for ProxyGroups {}
+
 impl ProxyGroups {
     /// Runs once at startup. sing-box is never running at this point, so the
     /// node list starts empty — groups only appear while connected.
@@ -387,7 +397,8 @@ impl ProxyGroups {
 
     /// Optimistically switch `group` to `node`, then confirm via the API.
     /// On failure: error toast + revert to the previous node (sing-box
-    /// rejected the switch, so its selection is unchanged).
+    /// rejected the switch, so its selection is unchanged). On success:
+    /// `NodeSwitched`.
     pub fn select(&mut self, group: String, node: String, cx: &mut Context<Self>) {
         if self.source != GroupSource::Api {
             return;
@@ -418,8 +429,9 @@ impl ProxyGroups {
                         .map_err(|e| (s().messages.switch_node_failed)(&e.to_string()))
                 })
                 .await;
-            if let Err(message) = result {
-                let _ = this.update(cx, |state, cx| {
+            let _ = this.update(cx, |state, cx| match result {
+                Ok(()) => cx.emit(NodeSwitched { group, node }),
+                Err(message) => {
                     if let Some(entry) = state.groups.iter_mut().find(|g| g.name == group) {
                         if entry.now == node {
                             entry.now = previous;
@@ -430,8 +442,8 @@ impl ProxyGroups {
                         message,
                     });
                     state.changed(cx);
-                });
-            }
+                }
+            });
         })
         .detach();
     }
