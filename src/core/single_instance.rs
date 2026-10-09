@@ -24,6 +24,16 @@
 //!
 //! **Windows** — a named pipe plus a session-local mutex.
 //!
+//! Pipe names are machine-wide, so the name carries the session
+//! (`BoxPilot.DeepLink.<session id>`): another account, in another session
+//! (fast user switching, Remote Desktop), runs a BoxPilot of its own without
+//! meeting this one. Any process may still make a pipe of that name first,
+//! so the primary makes its first instance with
+//! `FILE_FLAG_FIRST_PIPE_INSTANCE` (never joining a pipe someone else made)
+//! and always has the next instance open before it closes the current one:
+//! the name is never free while it runs. A sender writes a link, which may
+//! carry a subscription's token, only to a server in its own session.
+//!
 //! The pipe carries an explicit DACL: read/write for the current user's own
 //! SID (from the process token) and full control for SYSTEM, nobody else.
 //! BoxPilot never elevates itself any more (ADR 0006), but the user may run
@@ -38,8 +48,10 @@
 //! who forwarded a link, never act as them.
 //!
 //! **Linux and macOS** — a Unix socket plus an `flock` on a lock file, both
-//! in `$XDG_RUNTIME_DIR` (falling back to `boxpilot-<uid>.*` in the temp
-//! dir: `$TMPDIR`, which macOS makes per-user, else `/tmp`).
+//! in `$XDG_RUNTIME_DIR`, or else in a `boxpilot-<uid>` directory in the
+//! temp dir (`$TMPDIR`, which macOS makes per-user, else `/tmp`): made
+//! owner-only, and used only if this user owns it, since in a shared temp
+//! dir another user can make the name first.
 //! The lock, not the socket, decides who is primary: a crashed instance
 //! leaves its socket file behind, but the kernel drops its lock. The winner
 //! deletes any stale socket, binds a fresh one and makes it owner-only
@@ -72,8 +84,15 @@ fn attempt_from_payload(data: &[u8], overflowed: bool) -> LaunchAttempt {
     }
 }
 
+/// The pipe's name for this session (see the module docs).
 #[cfg(target_os = "windows")]
-const PIPE_PATH: &str = r"\\.\pipe\BoxPilot.DeepLink";
+fn pipe_path() -> String {
+    match current_session_id() {
+        Some(session) => format!(r"\\.\pipe\BoxPilot.DeepLink.{session}"),
+        None => r"\\.\pipe\BoxPilot.DeepLink".to_string(),
+    }
+}
+
 /// Session-local (not `Global\`) on purpose: every BoxPilot instance is
 /// launched from the interactive user session, and the local namespace
 /// avoids cross-IL ACL surprises on the mutex itself.
@@ -94,6 +113,11 @@ pub enum ServerStart {
 /// running.
 #[cfg(target_os = "windows")]
 pub fn try_forward(uri: Option<&str>) -> bool {
+    try_forward_to(&pipe_path(), uri)
+}
+
+#[cfg(target_os = "windows")]
+fn try_forward_to(pipe_path: &str, uri: Option<&str>) -> bool {
     use std::io::Write;
     use std::os::windows::fs::OpenOptionsExt;
     use windows::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
@@ -105,8 +129,16 @@ pub fn try_forward(uri: Option<&str>) -> bool {
         match std::fs::OpenOptions::new()
             .write(true)
             .security_qos_flags(SECURITY_IDENTIFICATION.0)
-            .open(PIPE_PATH)
+            .open(pipe_path)
         {
+            // Another session's process made the name: it isn't this
+            // session's BoxPilot, and gets no link. Start up normally.
+            Ok(pipe) if !served_from_this_session(&pipe) => {
+                eprintln!(
+                    "The deep-link pipe is served from another session; not forwarding to it."
+                );
+                return false;
+            }
             Ok(mut pipe) => {
                 let _ = pipe.write_all(payload.as_bytes());
                 let _ = pipe.flush();
@@ -161,7 +193,8 @@ pub fn start_server(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerStar
         }
     }
 
-    std::thread::spawn(move || pipe_server_loop(on_attempt));
+    let pipe_path = pipe_path();
+    std::thread::spawn(move || pipe_server_loop(&pipe_path, on_attempt));
     ServerStart::Primary
 }
 
@@ -180,6 +213,54 @@ pub fn start_server(_on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) -> ServerSta
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn pipe_sddl(user_sid: &str) -> String {
     format!("D:P(A;;GRGW;;;{user_sid})(A;;GA;;;SY)")
+}
+
+/// Whether `pipe`'s server runs in this process's session (see the module
+/// docs). `false` if either can't be read.
+#[cfg(target_os = "windows")]
+fn served_from_this_session(pipe: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Pipes::GetNamedPipeServerSessionId;
+
+    let mut server = 0u32;
+    // SAFETY: an open pipe handle, valid for the call; `server` receives
+    // the server's session id.
+    if unsafe { GetNamedPipeServerSessionId(HANDLE(pipe.as_raw_handle()), &mut server) }.is_err() {
+        return false;
+    }
+    current_session_id() == Some(server)
+}
+
+/// This process's session, from its token.
+#[cfg(target_os = "windows")]
+fn current_session_id() -> Option<u32> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{GetTokenInformation, TokenSessionId, TOKEN_QUERY};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo-handle of this process; `token` receives a new
+    // handle, owned right after.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.ok()?;
+    // SAFETY: a valid token handle, just opened, owned by nobody else.
+    let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
+    let mut session = 0u32;
+    let mut size = 0u32;
+    // SAFETY: `session` is the DWORD TokenSessionId fills, and outlives
+    // the call.
+    unsafe {
+        GetTokenInformation(
+            HANDLE(token.as_raw_handle()),
+            TokenSessionId,
+            Some((&mut session as *mut u32).cast()),
+            std::mem::size_of::<u32>() as u32,
+            &mut size,
+        )
+    }
+    .ok()?;
+    Some(session)
 }
 
 /// The current user's SID as a string (`S-1-5-21-…`), from the process
@@ -230,18 +311,22 @@ fn current_user_sid() -> Option<String> {
     }
 }
 
-/// Blocking accept loop, one client at a time. A client connects, writes
-/// one URI, closes; we read to EOF (at most [`MAX_PAYLOAD`]) and pass the
-/// payload on. Sequential accepts are plenty — deep links are human-paced.
+/// Blocking accept loop on `pipe_path`, one client at a time. A client
+/// connects, writes one URI, closes; we read to EOF (at most
+/// [`MAX_PAYLOAD`]) and pass the payload on. Sequential accepts are plenty —
+/// deep links are human-paced. The name stays this process's throughout
+/// (see the module docs).
 #[cfg(target_os = "windows")]
-fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
+fn pipe_server_loop(pipe_path: &str, on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
     use windows::core::{HRESULT, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED};
     use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     // ReadFile/ConnectNamedPipe 走 `Win32_System_IO` feature;
     // PIPE_ACCESS_INBOUND(FILE_FLAGS_AND_ATTRIBUTES)定义在 FileSystem,不在 Pipes。
-    use windows::Win32::Storage::FileSystem::{ReadFile, PIPE_ACCESS_INBOUND};
+    use windows::Win32::Storage::FileSystem::{
+        ReadFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND,
+    };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
         PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
@@ -284,12 +369,21 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
         );
     }
 
-    let pipe_name: Vec<u16> = PIPE_PATH.encode_utf16().chain(std::iter::once(0)).collect();
-    loop {
+    let pipe_name: Vec<u16> = pipe_path.encode_utf16().chain(std::iter::once(0)).collect();
+    // One instance. `first`: only if the name is free, so this process
+    // never joins a pipe someone else made.
+    let create = |first: bool| {
+        let open_mode = if first {
+            PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE
+        } else {
+            PIPE_ACCESS_INBOUND
+        };
+        // SAFETY: `pipe_name` is NUL-terminated, and the security
+        // attributes (and the descriptor they point to) outlive the call.
         let pipe = unsafe {
             CreateNamedPipeW(
                 PCWSTR::from_raw(pipe_name.as_ptr()),
-                PIPE_ACCESS_INBOUND,
+                open_mode,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 PIPE_UNLIMITED_INSTANCES,
                 0,
@@ -300,11 +394,18 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
                     .map(|sa| sa as *const SECURITY_ATTRIBUTES),
             )
         };
-        if pipe.is_invalid() {
-            // Name taken or resources exhausted; don't spin.
+        (!pipe.is_invalid()).then_some(pipe)
+    };
+    // The instance for the next client, made while the current one is
+    // still open: the name is never free between two clients.
+    let mut next = None;
+    loop {
+        let Some(pipe) = next.take().or_else(|| create(true)) else {
+            // Another process holds the name (another account's, say) and
+            // is never joined, or resources ran out; don't spin.
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
-        }
+        };
 
         // ERROR_PIPE_CONNECTED = the client connected between create and
         // this call; that's a success for our purposes.
@@ -312,6 +413,7 @@ fn pipe_server_loop(on_attempt: Box<dyn Fn(LaunchAttempt) + Send>) {
             Ok(()) => true,
             Err(e) => e.code() == HRESULT::from_win32(ERROR_PIPE_CONNECTED.0),
         };
+        next = create(false);
 
         if connected {
             let mut data = Vec::new();
@@ -362,6 +464,11 @@ mod unix {
     pub(super) struct InstancePaths {
         pub lock: PathBuf,
         pub socket: PathBuf,
+        /// In a shared temp dir, the directory both are in, and the uid it
+        /// must belong to: made, or checked, before either is used
+        /// ([`private_dir`]). `None` in `$XDG_RUNTIME_DIR`, which is
+        /// per-user and 0700 already.
+        pub private_dir: Option<(PathBuf, u32)>,
     }
 
     impl InstancePaths {
@@ -379,23 +486,66 @@ mod unix {
         }
 
         /// `$XDG_RUNTIME_DIR` is per-user and 0700 already, so plain names
-        /// suffice there. A shared temp dir needs the uid in the name, or
-        /// two users on one machine would fight over a single lock.
+        /// suffice there. In a shared temp dir they go in a directory of
+        /// this user's own, named with the uid so that two users on one
+        /// machine don't fight over one name.
         pub fn resolve(runtime_dir: Option<PathBuf>, temp_dir: &Path, uid: u32) -> Self {
-            match runtime_dir.filter(|dir| !dir.as_os_str().is_empty()) {
-                Some(dir) => Self {
-                    lock: dir.join("boxpilot.lock"),
-                    socket: dir.join("boxpilot.sock"),
-                },
-                None => Self {
-                    lock: temp_dir.join(format!("boxpilot-{uid}.lock")),
-                    socket: temp_dir.join(format!("boxpilot-{uid}.sock")),
-                },
+            let (dir, private_dir) = match runtime_dir.filter(|dir| !dir.as_os_str().is_empty()) {
+                Some(dir) => (dir, None),
+                None => {
+                    let dir = temp_dir.join(format!("boxpilot-{uid}"));
+                    (dir.clone(), Some((dir, uid)))
+                }
+            };
+            Self {
+                lock: dir.join("boxpilot.lock"),
+                socket: dir.join("boxpilot.sock"),
+                private_dir,
+            }
+        }
+    }
+
+    /// Make `dir` a directory only `uid` may enter, or check that it is
+    /// one: not a link, and owned by `uid` (a looser mode of its own is
+    /// tightened). In a shared temp dir any user can make the name first;
+    /// then nothing of ours goes there.
+    fn private_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        let meta = std::fs::symlink_metadata(dir)?;
+        if !meta.file_type().is_dir() || meta.uid() != uid {
+            return Err(std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!("{} isn't a directory of this user's own", dir.display()),
+            ));
+        }
+        if meta.mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+
+    impl InstancePaths {
+        /// [`private_dir`], where there is one to make or check.
+        fn prepare(&self) -> std::io::Result<()> {
+            match &self.private_dir {
+                Some((dir, uid)) => private_dir(dir, *uid),
+                None => Ok(()),
             }
         }
     }
 
     pub(super) fn try_forward_at(paths: &InstancePaths, uri: Option<&str>) -> bool {
+        // Not this user's directory: whatever listens there gets no link.
+        // Start up normally.
+        if let Err(e) = paths.prepare() {
+            eprintln!("Not forwarding the launch: {e}.");
+            return false;
+        }
         let payload = uri.unwrap_or("");
         for _attempt in 0..5 {
             match UnixStream::connect(&paths.socket) {
@@ -437,6 +587,12 @@ mod unix {
         paths: &InstancePaths,
         on_attempt: Box<dyn Fn(LaunchAttempt) + Send>,
     ) -> ServerStart {
+        // As with a broken lock below: refusing to start would let another
+        // user keep BoxPilot from starting at all.
+        if let Err(e) = paths.prepare() {
+            eprintln!("{e}; running without single-instance protection.");
+            return ServerStart::Primary;
+        }
         match claim_lock(&paths.lock) {
             // The file is intentionally leaked: the lock must live exactly
             // as long as the process, and the kernel releases it on exit
@@ -526,7 +682,30 @@ mod unix {
             InstancePaths {
                 lock: dir.join("boxpilot.lock"),
                 socket: dir.join("boxpilot.sock"),
+                private_dir: None,
             }
+        }
+
+        /// A fresh base directory for [`private_dir`] tests.
+        fn temp_base(tag: &str) -> PathBuf {
+            let base = std::env::temp_dir()
+                .join(format!("boxpilot-si-private-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            base
+        }
+
+        fn mode_of(path: &Path) -> u32 {
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        }
+
+        fn my_uid() -> u32 {
+            // SAFETY: getuid has no preconditions and cannot fail.
+            unsafe { libc::getuid() }
         }
 
         type Callback = Box<dyn Fn(LaunchAttempt) + Send>;
@@ -548,15 +727,87 @@ mod unix {
             );
             assert_eq!(paths.lock, PathBuf::from("/run/user/1000/boxpilot.lock"));
             assert_eq!(paths.socket, PathBuf::from("/run/user/1000/boxpilot.sock"));
+            assert_eq!(paths.private_dir, None);
         }
 
         #[test]
-        fn paths_fall_back_to_uid_names_in_temp_dir() {
+        fn paths_fall_back_to_a_private_dir_in_temp_dir() {
             for runtime_dir in [None, Some(PathBuf::new())] {
                 let paths = InstancePaths::resolve(runtime_dir, Path::new("/tmp"), 1234);
-                assert_eq!(paths.lock, PathBuf::from("/tmp/boxpilot-1234.lock"));
-                assert_eq!(paths.socket, PathBuf::from("/tmp/boxpilot-1234.sock"));
+                assert_eq!(
+                    paths.lock,
+                    PathBuf::from("/tmp/boxpilot-1234/boxpilot.lock")
+                );
+                assert_eq!(
+                    paths.socket,
+                    PathBuf::from("/tmp/boxpilot-1234/boxpilot.sock")
+                );
+                assert_eq!(
+                    paths.private_dir,
+                    Some((PathBuf::from("/tmp/boxpilot-1234"), 1234))
+                );
             }
+        }
+
+        #[test]
+        fn the_private_dir_is_made_owner_only() {
+            let dir = temp_base("made").join("boxpilot-x");
+            private_dir(&dir, my_uid()).unwrap();
+            assert!(dir.is_dir());
+            assert_eq!(mode_of(&dir), 0o700);
+            // Again, as every launch does.
+            private_dir(&dir, my_uid()).unwrap();
+        }
+
+        #[test]
+        fn a_private_dir_others_may_enter_is_closed_to_them() {
+            let dir = temp_base("open").join("boxpilot-x");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            private_dir(&dir, my_uid()).unwrap();
+            assert_eq!(mode_of(&dir), 0o700);
+        }
+
+        /// What another user could have made first in a shared temp dir is
+        /// never used: a link, a file, or a directory of theirs.
+        #[test]
+        fn what_another_user_made_there_is_refused() {
+            let base = temp_base("refused");
+            let target = base.join("theirs");
+            std::fs::create_dir(&target).unwrap();
+            let link = base.join("boxpilot-link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(private_dir(&link, my_uid()).is_err());
+            let file = base.join("boxpilot-file");
+            std::fs::write(&file, b"").unwrap();
+            assert!(private_dir(&file, my_uid()).is_err());
+            // A directory whose owner isn't the user asking.
+            assert!(private_dir(&target, my_uid().wrapping_add(1)).is_err());
+        }
+
+        /// Then a launch neither forwards there nor takes the lock: it starts
+        /// as the primary, without single-instance protection, and nothing
+        /// of it lands in that directory.
+        #[test]
+        fn a_refused_dir_gets_neither_a_link_nor_the_lock() {
+            let base = temp_base("unused");
+            let theirs = base.join("boxpilot-theirs");
+            std::fs::create_dir(&theirs).unwrap();
+            let paths = InstancePaths {
+                lock: theirs.join("boxpilot.lock"),
+                socket: theirs.join("boxpilot.sock"),
+                private_dir: Some((theirs.clone(), my_uid().wrapping_add(1))),
+            };
+            let listener = UnixListener::bind(&paths.socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            assert!(!try_forward_at(&paths, Some("sing-box://x")));
+            assert!(listener.accept().is_err(), "the link went to their socket");
+            let (callback, _rx) = channel_callback();
+            assert!(matches!(
+                start_server_at(&paths, callback),
+                ServerStart::Primary
+            ));
+            assert!(!paths.lock.exists());
         }
 
         #[test]
@@ -679,5 +930,123 @@ mod tests {
         assert_eq!(sddl, "D:P(A;;GRGW;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)");
         assert!(!sddl.contains("WD"));
         assert!(!sddl.contains("S:"));
+    }
+}
+
+/// The Windows pipe itself, on Windows: CI's `windows` job runs these.
+#[cfg(all(test, target_os = "windows"))]
+mod pipe_tests {
+    use super::*;
+    use std::sync::mpsc::{self, Receiver};
+    use std::time::{Duration, Instant};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND};
+    use windows::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+
+    /// A pipe name of this test's own.
+    fn test_pipe(tag: &str) -> String {
+        format!(
+            r"\\.\pipe\BoxPilot.DeepLink.test-{tag}-{}",
+            std::process::id()
+        )
+    }
+
+    /// The first instance of `path`, made here with the default DACL, as
+    /// any process could; `None` if the name is already taken.
+    fn first_instance(path: &str) -> Option<HANDLE> {
+        let name: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `name` is NUL-terminated; no security attributes.
+        let pipe = unsafe {
+            CreateNamedPipeW(
+                PCWSTR::from_raw(name.as_ptr()),
+                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                0,
+                4096,
+                0,
+                None,
+            )
+        };
+        (!pipe.is_invalid()).then_some(pipe)
+    }
+
+    fn close(pipe: HANDLE) {
+        // SAFETY: a pipe handle this test made and owns.
+        unsafe {
+            let _ = CloseHandle(pipe);
+        }
+    }
+
+    fn serve(path: &str) -> Receiver<LaunchAttempt> {
+        let (tx, rx) = mpsc::channel();
+        let path = path.to_string();
+        std::thread::spawn(move || {
+            pipe_server_loop(
+                &path,
+                Box::new(move |attempt| {
+                    let _ = tx.send(attempt);
+                }),
+            )
+        });
+        rx
+    }
+
+    /// Forward `uri` once the server listens, and see it arrive.
+    fn deliver(path: &str, uri: &str, attempts: &Receiver<LaunchAttempt>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !try_forward_to(path, Some(uri)) {
+            assert!(Instant::now() < deadline, "the server never listened");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            attempts.recv_timeout(Duration::from_secs(5)).unwrap(),
+            LaunchAttempt::DeepLink(uri.to_string())
+        );
+    }
+
+    /// A server in this session is one a link goes to, and while it runs
+    /// the name is its own, between clients too: nobody else can make the
+    /// pipe's first instance.
+    #[test]
+    fn the_name_stays_the_servers_between_clients() {
+        let path = test_pipe("keep");
+        let attempts = serve(&path);
+        for n in 0..3 {
+            deliver(&path, &format!("boxpilot://link-{n}"), &attempts);
+            if let Some(pipe) = first_instance(&path) {
+                close(pipe);
+                panic!("the name was free after client {n}");
+            }
+        }
+    }
+
+    /// A name another process made first is never joined: what is sent to
+    /// it meanwhile reaches that process, not the server, which takes the
+    /// name once it is free.
+    #[test]
+    fn a_name_made_elsewhere_is_never_joined() {
+        let path = test_pipe("squat");
+        let squatter = first_instance(&path).expect("a fresh name");
+        let attempts = serve(&path);
+        assert!(try_forward_to(&path, Some("boxpilot://squatted")));
+        assert!(
+            attempts.recv_timeout(Duration::from_millis(1500)).is_err(),
+            "the server joined a pipe it didn't make"
+        );
+        close(squatter);
+        deliver(&path, "boxpilot://after", &attempts);
+    }
+
+    #[test]
+    fn this_sessions_name_carries_its_id() {
+        let session = current_session_id().expect("the token's session");
+        assert_eq!(
+            pipe_path(),
+            format!(r"\\.\pipe\BoxPilot.DeepLink.{session}")
+        );
     }
 }

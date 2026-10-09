@@ -409,7 +409,14 @@ the user's own privilege never meets it.
   proxy or through TUN with sniffing, and so does a profile's
   `override_address`. A socket-level TUN proxy run as SYSTEM opens
   SYSTEM's sockets on behalf of everyone's traffic; that is what bringing
-  TUN up means here, and sing-box's own Windows client does the same.
+  TUN up means here, and sing-box's own Windows client does the same,
+  with no loopback rule at all (its daemon, `experimental/boxdd` in
+  1.14.2, checks only a few features that run programs or change the
+  system, and paths outside its working directory). sing-box can't close
+  the gap from the config either: an outbound resolves its destination
+  with its resolver directly, past the DNS rules that could match the
+  answer (`evaluate`), and a `resolve` route action first would resolve
+  every proxied name locally.
   Trusting a connection because it comes from SYSTEM is the task of the
   loopback service that does so. The restricted token below doesn't
   change that: sing-box's account is still SYSTEM, and only what else it
