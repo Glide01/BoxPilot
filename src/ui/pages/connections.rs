@@ -36,7 +36,8 @@ use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
     connect_button, empty_state, form_input, full_text_tooltip, live_badge, page_header,
-    page_layout, row_hover_bg, segmented, tag_badge, warn_orange, Segment, TextLabel,
+    page_layout, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange, Segment,
+    TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -607,15 +608,15 @@ impl Render for ConnectionsPage {
             .items_center()
             .gap_2()
             .w_full()
-            .child(
-                div().flex_1().min_w(px(200.)).child(
-                    form_input(&self.filter_input).cleanable(true).prefix(
-                        Icon::new(IconName::Search)
-                            .small()
-                            .text_color(theme.muted_foreground),
-                    ),
+            .child(toolbar_search(
+                form_input(&self.filter_input).cleanable(true).prefix(
+                    Icon::new(IconName::Search)
+                        .small()
+                        .text_color(theme.muted_foreground),
                 ),
-            );
+            ))
+            // Switches to the right, under the header's actions.
+            .child(div().flex_1());
         const VIEWS: [ConnectionView; 2] = [ConnectionView::Active, ConnectionView::Closed];
         let view_page = page.clone();
         controls = controls.child(segmented(

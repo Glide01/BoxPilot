@@ -806,6 +806,22 @@ pub fn segmented(
 /// Widest a dropdown grows to fit its text; a longer one ellipsizes.
 pub const SELECT_MAX_WIDTH: f32 = 280.;
 
+/// A toolbar's search field: room for a host name or a few words, not
+/// the whole row. It gives way to a narrow window, down to [`SEARCH_MIN_WIDTH`].
+const SEARCH_WIDTH: f32 = 300.;
+const SEARCH_MIN_WIDTH: f32 = 160.;
+
+/// The search field at the head of a page's toolbar (Groups, Connections,
+/// Logs), at [`SEARCH_WIDTH`]; the toolbar's switches follow it, pushed to
+/// the right under the header's actions.
+pub fn toolbar_search(field: impl IntoElement) -> Div {
+    div()
+        .flex_shrink(1.)
+        .min_w(px(SEARCH_MIN_WIDTH))
+        .w(px(SEARCH_WIDTH))
+        .child(field)
+}
+
 /// What a boxed dropdown's trigger adds around its text at `size`:
 /// border, padding, the gap and the caret (and a pixel each way for
 /// rounding).

@@ -27,7 +27,7 @@ use crate::state::{AppState, LogBuffer};
 use crate::ui::pages::ActivePage;
 use crate::ui::widgets::{
     connect_button, empty_state, form_input, live_badge, page_header, page_layout, row_hover_bg,
-    segmented, tag_badge, warn_orange, Segment, TextLabel,
+    segmented, tag_badge, toolbar_search, warn_orange, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -468,15 +468,15 @@ impl Render for LogsPage {
             .items_center()
             .gap_2()
             .w_full()
-            .child(
-                div().flex_1().min_w(px(200.)).child(
-                    form_input(&self.search).cleanable(true).prefix(
-                        Icon::new(IconName::Search)
-                            .small()
-                            .text_color(theme.muted_foreground),
-                    ),
+            .child(toolbar_search(
+                form_input(&self.search).cleanable(true).prefix(
+                    Icon::new(IconName::Search)
+                        .small()
+                        .text_color(theme.muted_foreground),
                 ),
-            )
+            ))
+            // Switches to the right, under the header's actions.
+            .child(div().flex_1())
             .child(segmented(
                 theme,
                 "log-levels",

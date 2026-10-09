@@ -28,8 +28,8 @@ use crate::ui::locale;
 use crate::ui::pages::ActivePage;
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    connect_button, empty_state, full_text_tooltip, page_header, page_layout, segmented,
-    small_input, text_centered, IconLabel, Segment,
+    connect_button, empty_state, form_input, full_text_tooltip, page_header, page_layout,
+    segmented, text_centered, toolbar_search, IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -628,18 +628,17 @@ impl Render for GroupsPage {
                 .items_center()
                 .gap_2()
                 .w_full()
-                .child(
-                    div().flex_1().min_w(px(200.)).child(
-                        small_input(&self.search).cleanable(true).prefix(
-                            Icon::new(IconName::Search)
-                                .small()
-                                .text_color(theme.muted_foreground),
-                        ),
+                .child(toolbar_search(
+                    form_input(&self.search).cleanable(true).prefix(
+                        Icon::new(IconName::Search)
+                            .small()
+                            .text_color(theme.muted_foreground),
                     ),
-                )
+                ))
+                // Sorting to the right, under the header's actions.
+                .child(div().flex_1())
                 .child(
                     div()
-                        .ml_1()
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(t.sort),
