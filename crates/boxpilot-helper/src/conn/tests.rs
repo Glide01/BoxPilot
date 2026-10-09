@@ -79,6 +79,17 @@ fn wait_idle(harness: &Harness) {
     }
 }
 
+/// Wait for `n` sing-boxes to have been spawned in all. The core is idle
+/// before a start is handled too: [`wait_idle`] after a start whose reply
+/// hasn't been read waits for nothing unless this comes first.
+fn wait_spawned(harness: &Harness, n: usize) {
+    let deadline = Instant::now() + PATIENCE;
+    while harness.fake().spawned().len() < n {
+        assert!(Instant::now() < deadline, "sing-box was never spawned");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn short_timeouts() -> ConnConfig {
     ConnConfig {
         timeouts: Timeouts {
@@ -646,6 +657,7 @@ fn a_slow_reader_loses_log_lines_but_gets_its_reply_and_exited() {
     client.hello();
     client.send(&plain_start());
     // sing-box prints everything and exits while nobody reads.
+    wait_spawned(&harness, 1);
     wait_idle(&harness);
     thread::sleep(Duration::from_millis(100));
     assert!(matches!(client.reply(), Reply::Started(_)));
