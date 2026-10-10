@@ -2,8 +2,8 @@ use crate::core::groups_view::test_cover;
 use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{
     apply_expand_overrides, delay_states, merge_groups, parse_groups_from_config,
-    parse_node_types_from_config, url_test_done, GroupKind, GroupsSnapshot, ProxyGroup, SingBoxApi,
-    UrlTestHistory,
+    parse_node_types_from_config, url_test_done, ApiError, GroupKind, GroupsSnapshot, ProxyGroup,
+    SingBoxApi, UrlTestHistory,
 };
 use crate::i18n::s;
 use crate::state::drain::{next_batch_or, Wake};
@@ -34,6 +34,11 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// If no snapshot has arrived this long after start, warn once. The reader
 /// keeps retrying regardless, so groups still appear if the API comes up late.
 const FIRST_SNAPSHOT_DEADLINE: Duration = Duration::from_secs(5);
+/// The same warning while the API isn't listening yet (connection refused):
+/// sing-box can take seconds to open it (e.g. fetching remote rule sets,
+/// bringing up TUN). A sing-box that gives up exits, and the Stopped edge
+/// ends this session, so a live one refusing connections is still starting.
+const API_LISTEN_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum GroupSource {
@@ -49,7 +54,7 @@ enum StreamEvent {
     Snapshot(GroupsSnapshot),
     /// Why the last subscription attempt ended; surfaced only if no snapshot
     /// ever arrives.
-    Error(String),
+    Error(ApiError),
     /// From `test_delay` / `test_node` / `test_all`: a test started, so the
     /// drain task must run its settle clock.
     TestStarted,
@@ -232,10 +237,7 @@ impl ProxyGroups {
                     break;
                 }
                 if let Err(e) = result {
-                    if tx
-                        .unbounded_send(StreamEvent::Error(e.to_string()))
-                        .is_err()
-                    {
+                    if tx.unbounded_send(StreamEvent::Error(e)).is_err() {
                         break;
                     }
                 }
@@ -263,14 +265,15 @@ impl ProxyGroups {
             let started = Instant::now();
             let mut received = false;
             let mut warned = false;
-            let mut last_error = String::new();
+            let mut last_error: Option<ApiError> = None;
             // A user-started test is in flight.
             let mut testing = false;
             loop {
                 // A clock only while there is time-based work: settling
                 // tests, and the first-snapshot deadline.
-                let deadline = (!received && !warned)
-                    .then(|| FIRST_SNAPSHOT_DEADLINE.saturating_sub(started.elapsed()));
+                let deadline = (!received && !warned).then(|| {
+                    first_snapshot_deadline(last_error.as_ref()).saturating_sub(started.elapsed())
+                });
                 let wait = match (testing.then_some(SETTLE_TICK), deadline) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
@@ -287,7 +290,7 @@ impl ProxyGroups {
                 for event in events {
                     match event {
                         StreamEvent::Snapshot(snapshot) => latest = Some(snapshot),
-                        StreamEvent::Error(e) => last_error = e,
+                        StreamEvent::Error(e) => last_error = Some(e),
                         StreamEvent::TestStarted => {}
                     }
                 }
@@ -310,12 +313,14 @@ impl ProxyGroups {
                     Err(_) => return,
                 }
 
-                if !received && !warned && started.elapsed() >= FIRST_SNAPSHOT_DEADLINE {
+                if !received
+                    && !warned
+                    && started.elapsed() >= first_snapshot_deadline(last_error.as_ref())
+                {
                     warned = true;
-                    let reason = if last_error.is_empty() {
-                        s().messages.api_no_response.to_string()
-                    } else {
-                        last_error.clone()
+                    let reason = match &last_error {
+                        Some(e) => e.to_string(),
+                        None => s().messages.api_no_response.to_string(),
                     };
                     let _ = this.update(cx, |_, cx| {
                         cx.emit(StatusEvent {
@@ -656,9 +661,35 @@ impl Drop for ProxyGroups {
     }
 }
 
+/// How long after start a missing first snapshot is worth a warning, given
+/// why the last subscription attempt ended: longer while the API isn't
+/// listening yet (`API_LISTEN_DEADLINE`).
+fn first_snapshot_deadline(last_error: Option<&ApiError>) -> Duration {
+    match last_error {
+        Some(ApiError::Unreachable(_)) => API_LISTEN_DEADLINE,
+        _ => FIRST_SNAPSHOT_DEADLINE,
+    }
+}
+
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_not_listening_yet_waits_longer_before_warning() {
+        let refused = ApiError::Unreachable("Connection refused (os error 61)".into());
+        assert_eq!(first_snapshot_deadline(Some(&refused)), API_LISTEN_DEADLINE);
+        assert_eq!(first_snapshot_deadline(None), FIRST_SNAPSHOT_DEADLINE);
+        assert_eq!(
+            first_snapshot_deadline(Some(&ApiError::TimedOut)),
+            FIRST_SNAPSHOT_DEADLINE
+        );
+    }
 }
