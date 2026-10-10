@@ -176,6 +176,10 @@ pub struct Status {
     pub disconnect: &'static str,
     /// The power button and the tray item while a start is under way.
     pub cancel_start: &'static str,
+    /// The API pages' empty state while Starting (`run_empty_state`).
+    pub sing_box_starting: &'static str,
+    /// …and once Connected, before the page's first data arrives.
+    pub loading: &'static str,
 }
 
 /// Relative times and compact durations.
@@ -354,6 +358,11 @@ pub struct Groups {
     pub timeout: &'static str,
     pub empty_title: &'static str,
     pub empty_hint: &'static str,
+    /// Starting: when the groups show up (`run_empty_state`).
+    pub starting_hint: &'static str,
+    /// Connected, but the running config has no groups.
+    pub none_title: &'static str,
+    pub none_hint: &'static str,
     pub no_match_title: &'static str,
     pub no_match_hint: &'static str,
 }
@@ -396,6 +405,8 @@ pub struct Connections {
     pub closed: &'static str,
     pub empty_title: &'static str,
     pub empty_hint: &'static str,
+    /// Starting: when the page fills (`run_empty_state`).
+    pub starting_hint: &'static str,
     pub no_match_title: &'static str,
     pub no_match_hint: &'static str,
     pub no_active_title: &'static str,
@@ -474,6 +485,8 @@ pub struct Logs {
     pub clear: &'static str,
     pub empty_title: &'static str,
     pub empty_hint: &'static str,
+    /// Starting: when the page fills (`run_empty_state`).
+    pub starting_hint: &'static str,
     /// The search box's placeholder; `-word` leaves lines out.
     pub search_placeholder: &'static str,
     /// "1,204 lines".
@@ -496,6 +509,8 @@ pub struct Logs {
 pub struct Tools {
     pub not_running_title: &'static str,
     pub not_running_hint: &'static str,
+    /// Starting: when the tests become available (`run_empty_state`).
+    pub starting_hint: &'static str,
     pub outbound: &'static str,
     pub search_outbounds: &'static str,
     pub default_outbound: &'static str,
@@ -899,6 +914,7 @@ pub struct Messages {
     pub sing_box_exited: &'static str,
     pub start_failed: Fmt3,
     pub api_no_response: &'static str,
+    pub api_not_ready: Fmt1,
     pub groups_failed: Fmt1,
     pub switch_node_failed: Fmt1,
     pub save_group_state_failed: Fmt1,

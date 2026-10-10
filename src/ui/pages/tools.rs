@@ -1,7 +1,7 @@
 //! Tools page: network diagnostics sing-box runs through one of its
 //! outbounds — a network quality test (throughput + responsiveness) and a
-//! STUN test (external address + NAT behaviour). Only while sing-box is
-//! running; otherwise an empty state. Test options are page-local and not
+//! STUN test (external address + NAT behaviour). Only while connected;
+//! otherwise an empty state that follows the connection status. Test options are page-local and not
 //! persisted; the runs themselves live in `NetworkTools`.
 
 use crate::core::network_tools::{
@@ -11,10 +11,10 @@ use crate::core::network_tools::{
 use crate::core::singbox_api::{NetworkQualityRequest, StunRequest};
 use crate::i18n::s;
 use crate::state::{AppState, NetworkTools};
-use crate::ui::pages::ActivePage;
+use crate::ui::pages::{rerender_on_status, ActivePage};
 use crate::ui::widgets::{
-    choice_select_with, control_input, empty_state, form_column, grouped_card, page_header,
-    page_layout, plain_select, scroll_page, section_heading, segmented, setting_row, stat,
+    choice_select_with, control_input, form_column, grouped_card, page_header, page_layout,
+    plain_select, run_empty_state, scroll_page, section_heading, segmented, setting_row, stat,
     status_label, text_centered, Control, ControlSize, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale};
@@ -76,6 +76,7 @@ impl SelectItem for OutboundRow {
 type OutboundSelect = Entity<SelectState<SearchableVec<OutboundRow>>>;
 
 pub struct ToolsPage {
+    app_state: Entity<AppState>,
     tools: Entity<NetworkTools>,
     /// The picker list currently loaded into both selects.
     outbounds: Vec<OutboundChoice>,
@@ -115,8 +116,10 @@ impl ToolsPage {
             cx.notify();
         })
         .detach();
+        rerender_on_status(&app_state, cx);
 
         Self {
+            app_state,
             tools,
             outbounds,
             quality_outbound,
@@ -477,11 +480,13 @@ impl Render for ToolsPage {
         let stun = tools.stun.clone();
 
         if !active {
-            let empty = empty_state(
+            let empty = run_empty_state(
                 cx.theme(),
+                self.app_state.read(cx).connection_status(cx),
                 Icon::empty().path("icons/gauge.svg"),
                 s().tools.not_running_title,
                 s().tools.not_running_hint,
+                s().tools.starting_hint,
             );
             return page_layout(
                 page_header(cx.theme(), ActivePage::Tools),

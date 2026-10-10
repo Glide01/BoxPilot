@@ -142,9 +142,10 @@ impl LogBuffer {
         }
     }
 
-    /// Stopped→Running edge: a new run starts, and a dedicated reader thread
-    /// holds the `SubscribeLog` stream, re-subscribing while running (before
-    /// the API is up, and after each idle timeout).
+    /// Launched edge (sing-box running, its API maybe not up yet): a new
+    /// run starts, and a dedicated reader thread holds the `SubscribeLog`
+    /// stream, re-subscribing while running (before the API is up, and
+    /// after each idle timeout).
     pub fn start_api(&mut self, cx: &mut Context<Self>) {
         // A prior session's thread reads the *old* Arc, so flipping it and
         // replacing `self.running` cleanly separates the two sessions.

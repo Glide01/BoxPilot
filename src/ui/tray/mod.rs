@@ -160,7 +160,8 @@ fn set_available(available: bool, cx: &mut App) {
 /// What the tray shows for the current state.
 fn snapshot_of(app_state: &Entity<AppState>, cx: &App) -> TraySnapshot {
     let state = app_state.read(cx);
-    let running = state.process.read(cx).is_running();
+    let status = state.connection_status(cx);
+    let running = status == ConnectionStatus::Connected;
     let clash = state.clash_mode.read(cx);
     let (clash_modes, clash_current) = if running && clash.is_switchable() {
         (clash.modes.clone(), clash.current.clone())
@@ -168,7 +169,7 @@ fn snapshot_of(app_state: &Entity<AppState>, cx: &App) -> TraySnapshot {
         (Vec::new(), String::new())
     };
     TraySnapshot {
-        status: ConnectionStatus::from_flags(state.is_starting(cx), running),
+        status,
         proxy_mode: state.settings.proxy_mode,
         tun_available: state.tun_available(),
         system_proxy: state.settings.set_system_proxy,

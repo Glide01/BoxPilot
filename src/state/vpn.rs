@@ -2,10 +2,9 @@
 //! endpoints and USB/IP servers, plus their sign-in challenges. Owned by
 //! `AppState`; drives the VPN page and its sign-in dialogs.
 //!
-//! Started on the process Stopped→Running edge and cleared on the reverse
-//! one, like `ProxyGroups` / `Traffic` — but it watches `ProcessSession`
-//! itself (see `new`) instead of through `AppState`'s observer. On start it
-//! reads the prepared runtime config and opens a status stream only for the
+//! Started once the run is Ready (its API answered) and cleared when
+//! sing-box stops, like `ProxyGroups` / `Traffic` (`AppState`'s
+//! `sync_run_phase`). On start it reads the prepared runtime config and opens a status stream only for the
 //! kinds the config actually has (`VpnPresence`): a profile with none of
 //! them costs nothing and keeps the page hidden.
 //!
@@ -25,9 +24,8 @@ use crate::core::vpn::{
 };
 use crate::i18n::s;
 use crate::state::drain::next_batch;
-use crate::state::process_session::ProcessSession;
 use futures_channel::mpsc::{self, UnboundedSender};
-use gpui::{Context, Entity, EventEmitter, Task};
+use gpui::{Context, EventEmitter, Task};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -106,8 +104,6 @@ pub struct VpnStatus {
     toasted: HashSet<EndpointFailure>,
     /// When the current session started (the grace period for errors).
     started: Option<Instant>,
-    /// Last `is_running()` acted on — detects the Running/Stopped edges.
-    saw_running: bool,
     /// Liveness flag of the current session's reader threads.
     running: Arc<AtomicBool>,
     _task: Option<Task<()>>,
@@ -118,26 +114,8 @@ impl EventEmitter<ChallengeRequested> for VpnStatus {}
 
 impl VpnStatus {
     /// `runtime_config_path` is the prepared config sing-box runs
-    /// (`paths::runtime_config_path`); it is read on every Running edge.
-    pub fn new(
-        api: SingBoxApi,
-        runtime_config_path: PathBuf,
-        process: &Entity<ProcessSession>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        cx.observe(process, |this: &mut Self, process, cx| {
-            let running = process.read(cx).is_running();
-            if running == this.saw_running {
-                return;
-            }
-            this.saw_running = running;
-            if running {
-                this.start(cx);
-            } else {
-                this.clear(cx);
-            }
-        })
-        .detach();
+    /// (`paths::runtime_config_path`); it is read on every Ready edge.
+    pub fn new(api: SingBoxApi, runtime_config_path: PathBuf) -> Self {
         Self {
             presence: VpnPresence::default(),
             openconnect: Vec::new(),
@@ -151,7 +129,6 @@ impl VpnStatus {
             announced: HashSet::new(),
             toasted: HashSet::new(),
             started: None,
-            saw_running: false,
             running: Arc::new(AtomicBool::new(false)),
             _task: None,
         }
@@ -197,8 +174,9 @@ impl VpnStatus {
         self.openconnect_challenge(key).is_some() || self.openvpn_challenge(key).is_some()
     }
 
-    /// Stopped→Running: read the runtime config, then stream what it has.
-    fn start(&mut self, cx: &mut Context<Self>) {
+    /// Ready edge (`AppState`): read the runtime config, then stream what
+    /// it has.
+    pub fn start(&mut self, cx: &mut Context<Self>) {
         self.reset();
         self.started = Some(Instant::now());
         let running = Arc::new(AtomicBool::new(true));
@@ -341,8 +319,8 @@ impl VpnStatus {
         self.stream_errors.remove(&stream);
     }
 
-    /// Running→Stopped: end the streams and forget the session.
-    fn clear(&mut self, cx: &mut Context<Self>) {
+    /// Stopped edge (`AppState`): end the streams and forget the session.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.reset();
         cx.notify();
     }

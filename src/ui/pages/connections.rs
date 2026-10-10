@@ -72,11 +72,11 @@ use crate::core::timefmt::format_clock_ms;
 use crate::i18n::s;
 use crate::state::{AppState, Connections};
 use crate::ui::locale;
-use crate::ui::pages::ActivePage;
+use crate::ui::pages::{rerender_on_status, ActivePage};
 use crate::ui::widgets::{
     choice_select, control_input, empty_state, full_text_tooltip, may_truncate, page_header,
-    page_layout, page_scrollbar, row_hover_bg, segmented, tag_badge, toolbar_search, warn_orange,
-    Control, ControlSize, IconLabel, Segment, TextLabel,
+    page_layout, page_scrollbar, row_hover_bg, run_empty_state, segmented, tag_badge,
+    toolbar_search, warn_orange, Control, ControlSize, IconLabel, Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -276,6 +276,7 @@ impl ConnectionsPage {
             cx.notify();
         })
         .detach();
+        rerender_on_status(&app_state, cx);
 
         let proxy_groups = app_state.read(cx).proxy_groups.clone();
         let details =
@@ -1339,7 +1340,14 @@ impl Render for ConnectionsPage {
         // The empty state goes on the page's root (see `empty_state`), the
         // list in the body under the header.
         let (empty, list) = if !live {
-            let empty = empty_state(theme, IconName::Network, t.empty_title, t.empty_hint);
+            let empty = run_empty_state(
+                theme,
+                self.app_state.read(cx).connection_status(cx),
+                IconName::Network,
+                t.empty_title,
+                t.empty_hint,
+                t.starting_hint,
+            );
             (Some(empty), None)
         } else if self.rows.is_empty() {
             let (title, hint) = match (narrowed, self.view) {

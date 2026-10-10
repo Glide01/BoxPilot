@@ -148,9 +148,7 @@ impl Render for HomePage {
             .into_any_element();
         }
 
-        let process = state.process.read(cx);
-
-        let status = ConnectionStatus::from_flags(state.is_starting(cx), process.is_running());
+        let status = state.connection_status(cx);
         let proxy_mode = state.settings.proxy_mode;
         let tun_available = state.tun_available();
         let system_proxy = state.settings.set_system_proxy;

@@ -1,6 +1,11 @@
 //! Page views for the sidebar-navigation layout. One entity per page;
 //! `RootView` keeps all of them alive and renders the active one.
 
+use crate::state::app_state::AppState;
+use gpui::{Context, Entity};
+use std::cell::Cell;
+use std::rc::Rc;
+
 mod connection_details;
 pub mod connections;
 pub mod groups;
@@ -73,4 +78,25 @@ impl ActivePage {
             ActivePage::Settings => nav.settings_hint,
         }
     }
+}
+
+/// Re-render the page `cx` belongs to whenever the connection status
+/// (Disconnected / Starting / Connected) changes — for pages whose empty
+/// state follows it (`widgets::run_empty_state`). Only the edges notify:
+/// `AppState` notifies often.
+pub(crate) fn rerender_on_status<T: 'static>(app_state: &Entity<AppState>, cx: &mut Context<T>) {
+    let last = Rc::new(Cell::new(app_state.read(cx).connection_status(cx)));
+    let process = app_state.read(cx).process.clone();
+    let check = {
+        let app_state = app_state.clone();
+        move |cx: &mut Context<T>| {
+            let now = app_state.read(cx).connection_status(cx);
+            if last.replace(now) != now {
+                cx.notify();
+            }
+        }
+    };
+    let on_process = check.clone();
+    cx.observe(app_state, move |_, _, cx| check(cx)).detach();
+    cx.observe(&process, move |_, _, cx| on_process(cx)).detach();
 }

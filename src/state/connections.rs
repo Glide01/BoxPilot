@@ -1,7 +1,7 @@
 //! Live connection list, streamed from the sing-box API service's
 //! `SubscribeConnections` into a `ConnectionTable`. Owned by `AppState`;
-//! started on the process Stopped→Running edge and cleared on the reverse
-//! edge (see the observer in `AppState::new`), the same way `Traffic` and
+//! started once the run is Ready (its API answered) and cleared when it
+//! stops (`AppState::sync_run_phase`), the same way `Traffic` and
 //! `ProxyGroups` are driven.
 
 use crate::core::settings::{StatusEvent, StatusLevel};
@@ -23,7 +23,7 @@ const COALESCE: Duration = Duration::from_millis(250);
 /// often so their age column keeps counting. No clock runs with none open.
 const AGE_TICK: Duration = Duration::from_secs(1);
 /// Delay before the reader thread re-subscribes after the stream fails while
-/// still running — covers the window before the sing-box API is listening.
+/// still running — covers a transient drop.
 /// An idle-stream timeout re-subscribes at once instead. Bounded by the
 /// `running` flag so it never spins.
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -73,7 +73,7 @@ impl Connections {
         self.api = api;
     }
 
-    /// Subscribe to the connection stream (Stopped→Running edge). A dedicated
+    /// Subscribe to the connection stream (Ready edge). A dedicated
     /// reader thread holds `SubscribeConnections` and re-subscribes while
     /// running — an idle sing-box times the stream out routinely, and every
     /// new subscription opens with a fresh `reset` snapshot. A UI-thread

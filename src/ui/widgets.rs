@@ -717,7 +717,11 @@ pub fn empty_state(
     subtitle: &'static str,
 ) -> EmptyState {
     EmptyState {
-        icon: icon.into().size(px(24.)).text_color(theme.muted_foreground),
+        glyph: icon
+            .into()
+            .size(px(24.))
+            .text_color(theme.muted_foreground)
+            .into_any_element(),
         disc: theme.muted,
         title,
         title_color: theme.foreground,
@@ -727,10 +731,43 @@ pub fn empty_state(
     }
 }
 
+/// The empty state of a page that shows a running sing-box's data
+/// (groups, connections, tools…) while it has none live, by
+/// [`ConnectionStatus`]:
+/// - Disconnected: `icon`, `title` and `hint` — what connecting would show.
+/// - Starting (sing-box not up yet): a spinner, "sing-box is starting" and
+///   `starting_hint` — when the page fills.
+/// - Connected, the page's first data still on its way: a spinner and
+///   "Loading…" (usually a few milliseconds).
+///
+/// Data that is live but empty (a profile without groups) is the page's
+/// own empty state, not this one.
+pub fn run_empty_state(
+    theme: &Theme,
+    status: ConnectionStatus,
+    icon: impl Into<Icon>,
+    title: &'static str,
+    hint: &'static str,
+    starting_hint: &'static str,
+) -> EmptyState {
+    let t = &s().status;
+    let (title, hint) = match status {
+        ConnectionStatus::Disconnected => return empty_state(theme, icon, title, hint),
+        ConnectionStatus::Starting => (t.sing_box_starting, starting_hint),
+        ConnectionStatus::Connected => (t.loading, ""),
+    };
+    let mut state = empty_state(theme, icon, title, hint);
+    state.glyph = Spinner::new()
+        .with_size(px(24.))
+        .color(theme.muted_foreground)
+        .into_any_element();
+    state
+}
+
 /// See [`empty_state`].
 #[derive(IntoElement)]
 pub struct EmptyState {
-    icon: Icon,
+    glyph: AnyElement,
     disc: Hsla,
     title: &'static str,
     title_color: Hsla,
@@ -763,7 +800,7 @@ impl RenderOnce for EmptyState {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(self.icon),
+                    .child(self.glyph),
             )
             .child(
                 div()
@@ -772,14 +809,16 @@ impl RenderOnce for EmptyState {
                     .text_color(self.title_color)
                     .child(self.title),
             )
-            .child(
-                div()
-                    .max_w(px(360.))
-                    .text_center()
-                    .text_sm()
-                    .text_color(self.subtitle_color)
-                    .child(self.subtitle),
-            );
+            .when(!self.subtitle.is_empty(), |message| {
+                message.child(
+                    div()
+                        .max_w(px(360.))
+                        .text_center()
+                        .text_sm()
+                        .text_color(self.subtitle_color)
+                        .child(self.subtitle),
+                )
+            });
         // Zero height, so it leaves the message centred: the action
         // overflows downward from it.
         let action = div()

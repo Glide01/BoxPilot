@@ -3,8 +3,8 @@ use crate::core::log_columns::LogColumnWidths;
 use crate::core::connections_view::switched_away;
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
 use crate::core::orchestration::{
-    config_change_action, fetch_result_applies, process_edge_effects, ApiPortRetry,
-    ConfigChangeAction, ProcessEdgeEffect, StartPhase,
+    config_change_action, fetch_result_applies, run_phase_effects, ApiPortRetry,
+    ConfigChangeAction, RunEffect, RunPhase, StartPhase,
 };
 #[cfg(target_os = "linux")]
 use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
@@ -19,6 +19,7 @@ use crate::core::paths::{
     create_private_dir, get_app_data_dir, get_install_dir, profile_config_path,
     runtime_config_path,
 };
+use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::{
     default_auto_update_interval, default_update_via_sing_box, AppSettings, LanguagePreference,
     Profile, ProfileSource, StatusEvent, StatusLevel, ThemePreference, CONFIG_FILENAME,
@@ -66,6 +67,14 @@ const AUTO_UPDATE_TICK: Duration = Duration::from_secs(60);
 /// time (`SystemTime`) decides, so a machine that slept through the day
 /// still checks within the hour after waking.
 const UPDATE_CHECK_TICK: Duration = Duration::from_secs(60 * 60);
+
+/// How often a launched sing-box's API is asked whether it is up yet
+/// (`probe_api`). Loopback, and a refused connection answers at once.
+const API_PROBE_INTERVAL: Duration = Duration::from_millis(200);
+/// A launched sing-box whose API hasn't answered after this long gets one
+/// warning. Starting can legitimately take seconds (remote rule sets, TUN),
+/// and one that gives up exits; the probe keeps going either way.
+const API_READY_WARNING: Duration = Duration::from_secs(30);
 
 /// The BoxPilot update check (Settings › About; the Settings sidebar dot).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,13 +227,18 @@ pub struct AppState {
     pub network_tools: Entity<NetworkTools>,
     /// Tailscale endpoints of the running config; streamed while running.
     pub tailscale: Entity<TailscaleState>,
-    /// OpenConnect / OpenVPN / USB/IP status and sign-in challenges; follows
-    /// the process Running/Stopped edges on its own.
+    /// OpenConnect / OpenVPN / USB/IP status and sign-in challenges;
+    /// streamed while connected.
     pub vpn: Entity<VpnStatus>,
-    /// Last `is_running()` seen by the process observer — detects
-    /// Running/Stopped edges so groups + traffic refresh exactly once per
-    /// transition.
-    groups_saw_running: bool,
+    /// The last `RunPhase` acted on (`sync_run_phase`), so each edge starts
+    /// or stops the API consumers exactly once.
+    run_phase_seen: RunPhase,
+    /// The current run's API has answered (`probe_api`): the run is Ready.
+    /// Reset whenever sing-box is not running.
+    api_ready: bool,
+    /// Asks a launched run's API until it answers; dropped (cancelled) when
+    /// the run stops.
+    api_probe: Option<Task<()>>,
     /// Long-lived background task that periodically refreshes the
     /// subscription. Held so it lives as long as `AppState` and is dropped
     /// (cancelled) on app exit.
@@ -414,71 +428,19 @@ impl AppState {
         let tailscale = cx.new(|_| TailscaleState::new(api));
         let vpn = cx.new({
             let runtime_config = runtime_config_path(&app_dir);
-            let process = process.clone();
-            move |cx| VpnStatus::new(api, runtime_config, &process, cx)
+            move |_| VpnStatus::new(api, runtime_config)
         });
 
         let state = cx.new(|cx| {
-            // Drive ProxyGroups + Traffic + Connections from process
-            // Running/Stopped edges.
-            // The edge decision is pure (`core::orchestration`, unit-tested);
-            // this observer just executes the returned effects and stores the
-            // acted-on state, which is what makes each transition fire once.
+            // Drive the API consumers from the run's phase edges
+            // (`sync_run_phase`): the process Running/Stopped edges here, the
+            // API's first answer in `probe_api`.
             cx.observe(&process, |this: &mut AppState, process, cx| {
-                let (running, stopped) = {
-                    let process = process.read(cx);
-                    (process.is_running(), process.is_stopped())
-                };
-                let effects = process_edge_effects(this.groups_saw_running, running);
-                if !effects.is_empty() {
-                    this.groups_saw_running = running;
+                let stopped = process.read(cx).is_stopped();
+                if !process.read(cx).is_running() {
+                    this.api_ready = false;
                 }
-                for effect in effects {
-                    match effect {
-                        ProcessEdgeEffect::StartGroups => this
-                            .proxy_groups
-                            .update(cx, |groups, cx| groups.start(cx)),
-                        ProcessEdgeEffect::StartTraffic => {
-                            this.traffic.update(cx, |traffic, cx| traffic.start(cx))
-                        }
-                        ProcessEdgeEffect::ClearGroups => {
-                            this.proxy_groups.update(cx, |groups, cx| groups.clear(cx))
-                        }
-                        ProcessEdgeEffect::StopTraffic => {
-                            this.traffic.update(cx, |traffic, cx| traffic.stop(cx))
-                        }
-                        ProcessEdgeEffect::StartClashMode => {
-                            this.clash_mode.update(cx, |mode, cx| mode.start(cx))
-                        }
-                        ProcessEdgeEffect::ClearClashMode => {
-                            this.clash_mode.update(cx, |mode, cx| mode.clear(cx))
-                        }
-                        ProcessEdgeEffect::StartConnections => this
-                            .connections
-                            .update(cx, |connections, cx| connections.start(cx)),
-                        ProcessEdgeEffect::StopConnections => this
-                            .connections
-                            .update(cx, |connections, cx| connections.stop(cx)),
-                        ProcessEdgeEffect::StartNetworkTools => this
-                            .network_tools
-                            .update(cx, |tools, cx| tools.start(cx)),
-                        ProcessEdgeEffect::StopNetworkTools => this
-                            .network_tools
-                            .update(cx, |tools, cx| tools.stop(cx)),
-                        ProcessEdgeEffect::StartTailscale => {
-                            this.tailscale.update(cx, |tailscale, cx| tailscale.start(cx))
-                        }
-                        ProcessEdgeEffect::ClearTailscale => {
-                            this.tailscale.update(cx, |tailscale, cx| tailscale.clear(cx))
-                        }
-                        ProcessEdgeEffect::StartLogs => {
-                            this.logs.update(cx, |logs, cx| logs.start_api(cx))
-                        }
-                        ProcessEdgeEffect::StopLogs => {
-                            this.logs.update(cx, |logs, cx| logs.stop_api(cx))
-                        }
-                    }
-                }
+                this.sync_run_phase(cx);
                 if stopped {
                     this.redo_start_if_api_port_lost(cx);
                 }
@@ -496,7 +458,7 @@ impl AppState {
             .detach();
 
             // A run through the privileged helper listens where the helper
-            // said; every entity gets it before the Running edge.
+            // said; every entity gets it before the Launched edge.
             cx.subscribe(&process, |this: &mut AppState, _, api: &HelperApi, cx| {
                 this.set_api(api.0, cx)
             })
@@ -771,7 +733,9 @@ impl AppState {
                 network_tools,
                 tailscale,
                 vpn,
-                groups_saw_running: false,
+                run_phase_seen: RunPhase::Stopped,
+                api_ready: false,
+                api_probe: None,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
                 tun_gate: None,
@@ -970,7 +934,8 @@ impl AppState {
     }
 
     /// Give every entity that calls the sing-box API this run's endpoint.
-    /// Their streams start on the Running edge, after this.
+    /// Their streams start once the run is Ready (logs: Launched), after
+    /// this.
     fn set_api(&mut self, api: SingBoxApi, cx: &mut Context<Self>) {
         self.api = api;
         self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
@@ -1483,12 +1448,140 @@ impl AppState {
         }
     }
 
-    /// A start is under way: sing-box `Preparing`, or a TUN gate still
-    /// pending (Linux: the plan probe or the pkexec prompt; macOS: the look
-    /// at the helper, or its install). What Home and the sidebar show as
-    /// Starting, and what holds the power button off.
+    /// A start is under way: a TUN gate still pending (Linux: the plan
+    /// probe or the pkexec prompt; macOS: the look at the helper, or its
+    /// install), sing-box `Preparing`, or sing-box launched but its API not
+    /// answering yet (`RunPhase::Launched`). What Home, the sidebar, the
+    /// tray and the API pages show as Starting; the power button cancels it.
     pub fn is_starting(&self, cx: &App) -> bool {
-        matches!(self.start_phase(cx), StartPhase::Gated | StartPhase::Preparing)
+        match self.start_phase(cx) {
+            StartPhase::Gated | StartPhase::Preparing => true,
+            StartPhase::Running => !self.api_ready,
+            StartPhase::Idle => false,
+        }
+    }
+
+    /// sing-box runs and its API has answered (`RunPhase::Ready`): what the
+    /// app shows as Connected.
+    pub fn is_connected(&self, cx: &App) -> bool {
+        self.api_ready && self.process.read(cx).is_running()
+    }
+
+    /// Disconnected / Starting / Connected, as Home, the sidebar, the tray
+    /// and the API pages show it.
+    pub fn connection_status(&self, cx: &App) -> ConnectionStatus {
+        ConnectionStatus::from_flags(self.is_starting(cx), self.is_connected(cx))
+    }
+
+    fn run_phase(&self, cx: &App) -> RunPhase {
+        if !self.process.read(cx).is_running() {
+            RunPhase::Stopped
+        } else if self.api_ready {
+            RunPhase::Ready
+        } else {
+            RunPhase::Launched
+        }
+    }
+
+    /// Act on a `RunPhase` edge: start or stop the API consumers. The edge
+    /// decision is pure (`run_phase_effects`, unit-tested); this executes
+    /// the returned effects and stores the acted-on phase, which is what
+    /// makes each transition fire once.
+    fn sync_run_phase(&mut self, cx: &mut Context<Self>) {
+        let now = self.run_phase(cx);
+        let effects = run_phase_effects(self.run_phase_seen, now);
+        if effects.is_empty() {
+            return;
+        }
+        self.run_phase_seen = now;
+        for effect in effects {
+            match effect {
+                RunEffect::StartLogs => self.logs.update(cx, |logs, cx| logs.start_api(cx)),
+                RunEffect::ProbeApi => self.probe_api(cx),
+                RunEffect::StartGroups => {
+                    self.proxy_groups.update(cx, |groups, cx| groups.start(cx))
+                }
+                RunEffect::StartTraffic => {
+                    self.traffic.update(cx, |traffic, cx| traffic.start(cx))
+                }
+                RunEffect::StartClashMode => {
+                    self.clash_mode.update(cx, |mode, cx| mode.start(cx))
+                }
+                RunEffect::StartConnections => self
+                    .connections
+                    .update(cx, |connections, cx| connections.start(cx)),
+                RunEffect::StartNetworkTools => {
+                    self.network_tools.update(cx, |tools, cx| tools.start(cx))
+                }
+                RunEffect::StartTailscale => self
+                    .tailscale
+                    .update(cx, |tailscale, cx| tailscale.start(cx)),
+                RunEffect::StartVpn => self.vpn.update(cx, |vpn, cx| vpn.start(cx)),
+                RunEffect::ClearGroups => {
+                    self.proxy_groups.update(cx, |groups, cx| groups.clear(cx))
+                }
+                RunEffect::StopTraffic => self.traffic.update(cx, |traffic, cx| traffic.stop(cx)),
+                RunEffect::ClearClashMode => {
+                    self.clash_mode.update(cx, |mode, cx| mode.clear(cx))
+                }
+                RunEffect::StopConnections => self
+                    .connections
+                    .update(cx, |connections, cx| connections.stop(cx)),
+                RunEffect::StopNetworkTools => {
+                    self.network_tools.update(cx, |tools, cx| tools.stop(cx))
+                }
+                RunEffect::ClearTailscale => self
+                    .tailscale
+                    .update(cx, |tailscale, cx| tailscale.clear(cx)),
+                RunEffect::ClearVpn => self.vpn.update(cx, |vpn, cx| vpn.clear(cx)),
+                RunEffect::StopLogs => self.logs.update(cx, |logs, cx| logs.stop_api(cx)),
+                RunEffect::StopApiProbe => self.api_probe = None,
+            }
+        }
+        // Starting / Connected moved.
+        cx.notify();
+    }
+
+    /// Launched: ask the API (`GetVersion`) every `API_PROBE_INTERVAL` until
+    /// it answers, then the run is Ready. sing-box opens it only once it is
+    /// up, so until then it refuses connections; that is not an error. One
+    /// warning, with the last reason, if it takes `API_READY_WARNING`.
+    fn probe_api(&mut self, cx: &mut Context<Self>) {
+        let api = self.api;
+        self.api_probe = Some(cx.spawn(async move |this, cx| {
+            let started = Instant::now();
+            let mut warned = false;
+            loop {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { api.get_version() })
+                    .await;
+                let error = match result {
+                    Ok(_) => {
+                        let _ = this.update(cx, |state, cx| {
+                            state.api_ready = true;
+                            state.sync_run_phase(cx);
+                        });
+                        return;
+                    }
+                    Err(e) => e,
+                };
+                if !warned && started.elapsed() >= API_READY_WARNING {
+                    warned = true;
+                    let message = (s().messages.api_not_ready)(&error.to_string());
+                    let emitted = this.update(cx, |_, cx| {
+                        cx.emit(StatusEvent {
+                            level: StatusLevel::Warning,
+                            message,
+                        })
+                    });
+                    if emitted.is_err() {
+                        return;
+                    }
+                }
+                cx.background_executor().timer(API_PROBE_INTERVAL).await;
+            }
+        }));
     }
 
     /// How far a start has got; see `StartPhase`.

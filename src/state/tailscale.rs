@@ -1,8 +1,8 @@
 //! Live state of the running profile's Tailscale endpoints: status
 //! (`SubscribeTailscaleStatus`), each endpoint's Taildrop inbox, an optional
 //! peer ping, and the one-shot actions (exit node, logout, Taildrop file
-//! operations, certificates). Owned by `AppState`; started on the process
-//! Stopped→Running edge and cleared on the reverse edge, the same way
+//! operations, certificates). Owned by `AppState`; started once the run is
+//! Ready (its API answered) and cleared when it stops, the same way
 //! `ProxyGroups` and `Traffic` are driven.
 //!
 //! Whether the Tailscale page exists at all is decided here:
@@ -146,7 +146,7 @@ impl TailscaleState {
         self.busy.contains(action)
     }
 
-    /// Subscribe (Stopped→Running edge). One reader thread holds the status
+    /// Subscribe (Ready edge). One reader thread holds the status
     /// stream; one more per endpoint holds its Taildrop inbox, started as
     /// the endpoint first appears (the set is fixed for a run — a config
     /// change restarts sing-box). A UI-thread task applies the newest of

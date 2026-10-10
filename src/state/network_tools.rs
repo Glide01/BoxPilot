@@ -1,7 +1,7 @@
 //! Tools page state: the outbound list to test through, and at most one
-//! network quality run and one STUN run. Owned by `AppState`; started on the
-//! process Stopped→Running edge and cleared on the reverse edge (see the
-//! observer in `AppState::new`), the same way `ProxyGroups` and `Traffic`
+//! network quality run and one STUN run. Owned by `AppState`; started once
+//! the run is Ready (its API answered) and cleared when it stops
+//! (`AppState::sync_run_phase`), the same way `ProxyGroups` and `Traffic`
 //! are driven.
 //!
 //! Each run is a sing-box API server stream held by a dedicated thread; a
@@ -132,7 +132,7 @@ impl NetworkTools {
             .is_some_and(|run| run.status.is_running())
     }
 
-    /// Stopped→Running edge: enable the tools and load the outbound list.
+    /// Ready edge: enable the tools and load the outbound list.
     /// The list is fixed for a sing-box run (a config change restarts it),
     /// so one `SubscribeOutbounds` snapshot is enough; the thread retries
     /// until the API answers or the session ends.

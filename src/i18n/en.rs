@@ -29,6 +29,8 @@ pub static EN: Strings = Strings {
         connect: "Connect",
         disconnect: "Disconnect",
         cancel_start: "Cancel connecting",
+        sing_box_starting: "sing-box is starting",
+        loading: "Loading…",
     },
     time: Time {
         just_now: "just now",
@@ -177,6 +179,9 @@ pub static EN: Strings = Strings {
         timeout: "timeout",
         empty_title: "No node groups",
         empty_hint: "Connect to see node groups here.",
+        starting_hint: "Node groups show here once it is up.",
+        none_title: "No node groups in this profile",
+        none_hint: "Its config has no selector or urltest outbounds.",
         no_match_title: "No matching nodes",
         no_match_hint: "Try a different search.",
     },
@@ -208,6 +213,7 @@ pub static EN: Strings = Strings {
         closed: "closed",
         empty_title: "No connections",
         empty_hint: "Connect to see live connections here.",
+        starting_hint: "Live connections show here once it is up.",
         no_match_title: "No matching connections",
         no_match_hint: "Try a different filter.",
         no_active_title: "No active connections",
@@ -273,6 +279,7 @@ pub static EN: Strings = Strings {
         clear: "Clear",
         empty_title: "No logs yet",
         empty_hint: "Connect to start streaming sing-box output.",
+        starting_hint: "Its output shows here as it arrives.",
         search_placeholder: "Search logs (-word to exclude)",
         lines: |n| {
             if n == 1 {
@@ -294,6 +301,7 @@ pub static EN: Strings = Strings {
     tools: Tools {
         not_running_title: "sing-box is not running",
         not_running_hint: "Connect to test network quality and NAT type.",
+        starting_hint: "The tests are available once it is up.",
         outbound: "Outbound",
         search_outbounds: "Search outbounds",
         default_outbound: "Default outbound",
@@ -731,6 +739,7 @@ pub static EN: Strings = Strings {
             format!("Failed to start {binary} with config {config}: {e}")
         },
         api_no_response: "sing-box API did not respond",
+        api_not_ready: |e| format!("sing-box is still not up after 30 seconds: {e}"),
         groups_failed: |e| format!("Failed to load proxy groups: {e}"),
         switch_node_failed: |e| format!("Failed to switch node: {e}"),
         save_group_state_failed: |e| format!("Failed to save group state: {e}"),

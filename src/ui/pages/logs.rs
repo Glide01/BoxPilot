@@ -32,10 +32,11 @@ use crate::core::singbox_api::LogLevel;
 use crate::core::timefmt::format_clock_ms;
 use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
-use crate::ui::pages::ActivePage;
+use crate::ui::pages::{rerender_on_status, ActivePage};
 use crate::ui::widgets::{
-    control_input, empty_state, page_header, page_layout, page_scrollbar, row_hover_bg, segmented,
-    tag_badge, toolbar_search, warn_orange, Control, ControlSize, Segment, TextLabel,
+    control_input, empty_state, page_header, page_layout, page_scrollbar, row_hover_bg,
+    run_empty_state, segmented, tag_badge, toolbar_search, warn_orange, Control, ControlSize,
+    Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -131,10 +132,8 @@ impl LogsPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let logs = app_state.read(cx).logs.clone();
         cx.observe(&logs, |_, _, cx| cx.notify()).detach();
-        // Stopped / started: the Live badge and the empty state's Connect
-        // button follow.
-        let process = app_state.read(cx).process.clone();
-        cx.observe(&process, |_, _, cx| cx.notify()).detach();
+        // The Live badge and the empty state follow the connection status.
+        rerender_on_status(&app_state, cx);
 
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(s().logs.search_placeholder));
@@ -632,16 +631,19 @@ impl Render for LogsPage {
         let t = &s().logs;
 
         let total = logs.entries().len();
+        let status = self.app_state.read(cx).connection_status(cx);
 
         // No lines yet: nothing to search, filter, copy or clear.
         if total == 0 {
             return page_layout(
                 page_header(theme, ActivePage::Logs),
-                div().size_full().child(empty_state(
+                div().size_full().child(run_empty_state(
                     theme,
+                    status,
                     IconName::SquareTerminal,
                     t.empty_title,
                     t.empty_hint,
+                    t.starting_hint,
                 )),
             );
         }

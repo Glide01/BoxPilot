@@ -34,9 +34,20 @@ proxying, as the sing-box API reports it: its destination, the inbound that
 accepted it, the route rule that matched, and the outbound chain that
 carries it (shown group → node). Listed on the Connections page while open,
 and for a while after it closes — sing-box remembers the last 1000 closed
-ones. Unrelated to BoxPilot's "Connected" status, which means sing-box is
-running.
+ones. Unrelated to BoxPilot's "Connected" status (see **Connection
+status**).
 _Avoid_: request, session
+
+**Connection status**:
+What Home, the sidebar and the tray say about sing-box: **Disconnected** (no
+sing-box), **Starting…** (a start under way: the TUN gate, preparing the
+config, or sing-box running but its sing-box API not answering yet) and
+**Connected** (sing-box running and its API has answered). sing-box opens its
+API only once it is up, which can take seconds (remote rule sets, TUN), so
+a sing-box process alone is still Starting. The pages that show a running
+sing-box's data (Groups, Connections, Logs, Tools) follow the same three
+states in their empty state.
+_Avoid_: running (for Connected)
 
 **BoxPilot version**:
 The version of the BoxPilot app itself (the Cargo package version).

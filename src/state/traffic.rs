@@ -2,9 +2,8 @@
 //! connection counts and transfer totals, all from the one `SubscribeStatus`
 //! stream of the sing-box API service — plus when it started and which
 //! version it is (`GetStartedAt` / `GetVersion`, fetched once per run).
-//! Owned by `AppState`; started on the process Stopped→Running edge and
-//! stopped on the reverse edge (see the observer in `AppState::new`), the
-//! same way `ProxyGroups` is driven.
+//! Owned by `AppState`; started once the run is Ready (its API answered)
+//! and stopped when it stops (`AppState::sync_run_phase`), the same way `ProxyGroups` is driven.
 
 use crate::core::singbox_api::{ApiError, RuntimeStatus, SingBoxApi};
 use crate::state::drain::next_batch;
@@ -21,8 +20,7 @@ use std::time::Duration;
 /// one; it only folds a backlog (e.g. after a stall) into a single render.
 const COALESCE: Duration = Duration::from_millis(50);
 /// Delay before the reader thread reconnects after a stream ends while still
-/// running — covers the brief window before the sing-box API is listening
-/// and any transient drop. Bounded by the `running` flag so it never spins.
+/// running — covers any transient drop. Bounded by the `running` flag so it never spins.
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// How many times (`RECONNECT_DELAY` apart) to ask for the start time and
 /// version before giving up for this run. Both answer as soon as the API
@@ -115,8 +113,8 @@ impl Traffic {
 
         // Dedicated blocking reader thread: gpui's executor is not built for
         // blocking stream reads (same reason the stdout/stderr pipe readers
-        // use raw threads). It reconnects while `running` so it tolerates the
-        // startup window before the API is up, and exits once the flag
+        // use raw threads). It reconnects while `running` so it rides out a
+        // transient drop, and exits once the flag
         // clears or the receiver is gone (drain task dropped on stop()).
         thread::spawn(move || {
             while running.load(Ordering::SeqCst) {

@@ -421,10 +421,9 @@ impl RootView {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_starting = self.app_state.read(cx).is_starting(cx);
-        let is_running = self.app_state.read(cx).process.read(cx).is_running();
+        let status = self.app_state.read(cx).connection_status(cx);
+        let is_starting = status == ConnectionStatus::Starting;
         let theme = cx.theme();
-        let status = ConnectionStatus::from_flags(is_starting, is_running);
         let chrome = theme.sidebar;
         let fg = theme.foreground;
         let muted = theme.muted_foreground;
@@ -438,7 +437,7 @@ impl Render for RootView {
         };
         let (panel_bg, panel_border) = (theme.background, theme.border);
         // 电源按钮旁的文字:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
-        let detail = if is_running {
+        let detail = if status == ConnectionStatus::Connected {
             let traffic = self.app_state.read(cx).traffic.read(cx);
             StatusDetail::Speed(format_speed(traffic.down), format_speed(traffic.up))
         } else {

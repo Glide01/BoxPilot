@@ -2,8 +2,8 @@
 //! route/DNS rules match on. The modes come from the running config
 //! (`GetClashModeStatus`), the current one is followed live
 //! (`SubscribeClashMode`), and the Home switcher changes it
-//! (`SetClashMode`). Owned by `AppState`; started on the process
-//! Stopped→Running edge and cleared on the reverse edge, the same way
+//! (`SetClashMode`). Owned by `AppState`; started once the run is Ready
+//! (its API answered) and cleared when it stops, the same way
 //! `ProxyGroups` and `Traffic` are driven.
 //!
 //! Nothing is persisted here: sing-box itself stores the chosen mode in
@@ -26,7 +26,7 @@ use std::time::Duration;
 /// as one render.
 const COALESCE: Duration = Duration::from_millis(50);
 /// Delay before the reader thread retries after a failed call while still
-/// running — covers the window before the sing-box API is listening.
+/// running — covers a transient drop.
 /// Bounded by the `running` flag.
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
@@ -84,9 +84,9 @@ impl ClashMode {
         mode_index(&self.modes, &self.current)
     }
 
-    /// Load the modes and follow the current one (Stopped→Running edge). A
-    /// dedicated reader thread fetches the list (retrying until the API is
-    /// up), then holds `SubscribeClashMode`, re-subscribing on the routine
+    /// Load the modes and follow the current one (Ready edge). A
+    /// dedicated reader thread fetches the list (retrying while a call
+    /// fails), then holds `SubscribeClashMode`, re-subscribing on the routine
     /// idle timeout.
     pub fn start(&mut self, cx: &mut Context<Self>) {
         // A prior session's thread reads the *old* Arc, so flipping it and

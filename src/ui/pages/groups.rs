@@ -11,7 +11,9 @@
 //!   pick by latency and are read-only.
 //! - Clicking a node's delay badge (or the zap icon that shows on hover
 //!   while it has none) tests just that node; its badge spins meanwhile.
-//! - sing-box stopped (or its API unreachable): no groups, empty state.
+//! - No live groups: the empty state follows the connection status
+//!   (`run_empty_state`: how to get some, or a spinner while sing-box
+//!   starts); a running config without groups says so instead.
 //!
 //! The cards are rows of a `v_virtual_list`, so only what is on screen is
 //! built — thousands of nodes stay smooth. Each card is drawn row by row
@@ -25,11 +27,12 @@ use crate::core::singbox_api::{classify_delay, DelayLevel, GroupKind, ProxyGroup
 use crate::i18n::s;
 use crate::state::{AppState, DelayState, GroupSource, ProxyGroups};
 use crate::ui::locale;
-use crate::ui::pages::ActivePage;
+use crate::ui::pages::{rerender_on_status, ActivePage};
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
     control_input, empty_state, full_text_tooltip, page_header, page_layout, page_scrollbar,
-    segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel, Segment,
+    run_empty_state, segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel,
+    Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -80,6 +83,7 @@ struct RowsKey {
 }
 
 pub struct GroupsPage {
+    app_state: Entity<AppState>,
     proxy_groups: Entity<ProxyGroups>,
     search: Entity<InputState>,
     sort: NodeSort,
@@ -96,6 +100,7 @@ impl GroupsPage {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let proxy_groups = app_state.read(cx).proxy_groups.clone();
         cx.observe(&proxy_groups, |_, _, cx| cx.notify()).detach();
+        rerender_on_status(&app_state, cx);
 
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(s().groups.search_placeholder));
@@ -114,6 +119,7 @@ impl GroupsPage {
         .detach();
 
         Self {
+            app_state,
             proxy_groups,
             search,
             sort: NodeSort::default(),
@@ -681,8 +687,19 @@ impl Render for GroupsPage {
             );
         }
 
-        let body = if !has_groups {
-            empty_state(theme, IconName::Globe, t.empty_title, t.empty_hint).into_any_element()
+        let body = if !live {
+            let status = self.app_state.read(cx).connection_status(cx);
+            run_empty_state(
+                theme,
+                status,
+                IconName::Globe,
+                t.empty_title,
+                t.empty_hint,
+                t.starting_hint,
+            )
+            .into_any_element()
+        } else if !has_groups {
+            empty_state(theme, IconName::Globe, t.none_title, t.none_hint).into_any_element()
         } else if self.layout.rows.is_empty() {
             empty_state(theme, IconName::Search, t.no_match_title, t.no_match_hint)
                 .into_any_element()
