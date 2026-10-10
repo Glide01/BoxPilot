@@ -74,8 +74,8 @@ use crate::state::{AppState, Connections};
 use crate::ui::locale;
 use crate::ui::pages::{rerender_on_status, ActivePage};
 use crate::ui::widgets::{
-    choice_select, control_input, empty_state, full_text_tooltip, may_truncate, page_header,
-    page_layout, page_scrollbar, row_hover_bg, run_empty_state, segmented, tag_badge,
+    api_stalled_notice, choice_select, control_input, empty_state, full_text_tooltip, may_truncate,
+    page_header, page_layout, page_scrollbar, row_hover_bg, run_empty_state, segmented, tag_badge,
     toolbar_search, warn_orange, Control, ControlSize, IconLabel, Segment, TextLabel,
 };
 use gpui::prelude::FluentBuilder;
@@ -1335,6 +1335,9 @@ impl Render for ConnectionsPage {
                     pause_page.update(cx, |this, cx| this.toggle_pause(cx)).ok();
                 });
             head = head.context(summary_items).action(pause).action(close_all);
+        }
+        if self.app_state.read(cx).api_stalled(cx) {
+            head = head.context(api_stalled_notice(theme));
         }
 
         // The empty state goes on the page's root (see `empty_state`), the

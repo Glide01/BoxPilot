@@ -30,9 +30,9 @@ use crate::ui::locale;
 use crate::ui::pages::{rerender_on_status, ActivePage};
 use crate::ui::theme::CARD_RADIUS;
 use crate::ui::widgets::{
-    control_input, empty_state, full_text_tooltip, page_header, page_layout, page_scrollbar,
-    run_empty_state, segmented, text_centered, toolbar_search, Control, ControlSize, IconLabel,
-    Segment,
+    api_stalled_notice, control_input, empty_state, full_text_tooltip, page_header, page_layout,
+    page_scrollbar, run_empty_state, segmented, text_centered, toolbar_search, Control,
+    ControlSize, IconLabel, Segment,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -685,6 +685,9 @@ impl Render for GroupsPage {
                         proxy_groups.update(cx, |state, cx| state.test_all(cx));
                     }),
             );
+        }
+        if self.app_state.read(cx).api_stalled(cx) {
+            page_head = page_head.context(api_stalled_notice(theme));
         }
 
         let body = if !live {

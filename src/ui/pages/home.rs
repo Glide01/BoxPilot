@@ -19,10 +19,10 @@ use crate::ui::card_frame;
 use crate::ui::pages::ActivePage;
 use crate::ui::traffic_chart::{self, TrafficChart};
 use crate::ui::widgets::{
-    empty_state, empty_state_button, freshness_button, grouped_card, may_truncate, meta_row,
-    minute_ticker, page_header, page_layout, power_button, profile_source_line, scroll_page,
-    section_heading, segmented, setting_row, shorten, stat, usage_meter, Control, ControlSize,
-    IconLabel, Segment, TextLabel, CONTROL_LINE_HEIGHT,
+    api_stalled_notice, empty_state, empty_state_button, freshness_button, grouped_card,
+    may_truncate, meta_row, minute_ticker, page_header, page_layout, power_button,
+    profile_source_line, scroll_page, section_heading, segmented, setting_row, shorten, stat,
+    usage_meter, Control, ControlSize, IconLabel, Segment, TextLabel, CONTROL_LINE_HEIGHT,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -157,6 +157,11 @@ impl Render for HomePage {
 
         let traffic = state.traffic.read(cx);
         let runtime = traffic.status;
+        // The API stopped answering mid-run: the figures below are the last
+        // ones it gave.
+        let stalled = connected && traffic.stalled;
+        // Before the first sample the figures are unknown, not zero.
+        let has_sample = traffic.has_sample();
         let info = if connected {
             runtime_info(
                 traffic.started_at,
@@ -253,6 +258,9 @@ impl Render for HomePage {
                         .into_any_element(),
                 )
             }
+            ConnectionStatus::Connected if stalled => {
+                Some(api_stalled_notice(theme).text_sm().into_any_element())
+            }
             ConnectionStatus::Connected if info.uptime.is_some() || info.version.is_some() => Some(
                 meta_row(theme, info.version.into_iter().chain(info.uptime))
                     .gap_4()
@@ -307,6 +315,7 @@ impl Render for HomePage {
 
         // —— 运行状态卡(仅运行中):内存 / 连接数 / 累计上传 / 累计下载,
         // 下接近两分钟上下行速率图。
+        let figure = |value: String| if has_sample { value } else { "…".to_string() };
         let stats = connected.then(|| {
             card_frame(theme)
                 .gap_4()
@@ -316,21 +325,25 @@ impl Render for HomePage {
                         .flex_row()
                         .gap_4()
                         .w_full()
-                        .child(stat(theme, t.home.memory, format_bytes(runtime.memory)))
+                        .child(stat(
+                            theme,
+                            t.home.memory,
+                            figure(format_bytes(runtime.memory)),
+                        ))
                         .child(stat(
                             theme,
                             t.home.connections,
-                            runtime.connections_in.to_string(),
+                            figure(runtime.connections_in.to_string()),
                         ))
                         .child(stat(
                             theme,
                             t.home.uploaded,
-                            format_bytes(runtime.uplink_total),
+                            figure(format_bytes(runtime.uplink_total)),
                         ))
                         .child(stat(
                             theme,
                             t.home.downloaded,
-                            format_bytes(runtime.downlink_total),
+                            figure(format_bytes(runtime.downlink_total)),
                         )),
                 )
                 .child(traffic_chart)

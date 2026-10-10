@@ -32,7 +32,8 @@ pub static ZH_CN: Strings = Strings {
         disconnect: "断开",
         cancel_start: "取消连接",
         sing_box_starting: "sing-box 正在启动",
-        loading: "正在加载…",
+        api_stalled: "sing-box API 没有响应，正在重连…",
+        reconnecting: "正在重连…",
     },
     time: Time {
         just_now: "刚刚",

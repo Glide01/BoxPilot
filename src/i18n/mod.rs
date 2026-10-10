@@ -178,8 +178,11 @@ pub struct Status {
     pub cancel_start: &'static str,
     /// The API pages' empty state while Starting (`run_empty_state`).
     pub sing_box_starting: &'static str,
-    /// …and once Connected, before the page's first data arrives.
-    pub loading: &'static str,
+    /// Connected, but the sing-box API stopped answering (`Traffic::stalled`):
+    /// Home's status line and the API pages' header.
+    pub api_stalled: &'static str,
+    /// The sidebar's short form of `api_stalled`.
+    pub reconnecting: &'static str,
 }
 
 /// Relative times and compact durations.

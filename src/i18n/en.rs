@@ -30,7 +30,8 @@ pub static EN: Strings = Strings {
         disconnect: "Disconnect",
         cancel_start: "Cancel connecting",
         sing_box_starting: "sing-box is starting",
-        loading: "Loading…",
+        api_stalled: "sing-box API not responding — reconnecting…",
+        reconnecting: "Reconnecting…",
     },
     time: Time {
         just_now: "just now",

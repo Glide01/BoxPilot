@@ -3,17 +3,22 @@
 //! stream of the sing-box API service — plus when it started and which
 //! version it is (`GetStartedAt` / `GetVersion`, fetched once per run).
 //! Owned by `AppState`; started once the run is Ready (its API answered)
-//! and stopped when it stops (`AppState::sync_run_phase`), the same way `ProxyGroups` is driven.
+//! and stopped when it stops (`AppState::sync_run_phase`), the same way
+//! `ProxyGroups` is driven.
+//!
+//! The stream is also the sing-box API's heartbeat: sing-box sends a sample
+//! every second, idle or not, so a run with none for `STALL_AFTER` has an
+//! API that stopped answering (`stalled`), and the API pages say so.
 
 use crate::core::singbox_api::{ApiError, RuntimeStatus, SingBoxApi};
-use crate::state::drain::next_batch;
+use crate::state::drain::{next_batch_or, Wake};
 use futures_channel::mpsc;
 use gpui::{Context, Task};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Once a sample arrives, how long the drain task waits for stragglers
 /// before applying. Samples come ~1/sec, so this is almost always a batch of
@@ -26,6 +31,11 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// version before giving up for this run. Both answer as soon as the API
 /// listens, which is within a second or two of the process starting.
 const INFO_ATTEMPTS: usize = 30;
+/// No sample for this long while running: the API is `stalled`. Samples come
+/// every second, so this rides out a re-subscribe or two; it is also how long
+/// the official sing-box desktop client waits before it reports a dropped
+/// stream.
+const STALL_AFTER: Duration = Duration::from_millis(6500);
 /// How many samples the rate history keeps: sing-box reports once a second,
 /// so this is the Home traffic chart's two-minute window.
 pub const HISTORY_LEN: usize = 120;
@@ -54,6 +64,10 @@ pub struct Traffic {
     pub started_at: Option<i64>,
     /// The running sing-box's own version (`GetVersion`).
     pub version: Option<String>,
+    /// While streaming: no sample for `STALL_AFTER` — the sing-box API
+    /// stopped answering (the reader keeps re-subscribing). Cleared by the
+    /// next sample, and on stop.
+    pub stalled: bool,
     /// The last [`HISTORY_LEN`] samples' rates, oldest first. Every sample
     /// lands here (see `ingest`); cleared with the rest of the readout when a
     /// run starts or stops.
@@ -81,6 +95,7 @@ impl Traffic {
             status: RuntimeStatus::default(),
             started_at: None,
             version: None,
+            stalled: false,
             history: VecDeque::with_capacity(HISTORY_LEN),
             api,
             running: Arc::new(AtomicBool::new(false)),
@@ -133,10 +148,32 @@ impl Traffic {
 
         let drain = cx.spawn(async move |this, cx| {
             let executor = cx.background_executor().clone();
-            while let Some(samples) = next_batch(&mut rx, || executor.timer(COALESCE)).await {
+            // The run is Ready: its API just answered, which counts as the
+            // first sign of life.
+            let mut last_sample = Instant::now();
+            let mut stalled = false;
+            loop {
+                // A clock only while a stall is yet to be noticed.
+                let clock = (!stalled)
+                    .then(|| executor.timer(STALL_AFTER.saturating_sub(last_sample.elapsed())));
+                let samples = match next_batch_or(&mut rx, clock, || executor.timer(COALESCE)).await
+                {
+                    Wake::Batch(samples) => samples,
+                    Wake::Timer => Vec::new(),
+                    Wake::Closed => break,
+                };
+                if !samples.is_empty() {
+                    last_sample = Instant::now();
+                }
+                let now_stalled = last_sample.elapsed() >= STALL_AFTER;
+                if samples.is_empty() && now_stalled == stalled {
+                    continue;
+                }
+                stalled = now_stalled;
                 if this
                     .update(cx, |traffic, cx| {
                         traffic.ingest(samples);
+                        traffic.stalled = stalled;
                         cx.notify();
                     })
                     .is_err()
@@ -200,6 +237,12 @@ impl Traffic {
         }
     }
 
+    /// Whether this run has had a sample yet; until then the readout is
+    /// zero for want of one, not because nothing moved.
+    pub fn has_sample(&self) -> bool {
+        !self.history.is_empty()
+    }
+
     /// The recent rates, oldest first: at most [`HISTORY_LEN`] samples, one
     /// a second, of the current run only.
     pub fn history(&self) -> &VecDeque<RatePoint> {
@@ -218,6 +261,7 @@ impl Traffic {
         self.history.clear();
         self.started_at = None;
         self.version = None;
+        self.stalled = false;
     }
 
     /// Stop streaming and clear the readout. The reader thread notices the
@@ -302,5 +346,19 @@ mod tests {
         assert_eq!((traffic.up, traffic.down), (0, 0));
         traffic.ingest(vec![sample(9, 9)]);
         assert_eq!(traffic.history().len(), 1);
+    }
+
+    /// Home shows "…" until a run's first sample, and a new run starts
+    /// neither stalled nor with the last run's samples.
+    #[test]
+    fn a_run_has_no_sample_and_no_stall_until_it_streams() {
+        let mut traffic = traffic();
+        assert!(!traffic.has_sample());
+        traffic.ingest(vec![sample(1, 2)]);
+        assert!(traffic.has_sample());
+        traffic.stalled = true;
+        traffic.reset();
+        assert!(!traffic.has_sample());
+        assert!(!traffic.stalled);
     }
 }

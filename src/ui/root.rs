@@ -437,7 +437,9 @@ impl Render for RootView {
         };
         let (panel_bg, panel_border) = (theme.background, theme.border);
         // 电源按钮旁的文字:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
-        let detail = if status == ConnectionStatus::Connected {
+        let detail = if self.app_state.read(cx).api_stalled(cx) {
+            StatusDetail::Reconnecting
+        } else if status == ConnectionStatus::Connected {
             let traffic = self.app_state.read(cx).traffic.read(cx);
             StatusDetail::Speed(format_speed(traffic.down), format_speed(traffic.up))
         } else {

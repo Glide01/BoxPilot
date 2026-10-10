@@ -34,9 +34,9 @@ use crate::i18n::s;
 use crate::state::{AppState, LogBuffer};
 use crate::ui::pages::{rerender_on_status, ActivePage};
 use crate::ui::widgets::{
-    control_input, empty_state, page_header, page_layout, page_scrollbar, row_hover_bg,
-    run_empty_state, segmented, tag_badge, toolbar_search, warn_orange, Control, ControlSize,
-    Segment, TextLabel,
+    api_stalled_notice, control_input, empty_state, page_header, page_layout, page_scrollbar,
+    row_hover_bg, run_empty_state, segmented, tag_badge, toolbar_search, warn_orange, Control,
+    ControlSize, Segment, TextLabel,
 };
 use crate::ui::{card_frame, locale, toast};
 use gpui::{prelude::FluentBuilder, *};
@@ -851,8 +851,13 @@ impl Render for LogsPage {
             .and_then(|id| entry(logs.entries(), id))
             .map(|e| detail_card(e, &page, theme));
 
+        let context = if self.app_state.read(cx).api_stalled(cx) {
+            api_stalled_notice(theme).into_any_element()
+        } else {
+            meta.into_any_element()
+        };
         page_layout(
-            head.context(meta),
+            head.context(context),
             div()
                 .v_flex()
                 .size_full()

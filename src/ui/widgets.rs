@@ -754,7 +754,7 @@ pub fn run_empty_state(
     let (title, hint) = match status {
         ConnectionStatus::Disconnected => return empty_state(theme, icon, title, hint),
         ConnectionStatus::Starting => (t.sing_box_starting, starting_hint),
-        ConnectionStatus::Connected => (t.loading, ""),
+        ConnectionStatus::Connected => (s().common.loading, ""),
     };
     let mut state = empty_state(theme, icon, title, hint);
     state.glyph = Spinner::new()
@@ -762,6 +762,20 @@ pub fn run_empty_state(
         .color(theme.muted_foreground)
         .into_any_element();
     state
+}
+
+/// "sing-box API not responding — reconnecting…", in the warning colour:
+/// Home's status line and the API pages' header context while connected
+/// but the API stopped answering (`AppState::api_stalled`). What those
+/// pages show is the last thing it said.
+pub fn api_stalled_notice(theme: &Theme) -> Div {
+    div()
+        .h_flex()
+        .min_w_0()
+        .gap_1p5()
+        .text_color(theme.warning)
+        .child(Icon::new(IconName::TriangleAlert).size_4().flex_shrink_0())
+        .child(div().truncate().child(s().status.api_stalled))
 }
 
 /// See [`empty_state`].

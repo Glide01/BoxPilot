@@ -2,7 +2,7 @@
 //! `RootView` keeps all of them alive and renders the active one.
 
 use crate::state::app_state::AppState;
-use gpui::{Context, Entity};
+use gpui::{App, Context, Entity};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -81,22 +81,27 @@ impl ActivePage {
 }
 
 /// Re-render the page `cx` belongs to whenever the connection status
-/// (Disconnected / Starting / Connected) changes — for pages whose empty
-/// state follows it (`widgets::run_empty_state`). Only the edges notify:
-/// `AppState` notifies often.
+/// (Disconnected / Starting / Connected) or the API's stall
+/// (`AppState::api_stalled`) changes — for pages whose empty state and
+/// header follow them (`widgets::run_empty_state`,
+/// `widgets::api_stalled_notice`). Only the edges notify: `AppState` notifies
+/// often, `Traffic` every second.
 pub(crate) fn rerender_on_status<T: 'static>(app_state: &Entity<AppState>, cx: &mut Context<T>) {
-    let last = Rc::new(Cell::new(app_state.read(cx).connection_status(cx)));
-    let process = app_state.read(cx).process.clone();
+    let seen = |state: &AppState, cx: &App| (state.connection_status(cx), state.api_stalled(cx));
+    let last = Rc::new(Cell::new(seen(app_state.read(cx), cx)));
     let check = {
         let app_state = app_state.clone();
         move |cx: &mut Context<T>| {
-            let now = app_state.read(cx).connection_status(cx);
+            let now = seen(app_state.read(cx), cx);
             if last.replace(now) != now {
                 cx.notify();
             }
         }
     };
-    let on_process = check.clone();
+    let process = app_state.read(cx).process.clone();
+    let traffic = app_state.read(cx).traffic.clone();
+    let (on_process, on_traffic) = (check.clone(), check.clone());
     cx.observe(app_state, move |_, _, cx| check(cx)).detach();
     cx.observe(&process, move |_, _, cx| on_process(cx)).detach();
+    cx.observe(&traffic, move |_, _, cx| on_traffic(cx)).detach();
 }

@@ -59,6 +59,9 @@ pub enum StatusDetail {
     /// (download, upload), formatted.
     Speed(String, String),
     Profile(String),
+    /// Connected, but the sing-box API stopped answering: in place of the
+    /// rates it no longer sends.
+    Reconnecting,
     None,
 }
 
@@ -68,6 +71,7 @@ impl StatusDetail {
         match self {
             StatusDetail::Speed(down, up) => Some(format!("↓ {down}  ↑ {up}")),
             StatusDetail::Profile(name) => Some(name.clone()),
+            StatusDetail::Reconnecting => Some(s().status.reconnecting.to_string()),
             StatusDetail::None => None,
         }
     }
@@ -252,6 +256,9 @@ fn status_power(
             footer_speed("icons/arrow-up.svg", up, colors),
         ],
         StatusDetail::Profile(name) => vec![label(), detail(name)],
+        StatusDetail::Reconnecting => {
+            vec![label(), detail(s().status.reconnecting.to_string())]
+        }
         StatusDetail::None => vec![label()],
     };
     // The text where the nav labels start; the button a little left of

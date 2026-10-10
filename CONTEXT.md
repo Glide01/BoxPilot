@@ -46,7 +46,10 @@ config, or sing-box running but its sing-box API not answering yet) and
 API only once it is up, which can take seconds (remote rule sets, TUN), so
 a sing-box process alone is still Starting. The pages that show a running
 sing-box's data (Groups, Connections, Logs, Tools) follow the same three
-states in their empty state.
+states in their empty state. Connected but the API stopped answering
+mid-run (no status sample for 6.5 s) is still Connected — sing-box may well
+be proxying — with a "not responding, reconnecting" notice on Home, the
+sidebar and those pages until it answers again.
 _Avoid_: running (for Connected)
 
 **BoxPilot version**:

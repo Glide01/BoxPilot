@@ -1467,6 +1467,13 @@ impl AppState {
         self.api_ready && self.process.read(cx).is_running()
     }
 
+    /// Connected, but the sing-box API stopped answering mid-run
+    /// (`Traffic::stalled`): what the API pages show is the last it said,
+    /// and the streams are re-subscribing.
+    pub fn api_stalled(&self, cx: &App) -> bool {
+        self.is_connected(cx) && self.traffic.read(cx).stalled
+    }
+
     /// Disconnected / Starting / Connected, as Home, the sidebar, the tray
     /// and the API pages show it.
     pub fn connection_status(&self, cx: &App) -> ConnectionStatus {
@@ -1544,7 +1551,9 @@ impl AppState {
 
     /// Launched: ask the API (`GetVersion`) every `API_PROBE_INTERVAL` until
     /// it answers, then the run is Ready. sing-box opens it only once it is
-    /// up, so until then it refuses connections; that is not an error. One
+    /// up — the `api` service listens at the last start stage,
+    /// `StartStateStarted`, after the inbounds and the router — so until then
+    /// it refuses connections; that is not an error. One
     /// warning, with the last reason, if it takes `API_READY_WARNING`.
     fn probe_api(&mut self, cx: &mut Context<Self>) {
         let api = self.api;
