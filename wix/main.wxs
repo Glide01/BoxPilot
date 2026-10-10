@@ -11,6 +11,19 @@
   - Supports upgrade/downgrade (replaces previous versions)
   - Registers in Add/Remove Programs
   - Preserves user config in AppData (not touched by uninstall)
+  - Installs the privileged helper (ADR 0006 rule 7): the BoxPilotHelper
+    service in the fixed Program Files\BoxPilot\Helper, and beside it its
+    state folder Program Files\BoxPilot\HelperState. Only SYSTEM and
+    Administrators may write either, and only they may read the state
+    folder. No custom actions.
+
+  Build variables, besides the ones cargo wix defines:
+  - HelperLibcronet: "yes" when sing-box's Windows archive ships
+    libcronet.dll beside sing-box.exe (1.14.2 does), "no" otherwise. The
+    release workflow passes it (cargo wix -C -dHelperLibcronet=...) from
+    what packaging/windows/stage-helper.ps1 staged, and that script writes
+    the helper's manifest.json from the same files, so the MSI and the
+    manifest always list the same ones.
 -->
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
 
@@ -23,11 +36,26 @@
         Codepage='1252'
         Version='$(var.Version)'>
 
+        <?if $(var.HelperLibcronet) != "yes" AND $(var.HelperLibcronet) != "no" ?>
+        <?error HelperLibcronet must be yes or no (see the comment at the top) ?>
+        <?endif?>
+
+        <!--
+          InstallerVersion 500 (Windows Installer 5.0, in every Windows
+          since 7): the helper's service and state folders are secured
+          through the MsiLockPermissionsEx table (PermissionEx/@Sddl
+          below), which Windows Installer 4.5 and earlier silently ignore.
+          An older installer would then leave the service with its default
+          DACL, which doesn't let users start it, and the state folder with
+          Program Files' inherited "Users: read & execute", which the helper
+          refuses there (exit code 11). With 500 such an installer refuses
+          the package instead.
+        -->
         <Package Id='*'
             Keywords='Installer'
             Description='BoxPilot $(var.Version) Installer'
             Manufacturer='BoxPilot Contributors'
-            InstallerVersion='450'
+            InstallerVersion='500'
             Languages='1033'
             Compressed='yes'
             InstallScope='perMachine'
@@ -95,6 +123,244 @@
                         </RegistryKey>
                     </Component>
                 </Directory>
+
+                <!--
+                  The privileged helper's directory (ADR 0006 rules 3 and 7):
+                  [ProgramFiles64Folder]BoxPilot\Helper, always. A second
+                  "BoxPilot" directory, so it doesn't follow APPLICATIONFOLDER
+                  (the folder the user may pick in the setup dialog): a
+                  SYSTEM service must never run from a folder its user chose.
+                  Both resolve to C:\Program Files\BoxPilot unless the user
+                  moves the application. The ids aren't public properties
+                  (not all upper case) and no feature names them as its
+                  ConfigurableDirectory, so neither the dialog nor the
+                  command line moves them; the helper refuses to run from
+                  anywhere else anyway (exit code 10).
+
+                  No permissions are set here: Program Files' inherited ACL
+                  (SYSTEM, Administrators and TrustedInstaller may write;
+                  Users read and execute) is what the helper checks for.
+
+                  The four files come from the release workflow's staging
+                  (packaging/windows/stage-helper.ps1 into
+                  CargoTargetBinDir\helper): manifest.json holds the
+                  SHA-256 of sing-box.exe and libcronet.dll exactly as
+                  staged here, and the helper refuses to run (exit code 12)
+                  if they differ.
+                -->
+                <Directory Id='HelperParentFolder' Name='BoxPilot'>
+                    <Directory Id='HelperFolder' Name='Helper'>
+                        <Component Id='HelperExecutable' Guid='*' Win64='yes'>
+                            <File
+                                Id='HelperExe'
+                                Name='boxpilot-helper.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\helper\boxpilot-helper.exe'
+                                KeyPath='yes'/>
+
+                            <!--
+                              The service runs this component's key path,
+                              with no arguments: the helper takes none as a
+                              service. LocalSystem (no Account), demand
+                              start: the GUI starts it when TUN needs it,
+                              and it stops itself when idle.
+                            -->
+                            <ServiceInstall
+                                Id='HelperService'
+                                Name='BoxPilotHelper'
+                                DisplayName='BoxPilot Privileged Helper'
+                                Description='Runs sing-box for BoxPilot TUN mode, on a config it has checked. BoxPilot starts it when needed; it stops itself when idle.'
+                                Type='ownProcess'
+                                Start='demand'
+                                ErrorControl='normal'
+                                Vital='yes'>
+                                <!--
+                                  The service's security descriptor. It is
+                                  Windows' default for a service that
+                                  CreateService creates ("Service Security
+                                  and Access Rights": Administrators all
+                                  access; LocalSystem query, start, stop,
+                                  pause, interrogate, user controls; local
+                                  authenticated users, meaning the
+                                  interactive and service logons, query and
+                                  user controls only). That is what
+                                  sc sdshow prints for a fresh service:
+
+                                    D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)
+                                      (A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)
+                                      (A;;CCLCSWLOCRRC;;;IU)
+                                      (A;;CCLCSWLOCRRC;;;SU)
+                                    S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)
+
+                                  with one change: interactive users also
+                                  get RP (start), so the unelevated GUI can
+                                  start the helper on demand (ADR 0006
+                                  rule 6).
+
+                                  The service rights in SDDL: CC query
+                                  config, DC change config, LC query status,
+                                  SW enumerate dependents, RP start, WP
+                                  stop, DT pause/continue, LO interrogate,
+                                  CR user-defined control, SD delete, RC
+                                  read the security descriptor, WD write
+                                  the DACL, WO write the owner.
+
+                                  O:SY  owner SYSTEM, a service's default.
+                                  G:SY  group SYSTEM, a service's default.
+                                  D:    the DACL, as Windows' default:
+                                  (A;;CCLCSWRPWPDTLOCRRC;;;SY)
+                                        SYSTEM: query, start, stop, pause,
+                                        interrogate, user controls, read.
+                                        Unchanged.
+                                  (A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)
+                                        Administrators: SERVICE_ALL_ACCESS.
+                                        The only ones who may change the
+                                        config (and so the binary it runs),
+                                        delete the service or rewrite this
+                                        descriptor. Unchanged.
+                                  (A;;CCLCSWRPLOCRRC;;;IU)
+                                        Interactive users (local and remote
+                                        desktop logons): the default's query
+                                        config, query status, enumerate
+                                        dependents, interrogate, user
+                                        controls (the helper answers codes
+                                        128 to 255 with "not implemented")
+                                        and read, plus RP. Never DC, which
+                                        would let them repoint the binary,
+                                        nor WP, DT, SD, WD or WO.
+                                  (A;;CCLCSWLOCRRC;;;SU)
+                                        Service logons: read-only, as by
+                                        default. Unchanged.
+
+                                  The default's SACL (audit failed access
+                                  by Everyone) is left out: it grants
+                                  nothing, and writing a SACL needs
+                                  SeSecurityPrivilege.
+                                -->
+                                <PermissionEx
+                                    Id='HelperServiceSecurity'
+                                    Sddl='O:SYG:SYD:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)'/>
+                            </ServiceInstall>
+
+                            <!--
+                              Stopped before the files are replaced (an
+                              install, a repair, or this product's upgrade:
+                              MajorUpgrade removes the old product first,
+                              whose own ServiceControl stops and removes
+                              its service) and on uninstall; removed on
+                              uninstall. Never started here: the GUI starts
+                              it on demand. Stopping it stops the sing-box
+                              it runs.
+                            -->
+                            <ServiceControl
+                                Id='HelperServiceControl'
+                                Name='BoxPilotHelper'
+                                Stop='both'
+                                Remove='uninstall'
+                                Wait='yes'/>
+                        </Component>
+                        <Component Id='HelperSingBoxExecutable' Guid='*' Win64='yes'>
+                            <File
+                                Id='HelperSingBoxExe'
+                                Name='sing-box.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\helper\sing-box.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                        <?if $(var.HelperLibcronet) = "yes" ?>
+                        <!--
+                          The naive outbound loads libcronet.dll from beside
+                          sing-box (the application directory comes first in
+                          the DLL search order), so the helper's sing-box gets
+                          its own copy here, hashed in the manifest.
+                        -->
+                        <Component Id='HelperLibcronet' Guid='*' Win64='yes'>
+                            <File
+                                Id='HelperLibcronetDll'
+                                Name='libcronet.dll'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\helper\libcronet.dll'
+                                KeyPath='yes'/>
+                        </Component>
+                        <?endif?>
+                        <Component Id='HelperManifest' Guid='*' Win64='yes'>
+                            <File
+                                Id='HelperManifestJson'
+                                Name='manifest.json'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\helper\manifest.json'
+                                KeyPath='yes'/>
+                        </Component>
+                    </Directory>
+
+                    <!--
+                      The helper's state: [ProgramFiles64Folder]BoxPilot\HelperState,
+                      holding helper.log, runs\ (one private directory per
+                      sing-box start) and users\<SID> (each account's cache.db
+                      and Tailscale state, node keys included). The helper
+                      finds it there (boxpilot_helper::paths::Layout::installed)
+                      and checks it on every start and spawn (exit code 11).
+
+                      Under Program Files, not ProgramData: every user may
+                      create entries in C:\ProgramData, so a user could create
+                      ProgramData\BoxPilot before the install, as a folder the
+                      helper would refuse, or as a junction (to System32, say)
+                      through which this installer, as SYSTEM, would apply the
+                      descriptor below to whatever it points at. Users can
+                      create nothing under Program Files. A sibling of Helper,
+                      never inside it: nothing written as state lands among
+                      the binaries, and Helper's ACL stays Program Files'.
+
+                      Program Files' inherited ACL lets Users read and
+                      execute, which is right for the binaries and wrong here,
+                      so the folder gets an explicit protected security
+                      descriptor (MsiLockPermissionsEx, applied by
+                      CreateFolders each time it installs or reinstalls the
+                      component: to a folder already there too, and again on
+                      every repair and upgrade):
+
+                        O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)
+
+                        O:SY   owner SYSTEM. The helper refuses an owner other
+                               than SYSTEM, Administrators or TrustedInstaller.
+                        G:SY   group SYSTEM (no part in access checks; given so
+                               the descriptor is complete).
+                        D:P    a protected DACL: nothing inherited from Program
+                               Files, so no "Users: read & execute".
+                        (A;OICI;FA;;;SY)   SYSTEM: full control of the folder,
+                               and, inherited, of the folders (CI) and files
+                               (OI) in it.
+                        (A;OICI;FA;;;BA)   Administrators: the same.
+
+                      Nobody else gets anything, not even read: the GUI
+                      reaches the helper through its pipe and never opens this
+                      tree. It is the DACL the helper gives every folder it
+                      creates there (paths::STATE_DIR_DACL), and the helper
+                      refuses the folder if anyone else may read or write it.
+
+                      Uninstall: a CreateFolder entry, which Windows Installer
+                      removes on uninstall only when it is empty. Once the
+                      helper has run it is not, so HelperState stays (and with
+                      it Program Files\BoxPilot), still readable by SYSTEM and
+                      Administrators only; a later install reapplies the
+                      descriptor and the helper picks its state up again. An
+                      administrator deletes the folder to remove it, Tailscale
+                      logins included. No custom action does (ADR 0006
+                      rule 7).
+
+                      An explicit GUID: a component whose key path is its
+                      directory can't have a generated one.
+                    -->
+                    <Directory Id='HelperStateFolder' Name='HelperState'>
+                        <Component Id='HelperState' Guid='F6DA0A37-4B14-4977-823D-BAF496891DB3' Win64='yes' KeyPath='yes'>
+                            <CreateFolder>
+                                <PermissionEx
+                                    Id='HelperStateSecurity'
+                                    Sddl='O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'/>
+                            </CreateFolder>
+                        </Component>
+                    </Directory>
+                </Directory>
             </Directory>
 
             <Directory Id='ProgramMenuFolder'>
@@ -152,6 +418,14 @@
             <ComponentRef Id='SingBoxExecutable'/>
             <ComponentRef Id='UrlProtocolBoxpilot'/>
             <ComponentRef Id='UrlProtocolSingBox'/>
+            <!-- The privileged helper: always installed with BoxPilot. -->
+            <ComponentRef Id='HelperExecutable'/>
+            <ComponentRef Id='HelperSingBoxExecutable'/>
+            <?if $(var.HelperLibcronet) = "yes" ?>
+            <ComponentRef Id='HelperLibcronet'/>
+            <?endif?>
+            <ComponentRef Id='HelperManifest'/>
+            <ComponentRef Id='HelperState'/>
             <Feature
                 Id='StartMenuFeature'
                 Title='Start Menu Shortcut'

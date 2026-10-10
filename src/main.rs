@@ -1,93 +1,24 @@
 #![windows_subsystem = "windows"]
 
-use box_pilot_gui::actions::{ToggleProcess, UpdateSubscription};
+use box_pilot_gui::actions::{
+    CloseConnectionDetails, FocusNext, FocusPrevious, SelectNextConnection,
+    SelectPreviousConnection, ShowConnections, ShowGroups, ShowHome, ShowLogs, ShowProfiles,
+    ShowSettings, ShowTools, ToggleProcess, UpdateSubscription, CONNECTION_DETAILS_CONTEXT,
+    KEY_CONTEXT,
+};
 use box_pilot_gui::core::deeplink::LaunchAttempt;
 use box_pilot_gui::state::AppState;
-use box_pilot_gui::ui::RootView;
-use gpui::*;
-use gpui_component::{ActiveTheme, Root, Theme};
 use box_pilot_gui::ui::assets::AppAssets;
-
-/// On Windows, ensure the process is running with admin rights. If not,
-/// re-launch self via `ShellExecuteW("runas", ...)` (UAC prompt) and exit.
-/// Required because sing-box management touches TUN adapters, the system
-/// proxy registry, and DNS — all admin-only operations. The relaunch
-/// forwards argv so a deep link survives the elevation hop (browser launches
-/// us non-elevated with the URI as argv[1]).
-#[cfg(target_os = "windows")]
-fn ensure_elevated() {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::{w, PCWSTR};
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    unsafe {
-        let mut token = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_ok() {
-            let mut elevation = TOKEN_ELEVATION::default();
-            let mut size = 0u32;
-            let ok = GetTokenInformation(
-                token,
-                TokenElevation,
-                Some(&mut elevation as *mut _ as *mut _),
-                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-                &mut size,
-            )
-            .is_ok();
-            let _ = CloseHandle(token);
-            if ok && elevation.TokenIsElevated != 0 {
-                return;
-            }
-        }
-    }
-
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    let mut exe_w: Vec<u16> = exe.as_os_str().encode_wide().collect();
-    exe_w.push(0);
-
-    // Quote-wrap each argument. Deep-link URIs contain no quotes (they're
-    // percent-encoded), so plain wrapping is sufficient.
-    let params = std::env::args()
-        .skip(1)
-        .map(|a| format!("\"{}\"", a))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let params_w: Vec<u16> = std::ffi::OsStr::new(&params)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    unsafe {
-        ShellExecuteW(
-            HWND::default(),
-            w!("runas"),
-            PCWSTR::from_raw(exe_w.as_ptr()),
-            if params.is_empty() {
-                PCWSTR::null()
-            } else {
-                PCWSTR::from_raw(params_w.as_ptr())
-            },
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
-    }
-    std::process::exit(0);
-}
+use box_pilot_gui::ui::{app_window, locale, theme, tray};
+use gpui::*;
 
 fn main() {
-    // A browser-launched deep link arrives as argv[1] in a fresh,
-    // non-elevated process. If a primary instance is already running, hand
-    // the link over BEFORE the elevation check — the common path then needs
-    // no UAC prompt at all. An empty forward (no URI) just keeps a plain
-    // second launch from spawning a duplicate sing-box manager.
+    // A browser-launched deep link arrives as argv[1] in a fresh process.
+    // If a primary instance is already running, hand the link over and
+    // exit. An empty forward (no URI) just keeps a plain second launch from
+    // spawning a duplicate sing-box manager. BoxPilot never elevates itself:
+    // TUN on Windows goes through the privileged helper (ADR 0006), so the
+    // primary runs at whatever privilege the user started it with.
     let deeplink_arg = std::env::args()
         .nth(1)
         .filter(|arg| box_pilot_gui::core::deeplink::is_deeplink(arg));
@@ -95,13 +26,11 @@ fn main() {
         return;
     }
 
-    #[cfg(target_os = "windows")]
-    ensure_elevated();
-
     // Launch attempts reaching this instance: our own argv link, plus every
-    // one the pipe server forwards later. A cold start with no link is not
-    // an *attempt to reach a running instance*, so it sends nothing —
-    // `Plain` only ever originates from the pipe.
+    // one the pipe server forwards later (and, on macOS, the Apple events
+    // below). A cold start with no link is not an *attempt to reach a
+    // running instance*, so it sends nothing — `Plain` only ever originates
+    // from the pipe or a macOS reopen.
     let (deeplink_tx, deeplink_rx) = futures_channel::mpsc::unbounded::<LaunchAttempt>();
     if let Some(uri) = deeplink_arg {
         let _ = deeplink_tx.unbounded_send(LaunchAttempt::DeepLink(uri));
@@ -126,42 +55,91 @@ fn main() {
         }
     }
 
-    gpui_platform::application().with_assets(AppAssets).run(move |cx| {
-        gpui_component::init(cx);
-        let theme = Theme::global_mut(cx);
-        // 浅色主题默认 primary 是黑色系(shadcn 风);按设计稿改为蓝色强调。
-        theme.primary = rgb(0x2563EB).into(); // blue-600
-        theme.primary_hover = rgb(0x1D4ED8).into(); // blue-700
-        theme.primary_active = rgb(0x1E40AF).into(); // blue-800
-        theme.sidebar_accent = rgb(0xEAF1FE).into();
-        theme.sidebar_accent_foreground = rgb(0x1D4ED8).into();
+    // AppImage: make this image the handler for our link schemes. Primary
+    // only, and on a background thread — never delays the window.
+    #[cfg(target_os = "linux")]
+    box_pilot_gui::core::desktop_integration::register_if_appimage();
 
+    let app = gpui_platform::application().with_assets(AppAssets);
+
+    // macOS starts no new process for a link click or a second launch from
+    // Finder / the Dock: LaunchServices hands them to the running app as
+    // Apple events — a cold start's link too, never in argv. Both become
+    // launch attempts in the same channel, so ADR 0001's rule (and its
+    // `view_attached()` gate) covers them unchanged. gpui calls `on_reopen`
+    // only while no window is visible: with one up, AppKit brings it
+    // forward itself.
+    #[cfg(target_os = "macos")]
+    {
+        let tx = deeplink_tx.clone();
+        app.on_open_urls(move |urls| {
+            for attempt in LaunchAttempt::from_open_urls(urls) {
+                let _ = tx.unbounded_send(attempt);
+            }
+        });
+        let tx = deeplink_tx.clone();
+        app.on_reopen(move |_| {
+            let _ = tx.unbounded_send(LaunchAttempt::Plain);
+        });
+    }
+
+    app.run(move |cx| {
+        gpui_component::init(cx);
+
+        // Anywhere in the main window (`RootView` keeps focus inside its
+        // context). `secondary` is Cmd on macOS, Ctrl elsewhere. Ctrl+S not
+        // while typing in a text field (gpui-component's `Input` context): a
+        // stray save chord there shouldn't toggle sing-box.
         cx.bind_keys([
-            KeyBinding::new("ctrl-u", UpdateSubscription, Some("BoxPilot")),
-            KeyBinding::new("ctrl-s", ToggleProcess, Some("BoxPilot")),
+            KeyBinding::new("secondary-u", UpdateSubscription, Some(KEY_CONTEXT)),
+            KeyBinding::new(
+                "secondary-s",
+                ToggleProcess,
+                Some(&format!("{KEY_CONTEXT} && !Input")),
+            ),
+        ]);
+        // Keyboard navigation: Tab walks the controls (out of a text field
+        // too), Ctrl+1..7 (Cmd on macOS) open the pages in sidebar order.
+        cx.bind_keys([
+            KeyBinding::new("tab", FocusNext, Some(KEY_CONTEXT)),
+            KeyBinding::new("shift-tab", FocusPrevious, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-1", ShowHome, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-2", ShowGroups, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-3", ShowConnections, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-4", ShowProfiles, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-5", ShowLogs, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-6", ShowTools, Some(KEY_CONTEXT)),
+            KeyBinding::new("secondary-7", ShowSettings, Some(KEY_CONTEXT)),
+        ]);
+        // Connections details panel, only while it is open (the page sets
+        // the context then) and never while typing in the filter box, whose
+        // own Esc / arrow keys stay its own.
+        let details = format!("{CONNECTION_DETAILS_CONTEXT} && !Input");
+        cx.bind_keys([
+            KeyBinding::new("escape", CloseConnectionDetails, Some(&details)),
+            KeyBinding::new("up", SelectPreviousConnection, Some(&details)),
+            KeyBinding::new("down", SelectNextConnection, Some(&details)),
         ]);
 
         let app_state = AppState::new(deeplink_rx, cx);
-        let bounds = Bounds::centered(None, size(px(860.), px(620.)), cx);
+        // The saved language (System resolved from the OS locale), for
+        // gpui-component's built-in strings too, before any window opens.
+        let language = app_state.read(cx).settings.language;
+        locale::apply(language, cx);
+        // Light / dark per the saved Appearance preference (System resolved
+        // against the OS; the window re-resolves against its own
+        // appearance when it opens).
+        let theme_pref = app_state.read(cx).settings.theme;
+        theme::apply(theme_pref, None, cx);
+        // The window lifecycle owns `AppState` from here on (dropped on
+        // quit, which stops sing-box); the tray comes up alongside, in the
+        // background on Linux.
+        app_window::init(app_state.clone(), cx);
+        tray::init(&app_state, cx);
+        #[cfg(target_os = "macos")]
+        box_pilot_gui::ui::app_menu::init(&app_state, cx);
+        drop(app_state);
 
-        cx.spawn(async move |cx| {
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(720.), px(500.))),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("BoxPilot".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let view = cx.new(|cx| RootView::new(app_state.clone(), window, cx));
-                    cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
-                },
-            )
-            .expect("Failed to open window");
-        })
-        .detach();
+        cx.spawn(async move |cx| cx.update(app_window::show)).detach();
     });
 }

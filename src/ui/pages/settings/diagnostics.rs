@@ -1,0 +1,34 @@
+//! Settings › Troubleshooting "Running config" row: opens the viewer for the
+//! config sing-box runs with (`ui::config_viewer`).
+
+use super::SettingsPage;
+use crate::i18n::s;
+use crate::state::AppState;
+use crate::ui::{
+    config_viewer,
+    widgets::{setting_row, Control, ControlSize, TextLabel},
+};
+use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
+use gpui_component::{button::Button, ActiveTheme};
+
+/// This slot's rows, in display order; empty = nothing to show.
+pub(super) fn rows(
+    app_state: &Entity<AppState>,
+    _window: &mut Window,
+    cx: &mut Context<SettingsPage>,
+) -> Vec<AnyElement> {
+    let app_state = app_state.clone();
+    vec![setting_row(
+        cx.theme(),
+        s().settings.running_config,
+        Some(s().settings.running_config_hint),
+    )
+    .child(
+        Button::new("view-running-config")
+            .outline()
+            .control(ControlSize::Regular)
+            .text_label(s().common.view)
+            .on_click(move |_, window, cx| config_viewer::open(app_state.clone(), window, cx)),
+    )
+    .into_any_element()]
+}

@@ -1,5 +1,8 @@
-//! Relative-time formatting for the subscription "last updated" label.
+//! Time formatting: the subscription "last updated" label, the Home
+//! uptime readout, local date-times (connection details) and clock times
+//! (the Connections and Logs tables).
 
+use crate::i18n::s;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -10,16 +13,15 @@ pub fn format_relative_time(then: SystemTime, now: SystemTime) -> String {
         .duration_since(then)
         .unwrap_or(Duration::ZERO)
         .as_secs();
+    let t = &s().time;
     if secs < 60 {
-        "just now".to_string()
+        t.just_now.to_string()
     } else if secs < 3600 {
-        format!("{} min ago", secs / 60)
+        (t.minutes_ago)(secs / 60)
     } else if secs < 86400 {
-        format!("{} hr ago", secs / 3600)
-    } else if secs < 86400 * 2 {
-        "1 day ago".to_string()
+        (t.hours_ago)(secs / 3600)
     } else {
-        format!("{} days ago", secs / 86400)
+        (t.days_ago)(secs / 86400)
     }
 }
 
@@ -41,9 +43,156 @@ pub fn from_unix_secs(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
 }
 
+/// Compact elapsed-time label for the Home uptime readout: `42s` (under a
+/// minute), `12m 5s` (under an hour), `1h 23m` (under a day), `2d 4h`. Two
+/// units at most, so the label stays short; seconds show only within the
+/// first hour, where the per-second tick is what tells the user it's live.
+pub fn format_uptime(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let (days, hours, mins, sec) = (
+        secs / 86400,
+        secs % 86400 / 3600,
+        secs % 3600 / 60,
+        secs % 60,
+    );
+    let t = &s().time;
+    if secs < 60 {
+        format!("{}{}", secs, t.second)
+    } else if secs < 3600 {
+        format!("{}{}{}{}{}", mins, t.minute, t.unit_sep, sec, t.second)
+    } else if secs < 86400 {
+        format!("{}{}{}{}{}", hours, t.hour, t.unit_sep, mins, t.minute)
+    } else {
+        format!("{}{}{}{}{}", days, t.day, t.unit_sep, hours, t.hour)
+    }
+}
+
+/// How long ago `started_at_millis` (unix milliseconds, as sing-box's
+/// `GetStartedAt` reports it) was, as of `now`. A start time in the future
+/// (clock adjusted since) counts as zero.
+pub fn uptime_since(started_at_millis: i64, now: SystemTime) -> Duration {
+    let started = SystemTime::UNIX_EPOCH + Duration::from_millis(started_at_millis.max(0) as u64);
+    now.duration_since(started).unwrap_or(Duration::ZERO)
+}
+
+/// Unix milliseconds as a date-time in the local time zone:
+/// `2026-10-03 14:05:09`. The same in every UI language.
+pub fn format_local_datetime(unix_millis: i64) -> String {
+    format_datetime_in(unix_millis, &chrono::Local)
+}
+
+/// `format_local_datetime` in an explicit zone (tests pin one). Empty for a
+/// timestamp chrono can't represent.
+fn format_datetime_in<Tz: chrono::TimeZone>(unix_millis: i64, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    match chrono::DateTime::from_timestamp_millis(unix_millis) {
+        Some(utc) => utc
+            .with_timezone(zone)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        None => String::new(),
+    }
+}
+
+/// Which day a moment fell on, seen from now in the local time zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalDay {
+    Today,
+    Yesterday,
+    /// Earlier (or, after a clock change, later): `2026-10-03`.
+    Date(String),
+}
+
+/// The local day `then_secs` (unix seconds) fell on relative to `now`, and
+/// its time of day (`14:32`): "updated today at 14:32".
+pub fn local_day_and_time(then_secs: u64, now: SystemTime) -> (LocalDay, String) {
+    let now_secs = to_unix_secs(now).unwrap_or(0);
+    day_and_time_in(then_secs, now_secs, &chrono::Local)
+}
+
+/// `local_day_and_time` in an explicit zone (tests pin one).
+fn day_and_time_in<Tz: chrono::TimeZone>(
+    then_secs: u64,
+    now_secs: u64,
+    zone: &Tz,
+) -> (LocalDay, String) {
+    let at = |secs: u64| {
+        chrono::DateTime::from_timestamp(secs.min(i64::MAX as u64) as i64, 0)
+            .unwrap_or_default()
+            .with_timezone(zone)
+    };
+    let (then, now) = (at(then_secs), at(now_secs));
+    let (then_day, today) = (then.date_naive(), now.date_naive());
+    let day = if then_day == today {
+        LocalDay::Today
+    } else if today.pred_opt() == Some(then_day) {
+        LocalDay::Yesterday
+    } else {
+        LocalDay::Date(then_day.format("%Y-%m-%d").to_string())
+    };
+    (day, then.naive_local().format("%H:%M").to_string())
+}
+
+/// A unix-ms instant as a local wall-clock time, split for a table's time
+/// column: `("16:16:31", ".902")` — the seconds' fraction is drawn quieter.
+pub fn format_clock_ms(ms: i64) -> (String, String) {
+    use chrono::TimeZone;
+    let time = chrono::Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|at| at.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".into());
+    (time, format!(".{:03}", ms.rem_euclid(1000)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_and_time_name_today_and_yesterday_in_the_zone() {
+        // 2026-10-03 06:05:09 UTC.
+        let now = 1_791_007_509;
+        let utc8 = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        assert_eq!(
+            day_and_time_in(now - 60, now, &utc8),
+            (LocalDay::Today, "14:04".to_string())
+        );
+        // 22:00 UTC the day before: already today in UTC+8.
+        let late = now - 8 * 3600 - 5 * 60;
+        assert_eq!(
+            day_and_time_in(late, now, &chrono::Utc).0,
+            LocalDay::Yesterday
+        );
+        assert_eq!(
+            day_and_time_in(late, now, &utc8),
+            (LocalDay::Today, "06:00".to_string())
+        );
+        assert_eq!(
+            day_and_time_in(now - 3 * 86_400, now, &utc8),
+            (
+                LocalDay::Date("2026-09-30".to_string()),
+                "14:05".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn datetime_is_shown_in_the_given_zone() {
+        // 2026-10-03 06:05:09.750 UTC; sub-seconds are dropped.
+        let ms = 1_791_007_509_750;
+        assert_eq!(format_datetime_in(ms, &chrono::Utc), "2026-10-03 06:05:09");
+        let utc8 = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        assert_eq!(format_datetime_in(ms, &utc8), "2026-10-03 14:05:09");
+        // West of UTC it is still the day before.
+        let utc_minus_7 = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
+        assert_eq!(format_datetime_in(ms, &utc_minus_7), "2026-10-02 23:05:09");
+        assert_eq!(format_datetime_in(i64::MAX, &chrono::Utc), "");
+        // The local zone gives the same shape, whatever zone the test runs in.
+        assert_eq!(format_local_datetime(ms).len(), "2026-10-03 06:05:09".len());
+    }
 
     fn at(secs_ago: u64) -> (SystemTime, SystemTime) {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
@@ -119,5 +268,57 @@ mod tests {
         let then = from_unix_secs(1_000_000_000);
         let now = from_unix_secs(1_000_000_000 + 120);
         assert_eq!(format_relative_time(then, now), "2 min ago");
+    }
+
+    #[test]
+    fn uptime_under_a_minute_is_seconds() {
+        assert_eq!(format_uptime(Duration::ZERO), "0s");
+        assert_eq!(format_uptime(Duration::from_millis(59_999)), "59s");
+    }
+
+    #[test]
+    fn uptime_under_an_hour_ticks_seconds() {
+        assert_eq!(format_uptime(Duration::from_secs(60)), "1m 0s");
+        assert_eq!(format_uptime(Duration::from_secs(12 * 60 + 5)), "12m 5s");
+        assert_eq!(format_uptime(Duration::from_secs(3599)), "59m 59s");
+    }
+
+    #[test]
+    fn uptime_hours_and_days_drop_seconds() {
+        assert_eq!(format_uptime(Duration::from_secs(3600)), "1h 0m");
+        assert_eq!(
+            format_uptime(Duration::from_secs(3600 + 23 * 60 + 59)),
+            "1h 23m"
+        );
+        assert_eq!(format_uptime(Duration::from_secs(86399)), "23h 59m");
+        assert_eq!(format_uptime(Duration::from_secs(86400)), "1d 0h");
+        assert_eq!(
+            format_uptime(Duration::from_secs(2 * 86400 + 4 * 3600 + 59)),
+            "2d 4h"
+        );
+    }
+
+    #[test]
+    fn uptime_since_measures_from_unix_millis() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(1_759_400_065_500);
+        assert_eq!(
+            uptime_since(1_759_400_000_000, now),
+            Duration::from_millis(65_500)
+        );
+    }
+
+    #[test]
+    fn uptime_since_future_start_is_zero() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_759_400_000);
+        assert_eq!(uptime_since(1_759_400_005_000, now), Duration::ZERO);
+    }
+
+    #[test]
+    fn clock_splits_off_the_milliseconds() {
+        let (time, fraction) = super::format_clock_ms(1_700_000_000_902);
+        assert_eq!(time.len(), 8);
+        assert_eq!(time.matches(':').count(), 2);
+        assert_eq!(fraction, ".902");
+        assert_eq!(super::format_clock_ms(5).1, ".005");
     }
 }

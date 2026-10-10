@@ -1,0 +1,173 @@
+{
+  "certificate": {
+    "store": "system",
+    "certificate_path": ["C:\\certs\\corp-root.pem", "C:\\certs\\corp-issuing.pem"]
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "hosts",
+        "tag": "corp-hosts",
+        "path": ["C:\\Users\\me\\corp.hosts"]
+      },
+      {
+        "type": "tls",
+        "tag": "corp-dot",
+        "server": "dns.corp.example",
+        "tls": {
+          "enabled": true,
+          "certificate_path": "C:\\certs\\dns-ca.pem"
+        }
+      }
+    ],
+    "final": "corp-dot"
+  },
+  "outbounds": [
+    {
+      "type": "trojan",
+      "tag": "corp-trojan",
+      "server": "t.corp.example",
+      "server_port": 443,
+      "password": "Zb7u9QsK",
+      "tls": {
+        "enabled": true,
+        "server_name": "t.corp.example",
+        "certificate_path": "C:\\certs\\trojan-ca.pem",
+        "client_certificate_path": "C:\\certs\\me.crt",
+        "client_key_path": "C:\\certs\\me.key",
+        "ech": {
+          "enabled": true,
+          "config_path": "C:\\certs\\ech-config.pem"
+        }
+      }
+    },
+    {
+      "type": "ssh",
+      "tag": "bastion",
+      "server": "bastion.corp.example",
+      "server_port": 22,
+      "user": "me",
+      "private_key_path": "C:\\Users\\me\\.ssh\\id_ed25519"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "endpoints": [
+    {
+      "type": "openvpn-client",
+      "tag": "office",
+      "server": "vpn.corp.example",
+      "server_port": 1194,
+      "tls": {
+        "certificate_path": "C:\\certs\\office-ca.crt",
+        "client_certificate_path": "C:\\certs\\office-me.crt",
+        "client_key_path": "C:\\certs\\office-me.key",
+        "crl_path": "C:\\certs\\office.crl",
+        "control_wrap": {
+          "type": "tls_crypt",
+          "key_path": "C:\\certs\\office-tc.key"
+        }
+      }
+    },
+    {
+      "type": "openvpn-client",
+      "tag": "legacy",
+      "server": "old.corp.example",
+      "server_port": 1194,
+      "mode": "static_key",
+      "static_key_path": "C:\\certs\\legacy-static.key"
+    },
+    {
+      "type": "openvpn-server",
+      "tag": "home",
+      "listen_port": 1194,
+      "address": ["10.8.0.1/24"],
+      "tls": {
+        "certificate_path": "C:\\certs\\home-server.crt",
+        "key_path": "C:\\certs\\home-server.key",
+        "client_certificate_path": "C:\\certs\\home-clients-ca.crt"
+      }
+    },
+    {
+      "type": "openconnect",
+      "tag": "lab",
+      "server": "lab.corp.example",
+      "flavor": "gp",
+      "username": "me",
+      "token": {
+        "mode": "totp",
+        "secret_path": "C:\\Users\\me\\lab.totp"
+      },
+      "tls": {
+        "certificate_authority_path": "C:\\certs\\lab-ca.pem",
+        "client_certificate_path": "C:\\certs\\lab-me.pem",
+        "client_key_path": "C:\\certs\\lab-me.key",
+        "mca_certificate_path": "C:\\certs\\lab-machine.pem",
+        "mca_key_path": "C:\\certs\\lab-machine.key"
+      }
+    },
+    {
+      "type": "openconnect",
+      "tag": "pulse",
+      "server": "pulse.corp.example",
+      "flavor": "nc",
+      "tncc": {
+        "machine_identification_enabled": true,
+        "certificates": [
+          {
+            "certificate_path": "C:\\certs\\pulse-device.pem"
+          }
+        ]
+      }
+    }
+  ],
+  "http_clients": [
+    {
+      "tag": "corp-proxy",
+      "detour": "corp-trojan",
+      "headers": {
+        "User-Agent": "BoxPilot"
+      },
+      "tls": {
+        "enabled": true,
+        "certificate_path": "C:\\certs\\proxy-ca.pem"
+      }
+    }
+  ],
+  "route": {
+    "default_http_client": "corp-proxy",
+    "rule_set": [
+      {
+        "type": "local",
+        "tag": "corp-direct",
+        "format": "binary",
+        "path": "C:\\Users\\me\\rules\\corp-direct.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "ads",
+        "format": "binary",
+        "url": "https://rules.example.com/ads.srs",
+        "initial_path": "C:\\Users\\me\\rules\\ads.srs",
+        "http_client": {
+          "tls": {
+            "certificate_path": "C:\\certs\\rules-ca.pem"
+          }
+        }
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": ["corp-direct"],
+        "outbound": "direct"
+      },
+      {
+        "rule_set": ["ads"],
+        "action": "reject"
+      }
+    ],
+    "final": "corp-trojan"
+  }
+}

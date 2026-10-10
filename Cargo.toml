@@ -14,31 +14,57 @@ readme = "README.md"
 product-name = "BoxPilot"
 product-icon = "assets/app.ico"
 
+# The GUI stays the root package; the crates beside it carry no gpui
+# (ADR 0006). The policy, protocol and run-config crates are pure; the
+# privileged helper is a binary of its own, so its dependency graph has no
+# gpui and no reqwest. They are default members too, so the plain
+# `cargo test` CI runs at the root covers their tests as well.
+[workspace]
+members = [
+    ".",
+    "crates/boxpilot-helper",
+    "crates/boxpilot-policy",
+    "crates/boxpilot-protocol",
+    "crates/boxpilot-runconfig",
+]
+default-members = [
+    ".",
+    "crates/boxpilot-helper",
+    "crates/boxpilot-policy",
+    "crates/boxpilot-protocol",
+    "crates/boxpilot-runconfig",
+]
+
 [profile.release]
 panic = "abort"
 strip = true
-opt-level = "z"
+opt-level = 3
 lto = true
+codegen-units = 1
 
 [dependencies]
+# GPUI comes from Zed's `gpui-pre-*` crates.io snapshots, the same source
+# gpui-component itself is published against. gpui-component pins the exact
+# snapshot (`=0.3.7`), so these requirements must match its pin exactly —
+# otherwise cargo resolves two gpui copies and trait coherence breaks (E0277).
+# To bump: move gpui-component / gpui-kit-assets to the new release, then set
+# gpui / gpui_platform to the `gpui-pre` version its Cargo.toml pins.
+# The `package = ...` renames keep `use gpui::...` / `gpui_platform::...` /
+# `gpui_component_assets::...` paths in the source unchanged.
+#
 # `default-features = false` drops `wayland`/`x11` activation at our level.
 # It does NOT suppress gpui's `windows-manifest` feature — that's in gpui's
 # defaults and gpui-component (transitively) activates them, so gpui's bundled
-# MANIFEST is embedded. We let that be the single MANIFEST source; admin
-# elevation is handled at runtime via `ensure_elevated()` in `src/main.rs`.
-#
-# gpui and gpui_platform are pinned via Cargo.lock rather than `rev = "..."`
-# here, because gpui-component's workspace Cargo.toml references gpui without
-# a rev — pinning here with `rev` would produce two different source URL forms
-# in Cargo.lock for the same commit, breaking trait coherence (E0277).
-# To bump: `cargo update -p gpui --precise <commit>` (and gpui_platform).
-gpui = { git = "https://github.com/zed-industries/zed", default-features = false, features = ["font-kit"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "ee4e9e474e9b260b9ef56451da46861ae0fe892a" }
+# MANIFEST is embedded. We let that be the single MANIFEST source. BoxPilot
+# never asks to run elevated: TUN on Windows goes through the privileged
+# helper (ADR 0006).
+gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, features = ["font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
+gpui-component = "=0.7.0"
 # Bundles SVG icon files for IconName via rust-embed. Must be registered with
 # `gpui_platform::application().with_assets(Assets)` in main.rs — without it,
 # every IconName silently renders as empty space.
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "ee4e9e474e9b260b9ef56451da46861ae0fe892a" }
+gpui-component-assets = { package = "gpui-kit-assets", version = "=0.7.0" }
 anyhow = "1"
 futures-util = "0.3"
 # Deep-link channel: the Windows pipe-server thread (and main's argv handling)
@@ -51,28 +77,83 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12.5", features = ["blocking", "rustls-tls"], default-features = false }
 dirs = "5.0"
+# Protobuf messages for the sing-box API service (`core/singbox_api/pb.rs`).
+# Hand-derived structs, no build-time codegen — so no `protoc` on the
+# Windows/MSVC build. The transport is gRPC-Web over the blocking reqwest
+# client above, so no tonic/tokio either.
+prost ={ version = "0.14", default-features = false, features = ["derive", "std"] }
+# OS RNG for the per-run sing-box API secret (`core/singbox_api`). Already in
+# the dep graph at 0.3, so this adds no new crate.
+getrandom = "0.3"
+# The inbounds, cache file and `api` service BoxPilot injects into every run
+# config, shared with the privileged helper (ADR 0006). Pure, no gpui.
+boxpilot-runconfig = { path = "crates/boxpilot-runconfig" }
+# Talking to the privileged helper (ADR 0006): the wire protocol, and the
+# config policy the GUI runs first, so a refused profile never reaches the
+# helper and the user learns which field and why. Both pure, no gpui.
+boxpilot-protocol = { path = "crates/boxpilot-protocol" }
+boxpilot-policy = { path = "crates/boxpilot-policy" }
+# OS UI language for the "System" language preference.
+sys-locale = "0.3"
+# LAN IPv4 addresses shown in the "Allow LAN connections" hint.
+if-addrs = "0.15"
+# Local date-time of a connection's open / close (Connections details panel).
+# Already in the dep graph via gpui and gpui-component: adds no new crate.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
-# Used by `ensure_elevated()` in `src/main.rs` (token elevation check +
-# `ShellExecuteW("runas", ...)` self-relaunch), by the deep-link
-# single-instance pipe in `core/single_instance.rs` (Pipes + FileSystem for
-# CreateNamedPipeW/ReadFile), and by `remove_tun_adapter()` in
-# `core/process.rs` (SetupAPI device enumeration + DiUninstallDevice to drop
-# stale sing-tun adapters natively, replacing a slow powershell+pnputil shell-
-# out — Win32_Devices_DeviceAndDriverInstallation). Version matches zed's
-# workspace pin to avoid duplicate `windows` crate versions in the dep graph.
+# Used by the deep-link single-instance pipe in `core/single_instance.rs`
+# (Pipes + FileSystem for CreateNamedPipeW/ReadFile, Security for its DACL),
+# by the privileged-helper client in `core/privileged_helper/windows.rs`
+# (the helper's pipe with overlapped I/O, starting its demand-start service
+# and reading its exit code — System_Services — and the token elevation
+# check), by the user's system proxy in `core/process.rs` (WinINet's
+# per-connection options + refresh — Networking_WinInet), and by
+# `remove_tun_adapter()` in `core/process.rs` (SetupAPI device enumeration +
+# DiUninstallDevice to drop stale sing-tun adapters natively, replacing a
+# slow powershell+pnputil shell-out — Win32_Devices_DeviceAndDriverInstallation).
+# Version matches gpui-component's pin to avoid duplicate `windows` crate
+# versions in the dep graph.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Networking_WinInet",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Pipes",
+    "Win32_System_Services",
     "Win32_System_Threading",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
 ] }
+# System tray icon + menu. Its hidden window is pumped by gpui's main-thread
+# message loop.
+tray-icon = { version = "0.26", default-features = false }
+# The main window's HWND (`ui/theme.rs` sets its title bar light/dark). Same
+# version gpui uses, so no new crate.
+raw-window-handle = "0.6"
+
+# Linux: turn on gpui's real windowing backends. `gpui_platform` above keeps
+# `default-features` off for every target; without `x11`/`wayland` the Linux
+# build only gets gpui's headless client and panics on the first window. Cargo
+# unifies these features into the single `gpui-pre-platform` dependency.
+# `libc` backs the Unix-only process plumbing (SIGTERM stop, PDEATHSIG) and
+# the TUN capability check.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["x11", "wayland"] }
+libc = "0.2"
+# System tray via StatusNotifierItem over D-Bus (no GTK).
+ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+
+# macOS: gpui's Metal backend needs no feature here (`font-kit` above already
+# reaches it). `libc` backs the same Unix process plumbing as on Linux
+# (SIGTERM stop, the stale sing-box check via `proc_pidpath`). The menu bar
+# icon is the Windows tray's `tray-icon` + `muda`, as an NSStatusItem;
+# default features off drops the GTK backend, which macOS never uses anyway.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+tray-icon = { version = "0.26", default-features = false }
 
 [build-dependencies]
 embed-resource = "2.2.0"

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  BoxPilot.app's Info.plist. A template: build-dmg.sh fills in the two
+  version placeholders, the Cargo.toml version and the same without a
+  pre-release suffix (CFBundleVersion only takes numbers and dots).
+
+  CFBundleURLTypes registers the sing-box:// and boxpilot:// link schemes
+  with LaunchServices when the app is first seen (copied to /Applications,
+  or opened): links then arrive as Apple events, nothing is registered at
+  runtime (see ADR 0005).
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>BoxPilot</string>
+	<key>CFBundleExecutable</key>
+	<string>BoxPilot</string>
+	<key>CFBundleIconFile</key>
+	<string>BoxPilot</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.glide01.boxpilot</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>BoxPilot</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUNDLE_VERSION@</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.github.glide01.boxpilot.import-link</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>sing-box</string>
+				<string>boxpilot</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>

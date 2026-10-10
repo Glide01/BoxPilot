@@ -1,27 +1,56 @@
-use crate::core::clash_api::ClashApi;
+use crate::core::connection_columns::ColumnSettings;
+use crate::core::log_columns::LogColumnWidths;
+use crate::core::connections_view::switched_away;
 use crate::core::deeplink::{derive_profile_name, parse_import_uri, ImportRequest, LaunchAttempt};
-use crate::core::orchestration::{process_edge_effects, ProcessEdgeEffect};
+use crate::core::orchestration::{
+    config_change_action, fetch_result_applies, run_phase_effects, ApiPortRetry,
+    ConfigChangeAction, RunEffect, RunPhase, StartPhase,
+};
+#[cfg(target_os = "linux")]
+use crate::core::privilege::{evaluate_tun_plan, run_grant, TunPlan, PRIVILEGED_COPY_PATH};
+use crate::core::privileged_helper::macos_install::{run_install, run_remove};
+use crate::core::privileged_helper::macos_status::{look, HelperStatus, StartGate};
+use crate::core::privileged_helper::{
+    process_is_elevated, start_route, tun_options, StartRoute, HELPER_INSTALLED_BY_APP,
+    HELPER_PLATFORM,
+};
 use crate::core::process::query_sing_box_version;
 use crate::core::paths::{
-    get_app_data_dir, get_install_dir, profile_config_path, runtime_config_path,
+    create_private_dir, get_app_data_dir, get_install_dir, profile_config_path,
+    runtime_config_path,
 };
+use crate::core::presentation::ConnectionStatus;
 use crate::core::settings::{
-    default_auto_update_interval, AppSettings, Profile, ProfileSource, StatusEvent, StatusLevel,
-    CONFIG_FILENAME, SING_EXECUTABLE,
+    default_auto_update_interval, default_update_via_sing_box, AppSettings, LanguagePreference,
+    Profile, ProfileSource, StatusEvent, StatusLevel, ThemePreference, CONFIG_FILENAME,
+    SING_EXECUTABLE,
 };
+use crate::core::singbox_api::{supports_api_service, SingBoxApi, MIN_SING_BOX_VERSION};
+use crate::core::sub_usage::{SubscriptionUsage, UsageLevel};
 use crate::core::subscription::{
-    import_local_config, perform_update, prepare_config, RuntimeOptions, UpdateOutcome,
+    import_local_config, local_proxy, perform_update, pick_api_port, prepare_config,
+    save_runtime_config, Fetched, RuntimeOptions,
 };
 use crate::core::timefmt::{file_mtime, to_unix_secs};
+use crate::core::update_check::{
+    fetch_latest, is_newer, same_version, should_notify, ReleaseInfo, CHECK_INTERVAL,
+    CURRENT_VERSION, FIRST_CHECK_DELAY,
+};
+use crate::i18n::s;
+use crate::state::clash_mode::ClashMode;
+use crate::state::connections::Connections;
 use crate::state::log_buffer::LogBuffer;
-use crate::state::process_session::{PendingStart, ProcessSession};
-use crate::state::proxy_groups::ProxyGroups;
+use crate::state::network_tools::NetworkTools;
+use crate::state::process_session::{ApiPortLost, HelperApi, Launch, PendingStart, ProcessSession};
+use crate::state::proxy_groups::{NodeSwitched, ProxyGroups};
+use crate::state::tailscale::TailscaleState;
 use crate::state::traffic::Traffic;
+use crate::state::vpn::VpnStatus;
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_channel::oneshot;
 use futures_util::StreamExt;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -32,15 +61,61 @@ use std::time::{Duration, Instant, SystemTime};
 /// takes effect at the next tick without restarting the task.
 const AUTO_UPDATE_TICK: Duration = Duration::from_secs(60);
 
+/// How often the BoxPilot update-check loop wakes to see whether a check is
+/// due (`CHECK_INTERVAL` since the last one). Hourly is plenty against a
+/// daily interval and keeps the loop's idle wakeups negligible; wall-clock
+/// time (`SystemTime`) decides, so a machine that slept through the day
+/// still checks within the hour after waking.
+const UPDATE_CHECK_TICK: Duration = Duration::from_secs(60 * 60);
+
+/// How often a launched sing-box's API is asked whether it is up yet
+/// (`probe_api`). Loopback, and a refused connection answers at once.
+const API_PROBE_INTERVAL: Duration = Duration::from_millis(200);
+/// A launched sing-box whose API hasn't answered after this long gets one
+/// warning. Starting can legitimately take seconds (remote rule sets, TUN),
+/// and one that gives up exits; the probe keeps going either way.
+const API_READY_WARNING: Duration = Duration::from_secs(30);
+
+/// The BoxPilot update check (Settings › About; the Settings sidebar dot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateCheck {
+    /// No check has run this session.
+    Idle,
+    Checking,
+    UpToDate,
+    /// A newer release exists. It may be one the user skipped — see
+    /// [`AppState::update_available`].
+    Available(ReleaseInfo),
+    /// The last check failed; a short reason.
+    Failed(String),
+}
+
+/// The one profile fetch in flight, if any. `fetch` numbers it (see
+/// `AppState::begin_fetch`); a result lands only while it is still its
+/// profile's newest fetch and the profile exists (`fetch_result_applies`).
 pub enum UpdateStatus {
     Idle,
-    /// Subscription fetch in flight for one profile. Dropping the `Task`
-    /// cancels the future (and `cx.update` from inside it returns Err, so
-    /// the result is ignored).
+    /// Subscription fetch / local import in flight for one profile.
+    /// Dropping the `Task` drops its UI-thread continuation, so the result
+    /// is never applied — but the blocking fetch itself, one synchronous
+    /// job on the background executor, still runs to the end. It only
+    /// stages its config (`UpdateOutcome::Changed`), and dropping that
+    /// unapplied result deletes the staged file, so nothing is written.
     Updating {
         profile_id: String,
+        fetch: u64,
         origin: FetchOrigin,
         _task: Task<()>,
+    },
+    /// The auto-update loop is fetching this profile. The loop's own future
+    /// does the work, so there is no task to hold; it claims this state
+    /// before a fetch and releases it after, only if it still holds it (an
+    /// import or a profile delete may have replaced it meanwhile). Counts
+    /// as in flight like `Updating`, so manual and import fetches don't run
+    /// alongside it.
+    AutoUpdating {
+        profile_id: String,
+        fetch: u64,
     },
 }
 
@@ -79,15 +154,42 @@ struct AutoUpdateSnap {
 pub struct ImportRequested;
 
 /// A launch attempt reached this instance — any launch attempt, whatever it
-/// carried. `RootView` responds by bringing the window to the foreground;
-/// see `docs/adr/0001-launch-attempt-invariant.md`.
+/// carried. `app_window` responds by showing the main window, reopening it
+/// if it was closed to the tray; see `docs/adr/0004-tray-and-window-lifecycle.md`.
 pub struct ActivateRequested;
+
+/// A TUN-mode start found no usable granted sing-box copy (Linux, not
+/// root; see `core::privilege`), so nothing was started. `RootView` asks the
+/// user to grant TUN permission; confirming calls
+/// [`AppState::grant_tun_permission`].
+#[cfg(target_os = "linux")]
+pub struct TunGrantRequested;
+
+/// A TUN start on macOS found the privileged helper missing, turned off,
+/// stale, broken or another account's, so nothing was started.
+/// `RootView` asks the user to install it (or reinstall it), worded by
+/// [`AppState::helper_status`]; confirming calls
+/// [`AppState::install_helper`] with `then_start`.
+pub struct HelperInstallRequested;
+
+/// What a change to the macOS helper does ([`AppState::install_helper`],
+/// [`AppState::remove_helper`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperChange {
+    /// Install it, or reinstall it over the one there.
+    Install,
+    Remove,
+}
 
 /// Top-level reactive state owned by `RootView`. Holds persisted settings,
 /// resolved paths, the child entities for the process and log subsystems,
 /// and an initial status message that `RootView` consumes once on startup.
 pub struct AppState {
     pub settings: AppSettings,
+    /// False when the settings file exists but couldn't be read at startup
+    /// (see `AppSettings::load`): saves are skipped for the session so the
+    /// defaults in memory never replace the user's real file.
+    persist_settings: bool,
     pub app_dir: PathBuf,
     pub install_dir: PathBuf,
     /// The bundled sing-box binary's self-reported version, probed once at
@@ -106,15 +208,37 @@ pub struct AppState {
     /// Fires once `RootView` has wired its subscribers, releasing the
     /// launch-attempt gate in the deep-link task. `None` after that.
     view_ready: Option<oneshot::Sender<()>>,
+    /// sing-box API endpoint + secret of the current (or last) run. `launch`
+    /// makes a fresh one for every start, writes it into the runtime config
+    /// and hands the same value to every entity below (`set_api`); a start
+    /// through the privileged helper gets the helper's (`HelperApi`).
+    api: SingBoxApi,
     pub process: Entity<ProcessSession>,
     pub logs: Entity<LogBuffer>,
     pub proxy_groups: Entity<ProxyGroups>,
-    /// Live up/down network rate; streamed while sing-box is running.
+    /// Live runtime status (rates, memory, connections, totals, start time,
+    /// version); streamed while sing-box is running.
     pub traffic: Entity<Traffic>,
-    /// Last `is_running()` seen by the process observer — detects
-    /// Running/Stopped edges so groups + traffic refresh exactly once per
-    /// transition.
-    groups_saw_running: bool,
+    /// Clash mode list + current mode; followed while sing-box is running.
+    pub clash_mode: Entity<ClashMode>,
+    /// Live connection list; streamed while sing-box is running.
+    pub connections: Entity<Connections>,
+    /// Tools page test runs; enabled while sing-box is running.
+    pub network_tools: Entity<NetworkTools>,
+    /// Tailscale endpoints of the running config; streamed while running.
+    pub tailscale: Entity<TailscaleState>,
+    /// OpenConnect / OpenVPN / USB/IP status and sign-in challenges;
+    /// streamed while connected.
+    pub vpn: Entity<VpnStatus>,
+    /// The last `RunPhase` acted on (`sync_run_phase`), so each edge starts
+    /// or stops the API consumers exactly once.
+    run_phase_seen: RunPhase,
+    /// The current run's API has answered (`probe_api`): the run is Ready.
+    /// Reset whenever sing-box is not running.
+    api_ready: bool,
+    /// Asks a launched run's API until it answers; dropped (cancelled) when
+    /// the run stops.
+    api_probe: Option<Task<()>>,
     /// Long-lived background task that periodically refreshes the
     /// subscription. Held so it lives as long as `AppState` and is dropped
     /// (cancelled) on app exit.
@@ -122,6 +246,64 @@ pub struct AppState {
     /// Drains launch attempts (argv + single-instance pipe) for the lifetime
     /// of the app.
     _deeplink_task: Task<()>,
+    /// A TUN start that hasn't reached `ProcessSession` yet: on Linux the
+    /// background TUN-plan probe or the pkexec grant; on macOS the look at
+    /// the privileged helper, or the install its prompt led to. Holds off a
+    /// second start meanwhile; `stop_process` drops (cancels) it. Always
+    /// `None` on Windows.
+    tun_gate: Option<Task<()>>,
+    /// The macOS privileged helper's state (Settings › TUN, and TUN's
+    /// availability: [`AppState::tun_available`]). Looked at off the UI
+    /// thread at startup, at every TUN start through it, and after an
+    /// install or a removal; `Unknown` until then, and always elsewhere.
+    pub helper_status: HelperStatus,
+    /// BoxPilot.app's `Contents` directory, when BoxPilot runs from an app
+    /// bundle that carries the helper's payload: what installs it, and what
+    /// it is judged against (`macos_status::app_bundle`). Found with the
+    /// first look at the helper; `None` until then, and elsewhere.
+    pub app_bundle: Option<PathBuf>,
+    /// A look at the helper of its own (at startup, or Settings shown), in
+    /// flight. A start's look or a change's that lands first drops it, and
+    /// with it its older result.
+    helper_probe: Option<Task<()>>,
+    /// An install or removal of the helper from Settings › TUN (macOS's
+    /// administrator prompt, then the script), in flight. Holds off TUN
+    /// starts through the helper, and other changes, meanwhile; a stop
+    /// doesn't cancel it.
+    helper_job: Option<(HelperChange, Task<()>)>,
+    /// The one automatic redo of a start that lost its API port; the
+    /// process observer runs it once sing-box has stopped. Re-armed by
+    /// every other start, and by `stop_process`.
+    api_port_retry: ApiPortRetry,
+    /// Numbers every profile fetch; the last one handed out.
+    fetch_seq: u64,
+    /// The newest fetch started per profile id. A finished fetch whose
+    /// number isn't here any more (newer fetch, profile deleted) is stale.
+    latest_fetch: HashMap<String, u64>,
+    /// Manual fetches asked for while another was in flight, run in order
+    /// as each one finishes (`run_queued_fetches`) — e.g. the Add dialog's
+    /// first fetch during an auto-update.
+    queued_fetches: VecDeque<String>,
+    /// Why each profile's latest fetch failed, until one succeeds (or its
+    /// source is edited, or it is deleted). Shown on its update button —
+    /// the only trace an auto-update failure leaves, as it raises no toast.
+    /// Not persisted: a restart starts with a clean slate.
+    fetch_errors: HashMap<String, String>,
+    /// The subscription-usage level each profile was last warned about this
+    /// session (`warn_usage`): one toast per profile and level, again only
+    /// after it changes. Seeded by the startup status.
+    usage_warned: HashMap<String, UsageLevel>,
+    /// The BoxPilot update check's latest state (`check_for_updates`).
+    pub update_check: UpdateCheck,
+    /// When the last update check started (manual or automatic); the
+    /// automatic loop waits `CHECK_INTERVAL` from here.
+    last_update_check: Option<SystemTime>,
+    /// The release version this session already toasted about — one toast
+    /// per newly found version.
+    update_notified: Option<String>,
+    /// Wakes `FIRST_CHECK_DELAY` after start, then every `UPDATE_CHECK_TICK`,
+    /// and runs a check when one is due and automatic checks are on.
+    _update_check_task: Task<()>,
 }
 
 impl EventEmitter<StatusEvent> for AppState {}
@@ -130,9 +312,18 @@ impl EventEmitter<ImportRequested> for AppState {}
 
 impl EventEmitter<ActivateRequested> for AppState {}
 
+#[cfg(target_os = "linux")]
+impl EventEmitter<TunGrantRequested> for AppState {}
+
+impl EventEmitter<HelperInstallRequested> for AppState {}
+
 impl AppState {
     pub fn new(launches: UnboundedReceiver<LaunchAttempt>, cx: &mut App) -> Entity<Self> {
         let (view_ready_tx, view_ready_rx) = oneshot::channel::<()>();
+        // Startup messages below are worded in the UI language: the OS's
+        // until the settings say otherwise (an unreadable settings file
+        // falls back to "System" anyway).
+        crate::i18n::set_language(crate::i18n::resolve(LanguagePreference::System));
         let mut errors = Vec::new();
         let app_dir = get_app_data_dir().unwrap_or_else(|e| {
             errors.push(e);
@@ -153,7 +344,14 @@ impl AppState {
         }
         let _ = fs::remove_file(app_dir.join("config_active.json"));
 
-        let mut settings = AppSettings::load(&app_dir);
+        // A settings file that couldn't be loaded is reported in the startup
+        // toast. `persist` false means it is still in place and unread:
+        // nothing may be saved over it this session (`save_settings`).
+        let loaded = AppSettings::load(&app_dir);
+        let mut settings = loaded.settings;
+        crate::i18n::set_language(crate::i18n::resolve(settings.language));
+        let persist_settings = loaded.persist;
+        errors.extend(loaded.problem);
 
         // Multi-profile migration: the pre-profiles single `config.json`
         // becomes the active profile's `configs/<id>.json`. Same rename
@@ -162,7 +360,7 @@ impl AppState {
         let active_config = profile_config_path(&app_dir, &settings.active_profile_id);
         if !active_config.exists() && new_config.exists() {
             if let Some(parent) = active_config.parent() {
-                let _ = fs::create_dir_all(parent);
+                let _ = create_private_dir(parent);
             }
             let _ = fs::rename(&new_config, &active_config);
         }
@@ -184,10 +382,11 @@ impl AppState {
                 }
             }
         }
-        if backfilled {
+        if backfilled && persist_settings {
             settings.save(&app_dir);
         }
 
+        let mut usage_warned = HashMap::new();
         let pending_status = if !errors.is_empty() {
             Some((StatusLevel::Error, errors.join("; ")))
         } else if settings.active_profile_id.is_empty() {
@@ -195,53 +394,88 @@ impl AppState {
             // user; no scary "config not found" toast.
             None
         } else if active_config.exists() {
-            Some((StatusLevel::Success, "Ready.".to_string()))
+            // A subscription running out outranks "Ready.": the startup
+            // toast is the one place it's seen without opening a page.
+            match settings.active_profile().and_then(|p| usage_alert(p, now_secs())) {
+                Some((level, status_level, message)) => {
+                    usage_warned.insert(settings.active_profile_id.clone(), level);
+                    Some((status_level, message))
+                }
+                None => Some((StatusLevel::Success, s().messages.ready.to_string())),
+            }
         } else {
             Some((
                 StatusLevel::Warning,
-                "Config not found. Please update subscription.".to_string(),
+                s().messages.config_missing_startup.to_string(),
             ))
         };
 
-        let logs = cx.new(|_| LogBuffer::new());
+        // Replaced by `launch` before any sing-box runs; until then nothing
+        // listens for this one (nothing can listen on port 0).
+        let api = SingBoxApi::new(0);
+        let logs = cx.new(|_| LogBuffer::new(api));
         let process = cx.new({
             let logs = logs.clone();
-            move |_| ProcessSession::new(logs)
+            let app_dir = app_dir.clone();
+            move |cx| ProcessSession::new(logs, app_dir, cx)
         });
 
-        let api = ClashApi::new(settings.clash_api_port);
         let proxy_groups = cx.new(|_| ProxyGroups::new(active_config.clone(), api));
         let traffic = cx.new(|_| Traffic::new(api));
+        let clash_mode = cx.new(|_| ClashMode::new(api));
+        let connections = cx.new(|_| Connections::new(api));
+        let network_tools = cx.new(|_| NetworkTools::new(api));
+        let tailscale = cx.new(|_| TailscaleState::new(api));
+        let vpn = cx.new({
+            let runtime_config = runtime_config_path(&app_dir);
+            move |_| VpnStatus::new(api, runtime_config)
+        });
 
-        cx.new(|cx| {
-            // Drive ProxyGroups + Traffic from process Running/Stopped edges.
-            // The edge decision is pure (`core::orchestration`, unit-tested);
-            // this observer just executes the returned effects and stores the
-            // acted-on state, which is what makes each transition fire once.
+        let state = cx.new(|cx| {
+            // Drive the API consumers from the run's phase edges
+            // (`sync_run_phase`): the process Running/Stopped edges here, the
+            // API's first answer in `probe_api`.
             cx.observe(&process, |this: &mut AppState, process, cx| {
-                let running = process.read(cx).is_running();
-                let effects = process_edge_effects(this.groups_saw_running, running);
-                if effects.is_empty() {
-                    return;
+                let stopped = process.read(cx).is_stopped();
+                if !process.read(cx).is_running() {
+                    this.api_ready = false;
                 }
-                this.groups_saw_running = running;
-                for effect in effects {
-                    match effect {
-                        ProcessEdgeEffect::RefreshGroups => this
-                            .proxy_groups
-                            .update(cx, |groups, cx| groups.refresh_from_api(cx)),
-                        ProcessEdgeEffect::StartTraffic => {
-                            this.traffic.update(cx, |traffic, cx| traffic.start(cx))
-                        }
-                        ProcessEdgeEffect::ClearGroups => {
-                            this.proxy_groups.update(cx, |groups, cx| groups.clear(cx))
-                        }
-                        ProcessEdgeEffect::StopTraffic => {
-                            this.traffic.update(cx, |traffic, cx| traffic.stop(cx))
-                        }
-                    }
+                this.sync_run_phase(cx);
+                if stopped {
+                    this.redo_start_if_api_port_lost(cx);
                 }
             })
+            .detach();
+
+            // A node switched, from the Groups page or a connection's
+            // details: maybe close what still takes the old way.
+            cx.subscribe(
+                &proxy_groups,
+                |this: &mut AppState, _, switched: &NodeSwitched, cx| {
+                    this.close_switched_away(switched, cx)
+                },
+            )
+            .detach();
+
+            // A run through the privileged helper listens where the helper
+            // said; every entity gets it before the Launched edge.
+            cx.subscribe(&process, |this: &mut AppState, _, api: &HelperApi, cx| {
+                this.set_api(api.0, cx)
+            })
+            .detach();
+
+            cx.subscribe(
+                &process,
+                |this: &mut AppState, process, lost: &ApiPortLost, cx| {
+                    this.api_port_retry = this.api_port_retry.port_lost(lost.port, this.api.port());
+                    // Usually sing-box is still exiting, and the observer
+                    // redoes the start once it's stopped; the report can
+                    // also come last.
+                    if process.read(cx).is_stopped() {
+                        this.redo_start_if_api_port_lost(cx);
+                    }
+                },
+            )
             .detach();
 
             let auto_update_task = cx.spawn(async move |this, cx| {
@@ -285,6 +519,7 @@ impl AppState {
                         let ProfileSource::Remote {
                             url,
                             auto_update_interval_minutes,
+                            ..
                         } = &profile.source
                         else {
                             continue;
@@ -298,6 +533,38 @@ impl AppState {
                         if !due {
                             continue;
                         }
+
+                        // Claim the shared in-flight state, so a manual
+                        // refresh or an import can't fetch alongside us (the
+                        // snapshot above is a whole fetch or more old by
+                        // now). Busy → leave this and the remaining profiles
+                        // for the next tick; their clocks stay due.
+                        let claimed = this.update(cx, |state: &mut AppState, cx| {
+                            if state.is_updating() || state.process.read(cx).is_starting() {
+                                return None;
+                            }
+                            let fetch = state.begin_fetch(&profile.id);
+                            state.update_status = UpdateStatus::AutoUpdating {
+                                profile_id: profile.id.clone(),
+                                fetch,
+                            };
+                            // The route as of now, by the profile's current
+                            // setting (the snapshot may be a fetch old).
+                            let current = state
+                                .settings
+                                .profiles
+                                .iter()
+                                .find(|p| p.id == profile.id)
+                                .unwrap_or(&profile);
+                            let proxy = state.subscription_proxy(current, cx);
+                            cx.notify();
+                            Some((fetch, proxy))
+                        });
+                        let (fetch, proxy) = match claimed {
+                            Ok(Some(claim)) => claim,
+                            Ok(None) => break,
+                            Err(_) => return,
+                        };
                         last_attempt.insert(profile.id.clone(), Instant::now());
 
                         let url = url.trim().to_string();
@@ -310,6 +577,7 @@ impl AppState {
                             .spawn(async move {
                                 perform_update(
                                     &url,
+                                    proxy.as_deref(),
                                     &app_dir,
                                     &config_path,
                                     Some(&sing_box),
@@ -320,30 +588,58 @@ impl AppState {
 
                         let profile_id = profile.id;
                         let exited = this
-                            .update(cx, |state, cx| match result {
-                                Ok(UpdateOutcome::Changed) => {
-                                    state.stamp_profile_updated(&profile_id);
-                                    state.save_settings();
-                                    // Restart/toast only matter for the
-                                    // profile that's actually in use;
-                                    // background profiles refresh silently.
-                                    if state.settings.active_profile_id == profile_id {
-                                        cx.emit(StatusEvent {
-                                            level: StatusLevel::Success,
-                                            message: "Subscription auto-updated.".to_string(),
-                                        });
-                                        state.restart_if_running(cx);
+                            .update(cx, |state, cx| {
+                                // Deleted meanwhile, or an import of it took
+                                // over: drop the result, and with it the
+                                // staged config.
+                                if !state.fetch_applies(&profile_id, fetch) {
+                                    state.release_auto_update(fetch, cx);
+                                    state.run_queued_fetches(cx);
+                                    return;
+                                }
+                                let (landed, usage) = split_fetched(result);
+                                state.release_auto_update(fetch, cx);
+                                let usage_changed = landed.is_ok()
+                                    && state.record_usage(&profile_id, usage);
+                                state.record_fetch_result(
+                                    &profile_id,
+                                    landed.as_ref().map(|_| ()).map_err(String::as_str),
+                                );
+                                match landed {
+                                    Ok(true) => {
+                                        state.stamp_profile_updated(&profile_id);
+                                        state.save_settings();
+                                        // Restart/toast only matter for the
+                                        // profile that's actually in use;
+                                        // background profiles refresh silently.
+                                        if state.settings.active_profile_id == profile_id {
+                                            cx.emit(StatusEvent {
+                                                level: StatusLevel::Success,
+                                                message: s().messages.auto_updated.to_string(),
+                                            });
+                                            state.restart_if_running(cx);
+                                        }
+                                    }
+                                    Ok(false) => {
+                                        // Silent: no config was written. It
+                                        // is checked as of now, though, and
+                                        // the usage reading may have moved.
+                                        state.save_settings();
+                                        cx.notify();
+                                    }
+                                    Err(err) => {
+                                        // No toast — auto-update can fail
+                                        // repeatedly when offline; we don't
+                                        // want to spam the user. The update
+                                        // button shows it instead.
+                                        eprintln!("Auto-update failed: {}", err);
+                                        cx.notify();
                                     }
                                 }
-                                Ok(UpdateOutcome::Unchanged) => {
-                                    // Silent: nothing was written.
+                                if usage_changed {
+                                    state.warn_usage(&profile_id, cx);
                                 }
-                                Err(err) => {
-                                    // No toast — auto-update can fail
-                                    // repeatedly when offline; we don't want
-                                    // to spam the user.
-                                    eprintln!("Auto-update failed: {}", err);
-                                }
+                                state.run_queued_fetches(cx);
                             })
                             .is_err();
                         if exited {
@@ -401,8 +697,25 @@ impl AppState {
             })
             .detach();
 
+            // BoxPilot update check: first shortly after start, then daily.
+            // The loop itself never touches the network; the check does,
+            // on the background executor, and only while enabled.
+            let update_check_task = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(FIRST_CHECK_DELAY).await;
+                loop {
+                    let alive = this.update(cx, |state: &mut AppState, cx| {
+                        state.check_for_updates_if_due(cx)
+                    });
+                    if alive.is_err() {
+                        return;
+                    }
+                    cx.background_executor().timer(UPDATE_CHECK_TICK).await;
+                }
+            });
+
             Self {
                 settings,
+                persist_settings,
                 app_dir,
                 install_dir,
                 sing_box_version: None,
@@ -410,31 +723,132 @@ impl AppState {
                 pending_status,
                 pending_import: None,
                 view_ready: Some(view_ready_tx),
+                api,
                 process,
                 logs,
                 proxy_groups,
                 traffic,
-                groups_saw_running: false,
+                clash_mode,
+                connections,
+                network_tools,
+                tailscale,
+                vpn,
+                run_phase_seen: RunPhase::Stopped,
+                api_ready: false,
+                api_probe: None,
                 _auto_update_task: auto_update_task,
                 _deeplink_task: deeplink_task,
+                tun_gate: None,
+                helper_status: HelperStatus::Unknown,
+                app_bundle: None,
+                helper_probe: None,
+                helper_job: None,
+                api_port_retry: ApiPortRetry::default(),
+                fetch_seq: 0,
+                latest_fetch: HashMap::new(),
+                queued_fetches: VecDeque::new(),
+                fetch_errors: HashMap::new(),
+                usage_warned,
+                update_check: UpdateCheck::Idle,
+                last_update_check: None,
+                update_notified: None,
+                _update_check_task: update_check_task,
             }
-        })
+        });
+        // macOS: whether TUN can be chosen depends on the helper. It is
+        // looked at off the UI thread; until then TUN counts as available,
+        // and a saved TUN choice stands (`AppSettings::proxy_mode`).
+        state.update(cx, |state, cx| state.refresh_helper_status(cx));
+        state
     }
 
     pub fn is_updating(&self) -> bool {
-        matches!(self.update_status, UpdateStatus::Updating { .. })
+        !matches!(self.update_status, UpdateStatus::Idle)
     }
 
     /// 正在拉订阅的 profile id(驱动 Profiles 页行级 spinner)。
     pub fn updating_profile_id(&self) -> Option<&str> {
         match &self.update_status {
-            UpdateStatus::Updating { profile_id, .. } => Some(profile_id),
+            UpdateStatus::Updating { profile_id, .. }
+            | UpdateStatus::AutoUpdating { profile_id, .. } => Some(profile_id),
             UpdateStatus::Idle => None,
         }
     }
 
+    /// Why `profile_id`'s latest fetch failed; `None` once one succeeded.
+    pub fn fetch_error(&self, profile_id: &str) -> Option<&str> {
+        self.fetch_errors.get(profile_id).map(String::as_str)
+    }
+
+    /// Record how a fetch of `profile_id` ended: success clears its error
+    /// and stamps it checked (fresh as of now, changed or not), failure
+    /// keeps the reason. The caller persists via `save_settings`.
+    fn record_fetch_result(&mut self, profile_id: &str, result: Result<(), &str>) {
+        match result {
+            Ok(()) => {
+                self.fetch_errors.remove(profile_id);
+                if let Some(profile) = self
+                    .settings
+                    .profiles
+                    .iter_mut()
+                    .find(|p| p.id == profile_id)
+                {
+                    profile.last_checked_secs = to_unix_secs(SystemTime::now());
+                }
+            }
+            Err(reason) => {
+                self.fetch_errors
+                    .insert(profile_id.to_string(), reason.to_string());
+            }
+        }
+    }
+
+    /// Number a new fetch of `profile_id` and make it that profile's newest:
+    /// any older fetch of it still running becomes stale.
+    fn begin_fetch(&mut self, profile_id: &str) -> u64 {
+        self.fetch_seq += 1;
+        self.latest_fetch.insert(profile_id.to_string(), self.fetch_seq);
+        self.fetch_seq
+    }
+
+    /// Whether `fetch` of `profile_id` may still land its config; see
+    /// `fetch_result_applies`.
+    fn fetch_applies(&self, profile_id: &str, fetch: u64) -> bool {
+        fetch_result_applies(
+            self.latest_fetch.get(profile_id).copied(),
+            fetch,
+            self.settings.profiles.iter().any(|p| p.id == profile_id),
+        )
+    }
+
+    /// End the auto-update loop's claim on its `fetch` — unless an import or
+    /// a delete has replaced it meanwhile, whose state (and task) must stay.
+    fn release_auto_update(&mut self, fetch: u64, cx: &mut Context<Self>) {
+        if matches!(
+            &self.update_status,
+            UpdateStatus::AutoUpdating { fetch: held, .. } if *held == fetch
+        ) {
+            self.update_status = UpdateStatus::Idle;
+            cx.notify();
+        }
+    }
+
+    /// Start the queued manual fetches, oldest first, until one is in
+    /// flight. Called whenever a fetch ends. Entries whose profile is gone
+    /// or has nothing to fetch fall through `update_profile`'s guards.
+    fn run_queued_fetches(&mut self, cx: &mut Context<Self>) {
+        while !self.is_updating() {
+            let Some(id) = self.queued_fetches.pop_front() else {
+                return;
+            };
+            self.update_profile(id, FetchOrigin::Manual, cx);
+        }
+    }
+
     pub fn save_settings(&self) {
-        self.settings.save(&self.app_dir);
+        if self.persist_settings {
+            self.settings.save(&self.app_dir);
+        }
     }
 
     /// Stamp `profile_id` with the current time as its last-content-change
@@ -443,6 +857,47 @@ impl AppState {
     fn stamp_profile_updated(&mut self, profile_id: &str) {
         if let Some(profile) = self.settings.profiles.iter_mut().find(|p| p.id == profile_id) {
             profile.last_updated_secs = to_unix_secs(SystemTime::now());
+        }
+    }
+
+    /// Store a fetch's `subscription-userinfo` reading on `profile_id`
+    /// (Remote profiles only; a server that stopped reporting clears the old
+    /// reading). `true` when the stored value changed — the caller persists
+    /// via `save_settings`.
+    fn record_usage(&mut self, profile_id: &str, usage: Option<SubscriptionUsage>) -> bool {
+        let Some(profile) = self.settings.profiles.iter_mut().find(|p| p.id == profile_id) else {
+            return false;
+        };
+        if !matches!(profile.source, ProfileSource::Remote { .. }) || profile.usage == usage {
+            return false;
+        }
+        profile.usage = usage;
+        true
+    }
+
+    /// Toast once when the active profile's subscription crosses into
+    /// Warning or Critical (traffic nearly / fully used, expiring / expired);
+    /// again only after its level changes. Back to Normal (renewed) re-arms.
+    fn warn_usage(&mut self, profile_id: &str, cx: &mut Context<Self>) {
+        if self.settings.active_profile_id != profile_id {
+            return;
+        }
+        let Some(profile) = self.settings.profiles.iter().find(|p| p.id == profile_id) else {
+            return;
+        };
+        match usage_alert(profile, now_secs()) {
+            None => {
+                self.usage_warned.remove(profile_id);
+            }
+            Some((level, status_level, message)) => {
+                if self.usage_warned.get(profile_id) != Some(&level) {
+                    self.usage_warned.insert(profile_id.to_string(), level);
+                    cx.emit(StatusEvent {
+                        level: status_level,
+                        message,
+                    });
+                }
+            }
         }
     }
 
@@ -459,55 +914,369 @@ impl AppState {
     }
 
     /// Read the active profile's canonical config, inject mode-specific
-    /// inbounds + experimental, and write the result to the separate runtime
-    /// config (the `-c` target). Returns that path. Done synchronously
-    /// immediately before the prep task — order matters, do not move to the
-    /// background executor.
-    fn write_runtime_config(&self) -> Result<PathBuf, String> {
+    /// inbounds, cache_file, and BoxPilot's `api` service on a freshly
+    /// picked free port with a fresh secret, and write the result to the
+    /// separate runtime config (the `-c` target). Returns that path and the
+    /// API endpoint it was written for. Done synchronously immediately
+    /// before the prep task — order matters, do not move to the background
+    /// executor.
+    fn write_runtime_config(&self) -> Result<(PathBuf, SingBoxApi), String> {
         let config_path = self.active_config_path();
         let data = fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        let prepared = prepare_config(&data, RuntimeOptions::from(&self.settings))?;
+            .map_err(|e| (s().errors.read_failed)(&config_path.display().to_string(), &e.to_string()))?;
+        let api = SingBoxApi::new(pick_api_port(&data, self.settings.proxy_port)?);
+        let opts = RuntimeOptions::new(&self.settings, api);
+        let prepared = prepare_config(&data, opts)?;
         let runtime_path = runtime_config_path(&self.app_dir);
-        fs::write(&runtime_path, prepared)
-            .map_err(|e| format!("Failed to write {}: {}", runtime_path.display(), e))?;
-        Ok(runtime_path)
+        save_runtime_config(&runtime_path, &prepared)
+            .map_err(|e| (s().errors.write_failed)(&runtime_path.display().to_string(), &e.to_string()))?;
+        Ok((runtime_path, opts.api))
+    }
+
+    /// Give every entity that calls the sing-box API this run's endpoint.
+    /// Their streams start once the run is Ready (logs: Launched), after
+    /// this.
+    fn set_api(&mut self, api: SingBoxApi, cx: &mut Context<Self>) {
+        self.api = api;
+        self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
+        self.traffic.update(cx, |traffic, _| traffic.set_api(api));
+        self.clash_mode.update(cx, |mode, _| mode.set_api(api));
+        self.connections
+            .update(cx, |connections, _| connections.set_api(api));
+        self.network_tools.update(cx, |tools, _| tools.set_api(api));
+        self.tailscale.update(cx, |tailscale, _| tailscale.set_api(api));
+        self.logs.update(cx, |logs, _| logs.set_api(api));
+        self.vpn.update(cx, |vpn, _| vpn.set_api(api));
     }
 
     /// Validate paths, prepare the config, and ask the `ProcessSession` to
-    /// start. No-op if a process is already running or starting.
+    /// start. No-op if a process is already running or starting. Every start
+    /// — toggle, and the restarts after a settings / profile change or an
+    /// auto-update — comes through here, so the Linux TUN gate below, the
+    /// route (`StartRoute`) and the macOS helper's gate cover them all.
+    ///
+    /// On Windows and macOS, TUN from a BoxPilot the user didn't run as
+    /// Administrator or root goes through the privileged helper (ADR 0006);
+    /// BoxPilot never elevates itself. On macOS the helper is looked at
+    /// first (`start_helper_gated`). Proxy mode, and TUN with privilege the
+    /// user brought, run the bundled sing-box as written, as before.
     pub fn start_process(&mut self, cx: &mut Context<Self>) {
-        if !self.process.read(cx).is_stopped() {
+        if !self.process.read(cx).is_stopped() || self.tun_gate.is_some() {
             return;
         }
 
         if !self.settings.has_profiles() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Warning,
-                message: "Add a subscription first.".to_string(),
+                message: s().messages.add_subscription_first.to_string(),
             });
             return;
         }
 
+        let route = start_route(
+            HELPER_PLATFORM,
+            self.settings.proxy_mode,
+            process_is_elevated(),
+        );
         let sing_path = self.sing_box_path();
-        if !sing_path.exists() {
-            cx.emit(StatusEvent {
-                level: StatusLevel::Error,
-                message: format!("{} not found at {}", SING_EXECUTABLE, sing_path.display()),
-            });
-            return;
+        // The helper runs a sing-box of its own, which it checks itself
+        // (its version comes with `hello`): the bundled one plays no part.
+        if route == StartRoute::Local {
+            if !sing_path.exists() {
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Error,
+                    message: (s().messages.sing_box_not_found)(
+                        SING_EXECUTABLE,
+                        &sing_path.display().to_string(),
+                    ),
+                });
+                return;
+            }
+
+            // The runtime config carries the `api` service, which older
+            // binaries reject; say so instead of letting sing-box die on an
+            // unknown type. Unknown version (query failed / still running)
+            // → let it try.
+            if let Some(version) = self.sing_box_version.as_deref() {
+                if !supports_api_service(version) {
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message: (s().messages.sing_box_too_old)(version, MIN_SING_BOX_VERSION),
+                    });
+                    return;
+                }
+            }
         }
 
         if !self.active_config_path().exists() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Error,
-                message: "Config not found. Update subscription first.".to_string(),
+                message: s().messages.config_missing.to_string(),
             });
             return;
         }
 
-        let config_path = match self.write_runtime_config() {
-            Ok(path) => path,
+        // Linux TUN mode needs CAP_NET_ADMIN, which a normal user's bundled
+        // sing-box lacks: start the granted copy instead, or ask for the
+        // grant first. Proxy mode always runs the bundled sing-box.
+        #[cfg(target_os = "linux")]
+        if !self.settings.proxy_mode {
+            self.start_tun_gated(sing_path, cx);
+            return;
+        }
+
+        match route {
+            // The helper is being installed or removed from Settings: TUN
+            // through it waits for that (Proxy mode doesn't).
+            StartRoute::Helper if HELPER_INSTALLED_BY_APP && self.helper_job.is_some() => {
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Warning,
+                    message: s().helper.busy_installing.to_string(),
+                })
+            }
+            StartRoute::Helper if HELPER_INSTALLED_BY_APP => self.start_helper_gated(cx),
+            StartRoute::Helper => self.launch_through_helper(cx),
+            StartRoute::Local => self.launch(sing_path, cx),
+        }
+    }
+
+    /// Whether TUN can be chosen here (Home, the tray, `set_proxy_mode`):
+    /// always on Windows and Linux. On macOS, when BoxPilot runs as root
+    /// (the user's own privilege runs sing-box directly), or when the
+    /// privileged helper is installed and not turned off
+    /// (`HelperStatus::tun_available`), or not looked at yet: a start looks
+    /// again.
+    pub fn tun_available(&self) -> bool {
+        !HELPER_INSTALLED_BY_APP || process_is_elevated() || self.helper_status.tun_available()
+    }
+
+    /// Look at the macOS helper again, off the UI thread, and show what it
+    /// says: at startup, and whenever Settings is shown, so a helper turned
+    /// off or on in Login Items meanwhile shows as it is. No-op elsewhere,
+    /// as root (TUN needs no helper then), and while a look, a start's or a
+    /// change's, is already under way.
+    pub fn refresh_helper_status(&mut self, cx: &mut Context<Self>) {
+        if !HELPER_INSTALLED_BY_APP
+            || process_is_elevated()
+            || self.helper_probe.is_some()
+            || self.tun_gate.is_some()
+            || self.helper_job.is_some()
+        {
+            return;
+        }
+        self.helper_probe = Some(cx.spawn(async move |this, cx| {
+            let (bundle, status) = cx.background_executor().spawn(async { look() }).await;
+            let _ = this.update(cx, |state, cx| state.helper_looked_at(bundle, status, cx));
+        }));
+    }
+
+    /// What a look at the helper found. A startup look still in flight is
+    /// older: it is dropped.
+    fn helper_looked_at(
+        &mut self,
+        bundle: Option<PathBuf>,
+        status: HelperStatus,
+        cx: &mut Context<Self>,
+    ) {
+        self.helper_probe = None;
+        self.app_bundle = bundle;
+        self.helper_status = status;
+        cx.notify();
+    }
+
+    /// A TUN start through the macOS helper: look at it first (off the UI
+    /// thread; its state may have changed since the last look), then start
+    /// through it, ask to install or reinstall it (`HelperInstallRequested`),
+    /// or say why not, as Linux's TUN gate does with its grant. Shows as
+    /// Starting meanwhile; a stop drops it.
+    fn start_helper_gated(&mut self, cx: &mut Context<Self>) {
+        self.tun_gate = Some(cx.spawn(async move |this, cx| {
+            let (bundle, status) = cx.background_executor().spawn(async { look() }).await;
+            let _ = this.update(cx, |state, cx| {
+                state.tun_gate = None;
+                let can_install = bundle.is_some();
+                state.helper_looked_at(bundle, status, cx);
+                // Switched to Proxy mode meanwhile: no helper needed.
+                if state.settings.proxy_mode {
+                    state.start_process(cx);
+                    return;
+                }
+                match state.helper_status.start_gate(can_install) {
+                    StartGate::Start => state.launch_through_helper(cx),
+                    StartGate::Ask => cx.emit(HelperInstallRequested),
+                    StartGate::Refuse(message) => cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message,
+                    }),
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Install the macOS helper from BoxPilot.app, or reinstall it over the
+    /// one there, behind macOS's administrator prompt (`run_install`), off
+    /// the UI thread; then look at it again. `then_start`: the user agreed
+    /// in a TUN start's prompt, so this is that start's gate (Starting
+    /// meanwhile, a stop drops it), and it starts once the helper is ready.
+    /// From Settings it is a change of its own; a TUN run it had to stop
+    /// starts again once the reinstalled helper is ready.
+    pub fn install_helper(&mut self, then_start: bool, cx: &mut Context<Self>) {
+        self.change_helper(HelperChange::Install, then_start, cx);
+    }
+
+    /// Remove the macOS helper (`run_remove`; its state directory stays),
+    /// behind macOS's administrator prompt, off the UI thread; then look
+    /// again. TUN mode, if chosen, stays chosen: a start asks to install
+    /// the helper again (`AppSettings::proxy_mode`).
+    pub fn remove_helper(&mut self, cx: &mut Context<Self>) {
+        self.change_helper(HelperChange::Remove, false, cx);
+    }
+
+    /// Whether the helper can be installed, reinstalled or removed now:
+    /// from an app bundle, with no start, look or change under way.
+    pub fn can_change_helper(&self, cx: &App) -> bool {
+        self.app_bundle.is_some()
+            && self.tun_gate.is_none()
+            && self.helper_job.is_none()
+            && !self.process.read(cx).is_starting()
+    }
+
+    /// The install or removal from Settings under way, if any.
+    pub fn changing_helper(&self) -> Option<HelperChange> {
+        self.helper_job.as_ref().map(|(change, _)| *change)
+    }
+
+    fn change_helper(&mut self, change: HelperChange, then_start: bool, cx: &mut Context<Self>) {
+        if !self.can_change_helper(cx) {
+            return;
+        }
+        let Some(contents) = self.app_bundle.clone() else {
+            return;
+        };
+        // A run through the helper stops first: a reinstall replaces the
+        // daemon it runs under and a removal unloads it, either of which
+        // would end it as a lost connection.
+        let was_running = self.process.read(cx).runs_helper();
+        let stopped = self.stop_helper_run_first(cx);
+        let resume = then_start || (change == HelperChange::Install && was_running);
+        let job = cx.spawn(async move |this, cx| {
+            if let Some(stopped) = stopped {
+                // `Err`: the cleanup was dropped with the session: done.
+                let _ = stopped.await;
+            }
+            let (result, (bundle, status)) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = match change {
+                        HelperChange::Install => run_install(&contents),
+                        HelperChange::Remove => run_remove(&contents),
+                    };
+                    (result, look())
+                })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if then_start {
+                    state.tun_gate = None;
+                } else {
+                    state.helper_job = None;
+                }
+                state.helper_looked_at(bundle, status, cx);
+                let Err(message) = result else {
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Success,
+                        message: match change {
+                            HelperChange::Install => s().helper.installed,
+                            HelperChange::Remove => s().helper.removed,
+                        }
+                        .to_string(),
+                    });
+                    if resume {
+                        state.start_after_install(cx);
+                    }
+                    return;
+                };
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Error,
+                    message,
+                });
+            });
+        });
+        if then_start {
+            self.tun_gate = Some(job);
+        } else {
+            self.helper_job = Some((change, job));
+        }
+        cx.notify();
+    }
+
+    /// An install a TUN start asked for, or a reinstall that stopped a TUN
+    /// run, is done: start, if the helper is ready now (and nothing else is
+    /// starting or running). If it isn't (macOS kept it turned off, say),
+    /// say why, and ask nothing again.
+    fn start_after_install(&mut self, cx: &mut Context<Self>) {
+        if !self.process.read(cx).is_stopped() || self.tun_gate.is_some() {
+            return;
+        }
+        if self.settings.proxy_mode {
+            self.start_process(cx);
+            return;
+        }
+        match self.helper_status.start_gate(false) {
+            StartGate::Start => self.launch_through_helper(cx),
+            StartGate::Refuse(message) => cx.emit(StatusEvent {
+                level: StatusLevel::Error,
+                message,
+            }),
+            // Never without an install to offer.
+            StartGate::Ask => {}
+        }
+    }
+
+    /// Stop a run through the helper before its install changes, and say
+    /// when what was stopped is done: that stop's cleanup (the helper's
+    /// `stopped`), or one an earlier stop, or a stopped start, still has
+    /// under way. Starts in either mode wait for it too
+    /// (`ProcessSession::watch_cleanup`). `None`: nothing to wait for.
+    fn stop_helper_run_first(&mut self, cx: &mut Context<Self>) -> Option<oneshot::Receiver<()>> {
+        if self.process.read(cx).runs_helper() {
+            self.stop_process(cx);
+        }
+        self.process
+            .update(cx, |process, cx| process.watch_cleanup(cx))
+    }
+
+    /// Hand a TUN start through the privileged helper to `ProcessSession`.
+    /// Its prep builds the request off the UI thread (the profile's local
+    /// files, the policy), asks the helper, and reports a refusal, a missing
+    /// or disabled helper, or an account it won't serve as an error toast:
+    /// nothing starts then, and nothing falls back to elevating. The
+    /// helper's own `api` service replaces BoxPilot's (`HelperApi`).
+    fn launch_through_helper(&mut self, cx: &mut Context<Self>) {
+        self.api_port_retry = self.api_port_retry.launched();
+        let pending = PendingStart {
+            launch: Launch::Helper {
+                config_path: self.active_config_path(),
+                app_dir: self.app_dir.clone(),
+                options: tun_options(&self.settings),
+            },
+            proxy_mode: self.settings.proxy_mode,
+            set_system_proxy: self.settings.set_system_proxy,
+        };
+        self.process.update(cx, |p, cx| p.start(pending, cx));
+        cx.notify();
+    }
+
+    /// Write the runtime config and hand the start to `ProcessSession`,
+    /// running `sing_path`. The `-D` working dir stays the user's data dir
+    /// whichever binary runs, so `cache.db` and friends stay user-owned.
+    fn launch(&mut self, sing_path: PathBuf, cx: &mut Context<Self>) {
+        self.api_port_retry = self.api_port_retry.launched();
+        let (config_path, api_port) = match self.write_runtime_config() {
+            Ok((path, api)) => {
+                self.set_api(api, cx);
+                (path, api.port())
+            }
             Err(e) => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Error,
@@ -518,9 +1287,12 @@ impl AppState {
         };
 
         let pending = PendingStart {
-            sing_path,
-            config_path,
-            working_dir: self.app_dir.clone(),
+            launch: Launch::Local {
+                sing_path,
+                config_path,
+                working_dir: self.app_dir.clone(),
+                api_port,
+            },
             proxy_mode: self.settings.proxy_mode,
             set_system_proxy: self.settings.set_system_proxy,
         };
@@ -529,30 +1301,330 @@ impl AppState {
         cx.notify();
     }
 
+    /// Decide which sing-box a Linux TUN-mode start runs (blocking probes,
+    /// so on the background executor), then start it — or, with no usable
+    /// granted copy, start nothing and ask the view to offer the grant.
+    #[cfg(target_os = "linux")]
+    fn start_tun_gated(&mut self, bundled: PathBuf, cx: &mut Context<Self>) {
+        let bundled_version = self.sing_box_version.clone();
+        self.tun_gate = Some(cx.spawn(async move |this, cx| {
+            let plan = cx
+                .background_executor()
+                .spawn(async move { evaluate_tun_plan(&bundled, bundled_version) })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                state.tun_gate = None;
+                cx.notify();
+                match plan {
+                    TunPlan::UseBundled(path) | TunPlan::UsePrivilegedCopy(path) => {
+                        state.launch_after_gate(path, cx)
+                    }
+                    // Switched to Proxy mode meanwhile: no grant needed.
+                    TunPlan::NeedsGrant if state.settings.proxy_mode => state.start_process(cx),
+                    TunPlan::NeedsGrant => cx.emit(TunGrantRequested),
+                }
+            });
+        }));
+        // Shows as Starting (`is_starting`) until it resolves.
+        cx.notify();
+    }
+
+    /// The user confirmed the TUN grant: install + setcap the copy through
+    /// pkexec (blocks on the password prompt, so on the background
+    /// executor), then start with it. Failure or a dismissed prompt: error
+    /// toast, nothing started.
+    #[cfg(target_os = "linux")]
+    pub fn grant_tun_permission(&mut self, cx: &mut Context<Self>) {
+        if self.tun_gate.is_some() || !self.process.read(cx).is_stopped() {
+            return;
+        }
+        let bundled = self.sing_box_path();
+        self.tun_gate = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { run_grant(&bundled) })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                state.tun_gate = None;
+                cx.notify();
+                match result {
+                    Ok(()) => state.launch_after_gate(PathBuf::from(PRIVILEGED_COPY_PATH), cx),
+                    Err(message) => cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message,
+                    }),
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Launch the sing-box a resolved TUN gate picked. Settings changed
+    /// while the gate was pending need nothing here — `launch` writes the
+    /// runtime config from the current ones — except a switch to Proxy
+    /// mode, which runs the bundled sing-box through the usual start.
+    #[cfg(target_os = "linux")]
+    fn launch_after_gate(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.settings.proxy_mode {
+            self.start_process(cx);
+        } else {
+            self.launch(path, cx);
+        }
+    }
+
+    /// Stop sing-box, or the start in progress: a pending TUN gate is
+    /// dropped, a `Preparing` start is abandoned (`ProcessSession::stop`).
     pub fn stop_process(&mut self, cx: &mut Context<Self>) {
+        self.api_port_retry = ApiPortRetry::Armed;
+        self.tun_gate = None;
         self.process.update(cx, |p, cx| p.stop(cx));
         cx.notify();
     }
 
-    pub fn toggle_process(&mut self, cx: &mut Context<Self>) {
-        let process = self.process.read(cx);
-        if process.is_running() {
-            self.stop_process(cx);
-        } else if process.is_stopped() {
+    /// sing-box is stopped: if its run lost the API port it was given, start
+    /// once more, which picks a fresh one (`ApiPortRetry`).
+    fn redo_start_if_api_port_lost(&mut self, cx: &mut Context<Self>) {
+        if self.api_port_retry.take_redo() {
+            cx.emit(StatusEvent {
+                level: StatusLevel::Info,
+                message: s().messages.api_port_retry.to_string(),
+            });
             self.start_process(cx);
         }
-        // If currently `Preparing`, ignore — let it complete.
     }
 
-    fn restart_if_running(&mut self, cx: &mut Context<Self>) {
-        if self.process.read(cx).is_running() {
+    /// Connect, or disconnect: a start in progress (a TUN gate, or
+    /// sing-box `Preparing`) is cancelled, as a stop would (`stop_process`).
+    pub fn toggle_process(&mut self, cx: &mut Context<Self>) {
+        if self.is_starting(cx) || self.process.read(cx).is_running() {
             self.stop_process(cx);
+        } else {
             self.start_process(cx);
+        }
+    }
+
+    /// The Logs page's Clear: empty the view, and while sing-box runs empty
+    /// its own log buffer too (`ClearLogs`), or a re-subscribe would replay
+    /// the cleared lines. Failure: error toast; the view stays cleared.
+    pub fn clear_logs(&mut self, cx: &mut Context<Self>) {
+        self.logs.update(cx, |logs, cx| logs.clear(cx));
+        if !self.process.read(cx).is_running() {
+            return;
+        }
+        let api = self.api;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { api.clear_logs() })
+                .await;
+            if let Err(e) = result {
+                let _ = this.update(cx, |_, cx| {
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Error,
+                        message: (s().messages.clear_logs_failed)(&e.to_string()),
+                    });
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// The running sing-box's local proxy, for BoxPilot's own requests
+    /// (`local_proxy`); `None` unless sing-box runs. The port is the
+    /// setting's: changing it restarts sing-box, so a running one listens
+    /// there.
+    fn sing_box_proxy(&self, cx: &App) -> Option<String> {
+        local_proxy(self.process.read(cx).is_running(), self.settings.proxy_port)
+    }
+
+    /// The route for a fetch of `profile`, decided on the UI thread when the
+    /// fetch starts: the running sing-box if the profile updates through it
+    /// (`Profile::updates_via_sing_box`), else direct.
+    fn subscription_proxy(&self, profile: &Profile, cx: &App) -> Option<String> {
+        if profile.updates_via_sing_box() {
+            self.sing_box_proxy(cx)
+        } else {
+            None
+        }
+    }
+
+    /// A start is under way: a TUN gate still pending (Linux: the plan
+    /// probe or the pkexec prompt; macOS: the look at the helper, or its
+    /// install), sing-box `Preparing`, or sing-box launched but its API not
+    /// answering yet (`RunPhase::Launched`). What Home, the sidebar, the
+    /// tray and the API pages show as Starting; the power button cancels it.
+    pub fn is_starting(&self, cx: &App) -> bool {
+        match self.start_phase(cx) {
+            StartPhase::Gated | StartPhase::Preparing => true,
+            StartPhase::Running => !self.api_ready,
+            StartPhase::Idle => false,
+        }
+    }
+
+    /// sing-box runs and its API has answered (`RunPhase::Ready`): what the
+    /// app shows as Connected.
+    pub fn is_connected(&self, cx: &App) -> bool {
+        self.api_ready && self.process.read(cx).is_running()
+    }
+
+    /// Connected, but the sing-box API stopped answering mid-run
+    /// (`Traffic::stalled`): what the API pages show is the last it said,
+    /// and the streams are re-subscribing.
+    pub fn api_stalled(&self, cx: &App) -> bool {
+        self.is_connected(cx) && self.traffic.read(cx).stalled
+    }
+
+    /// Disconnected / Starting / Connected, as Home, the sidebar, the tray
+    /// and the API pages show it.
+    pub fn connection_status(&self, cx: &App) -> ConnectionStatus {
+        ConnectionStatus::from_flags(self.is_starting(cx), self.is_connected(cx))
+    }
+
+    fn run_phase(&self, cx: &App) -> RunPhase {
+        if !self.process.read(cx).is_running() {
+            RunPhase::Stopped
+        } else if self.api_ready {
+            RunPhase::Ready
+        } else {
+            RunPhase::Launched
+        }
+    }
+
+    /// Act on a `RunPhase` edge: start or stop the API consumers. The edge
+    /// decision is pure (`run_phase_effects`, unit-tested); this executes
+    /// the returned effects and stores the acted-on phase, which is what
+    /// makes each transition fire once.
+    fn sync_run_phase(&mut self, cx: &mut Context<Self>) {
+        let now = self.run_phase(cx);
+        let effects = run_phase_effects(self.run_phase_seen, now);
+        if effects.is_empty() {
+            return;
+        }
+        self.run_phase_seen = now;
+        for effect in effects {
+            match effect {
+                RunEffect::StartLogs => self.logs.update(cx, |logs, cx| logs.start_api(cx)),
+                RunEffect::ProbeApi => self.probe_api(cx),
+                RunEffect::StartGroups => {
+                    self.proxy_groups.update(cx, |groups, cx| groups.start(cx))
+                }
+                RunEffect::StartTraffic => {
+                    self.traffic.update(cx, |traffic, cx| traffic.start(cx))
+                }
+                RunEffect::StartClashMode => {
+                    self.clash_mode.update(cx, |mode, cx| mode.start(cx))
+                }
+                RunEffect::StartConnections => self
+                    .connections
+                    .update(cx, |connections, cx| connections.start(cx)),
+                RunEffect::StartNetworkTools => {
+                    self.network_tools.update(cx, |tools, cx| tools.start(cx))
+                }
+                RunEffect::StartTailscale => self
+                    .tailscale
+                    .update(cx, |tailscale, cx| tailscale.start(cx)),
+                RunEffect::StartVpn => self.vpn.update(cx, |vpn, cx| vpn.start(cx)),
+                RunEffect::ClearGroups => {
+                    self.proxy_groups.update(cx, |groups, cx| groups.clear(cx))
+                }
+                RunEffect::StopTraffic => self.traffic.update(cx, |traffic, cx| traffic.stop(cx)),
+                RunEffect::ClearClashMode => {
+                    self.clash_mode.update(cx, |mode, cx| mode.clear(cx))
+                }
+                RunEffect::StopConnections => self
+                    .connections
+                    .update(cx, |connections, cx| connections.stop(cx)),
+                RunEffect::StopNetworkTools => {
+                    self.network_tools.update(cx, |tools, cx| tools.stop(cx))
+                }
+                RunEffect::ClearTailscale => self
+                    .tailscale
+                    .update(cx, |tailscale, cx| tailscale.clear(cx)),
+                RunEffect::ClearVpn => self.vpn.update(cx, |vpn, cx| vpn.clear(cx)),
+                RunEffect::StopLogs => self.logs.update(cx, |logs, cx| logs.stop_api(cx)),
+                RunEffect::StopApiProbe => self.api_probe = None,
+            }
+        }
+        // Starting / Connected moved.
+        cx.notify();
+    }
+
+    /// Launched: ask the API (`GetVersion`) every `API_PROBE_INTERVAL` until
+    /// it answers, then the run is Ready. sing-box opens it only once it is
+    /// up — the `api` service listens at the last start stage,
+    /// `StartStateStarted`, after the inbounds and the router — so until then
+    /// it refuses connections; that is not an error. One
+    /// warning, with the last reason, if it takes `API_READY_WARNING`.
+    fn probe_api(&mut self, cx: &mut Context<Self>) {
+        let api = self.api;
+        self.api_probe = Some(cx.spawn(async move |this, cx| {
+            let started = Instant::now();
+            let mut warned = false;
+            loop {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { api.get_version() })
+                    .await;
+                let error = match result {
+                    Ok(_) => {
+                        let _ = this.update(cx, |state, cx| {
+                            state.api_ready = true;
+                            state.sync_run_phase(cx);
+                        });
+                        return;
+                    }
+                    Err(e) => e,
+                };
+                if !warned && started.elapsed() >= API_READY_WARNING {
+                    warned = true;
+                    let message = (s().messages.api_not_ready)(&error.to_string());
+                    let emitted = this.update(cx, |_, cx| {
+                        cx.emit(StatusEvent {
+                            level: StatusLevel::Warning,
+                            message,
+                        })
+                    });
+                    if emitted.is_err() {
+                        return;
+                    }
+                }
+                cx.background_executor().timer(API_PROBE_INTERVAL).await;
+            }
+        }));
+    }
+
+    /// How far a start has got; see `StartPhase`.
+    fn start_phase(&self, cx: &App) -> StartPhase {
+        let process = self.process.read(cx);
+        if process.is_running() {
+            return StartPhase::Running;
+        }
+        if process.is_starting() {
+            return StartPhase::Preparing;
+        }
+        if self.tun_gate.is_some() {
+            return StartPhase::Gated;
+        }
+        StartPhase::Idle
+    }
+
+    /// Make a change to the runtime config's inputs take effect: restart a
+    /// running sing-box, or a start that is still preparing with the old
+    /// runtime config (it would otherwise come up with stale values).
+    fn restart_if_running(&mut self, cx: &mut Context<Self>) {
+        match config_change_action(self.start_phase(cx)) {
+            ConfigChangeAction::Nothing => {}
+            ConfigChangeAction::Restart => {
+                self.stop_process(cx);
+                self.start_process(cx);
+            }
         }
     }
 
     pub fn set_proxy_mode(&mut self, value: bool, cx: &mut Context<Self>) {
-        if self.settings.proxy_mode == value {
+        // TUN can't be chosen here now (macOS without its helper): Proxy
+        // mode stays. Switching away from TUN is always allowed.
+        if self.settings.proxy_mode == value || (!value && !self.tun_available()) {
             return;
         }
         self.settings.proxy_mode = value;
@@ -562,7 +1634,8 @@ impl AppState {
     }
 
     /// Settings 页改本地代理端口:同 `set_proxy_mode`——持久化并在
-    /// 运行中立即重启生效(注册表系统代理由 sing-box 按入站端口自写)。
+    /// 运行中(或启动中)立即重启生效(注册表系统代理由 sing-box 按入站端口自写;
+    /// 经特权助手的 TUN 由 BoxPilot 在启动时按新端口写)。
     pub fn set_proxy_port(&mut self, value: u16, cx: &mut Context<Self>) {
         if self.settings.proxy_port == value {
             return;
@@ -573,24 +1646,8 @@ impl AppState {
         cx.notify();
     }
 
-    /// Settings 页改 Clash API 端口:持久化 + 给 ProxyGroups/Traffic 换新的
-    /// `ClashApi` 句柄(下次刷新/启动用它)+ 运行中重启 sing-box 让新
-    /// external_controller 生效。
-    pub fn set_clash_api_port(&mut self, value: u16, cx: &mut Context<Self>) {
-        if self.settings.clash_api_port == value {
-            return;
-        }
-        self.settings.clash_api_port = value;
-        let api = ClashApi::new(value);
-        self.proxy_groups.update(cx, |groups, _| groups.set_api(api));
-        self.traffic.update(cx, |traffic, _| traffic.set_api(api));
-        self.save_settings();
-        self.restart_if_running(cx);
-        cx.notify();
-    }
-
     /// Settings 页的 TUN IPv6 开关:同 `set_proxy_mode`——持久化并在运行中
-    /// 重启生效。Proxy 模式下改它同样合法,只是要等切回 TUN 才看得出区别。
+    /// (或启动中)重启生效。Proxy 模式下改它同样合法,只是要等切回 TUN 才看得出区别。
     pub fn set_tun_ipv6(&mut self, value: bool, cx: &mut Context<Self>) {
         if self.settings.tun_ipv6 == value {
             return;
@@ -611,6 +1668,211 @@ impl AppState {
         cx.notify();
     }
 
+    /// Settings › General "Appearance". Persists only; applying the theme
+    /// to the windows is the caller's job (`ui::theme`).
+    pub fn set_theme(&mut self, value: ThemePreference, cx: &mut Context<Self>) {
+        if self.settings.theme == value {
+            return;
+        }
+        self.settings.theme = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Settings › General "Language". Persists only; switching the UI
+    /// strings is the caller's job.
+    pub fn set_language(&mut self, value: LanguagePreference, cx: &mut Context<Self>) {
+        if self.settings.language == value {
+            return;
+        }
+        self.settings.language = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Settings › Network "Allow LAN connections": changes the inbound's
+    /// listen address, so a running (or starting) sing-box is restarted.
+    pub fn set_allow_lan(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.allow_lan == value {
+            return;
+        }
+        self.settings.allow_lan = value;
+        self.save_settings();
+        self.restart_if_running(cx);
+        cx.notify();
+    }
+
+    /// Settings › About "Check for updates automatically". Turning it on
+    /// checks right away when a check is due (none yet, or the last one is a
+    /// day old) — the loop would otherwise only notice at its next tick.
+    pub fn set_check_updates(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.check_updates == value {
+            return;
+        }
+        self.settings.check_updates = value;
+        self.save_settings();
+        cx.notify();
+        if value {
+            self.check_for_updates_if_due(cx);
+        }
+    }
+
+    /// The Connections page's "Hide direct" quick filter, remembered across
+    /// launches.
+    pub fn set_connections_hide_direct(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.connections_hide_direct == value {
+            return;
+        }
+        self.settings.connections_hide_direct = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// The Connections table's columns (which show, how wide), remembered
+    /// across launches. The page calls this once a drag ends, not for each
+    /// step of it.
+    pub fn set_connections_columns(&mut self, columns: ColumnSettings, cx: &mut Context<Self>) {
+        if self.settings.connections_columns == columns {
+            return;
+        }
+        self.settings.connections_columns = columns;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// The Logs table's column widths, remembered across launches. The page
+    /// calls this once a drag ends, not for each step of it.
+    pub fn set_logs_columns(&mut self, columns: LogColumnWidths, cx: &mut Context<Self>) {
+        if self.settings.logs_columns == columns {
+            return;
+        }
+        self.settings.logs_columns = columns;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Settings › Network "Close connections when switching node".
+    pub fn set_close_connections_on_switch(&mut self, value: bool, cx: &mut Context<Self>) {
+        if self.settings.close_connections_on_switch == value {
+            return;
+        }
+        self.settings.close_connections_on_switch = value;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// After a switch sing-box accepted: when the setting is on, close the
+    /// open connections the group still sends the old way
+    /// (`switched_away`), so they reconnect through the new node.
+    fn close_switched_away(&mut self, switched: &NodeSwitched, cx: &mut Context<Self>) {
+        if !self.settings.close_connections_on_switch {
+            return;
+        }
+        let ids = switched_away(
+            self.connections.read(cx).table.iter(),
+            &switched.group,
+            &switched.node,
+        );
+        self.connections
+            .update(cx, |connections, cx| connections.close_many(ids, cx));
+    }
+
+    /// The release to offer — newer than this BoxPilot and not skipped.
+    /// Drives the Settings sidebar dot and the About card's Skip button.
+    pub fn update_available(&self) -> Option<&ReleaseInfo> {
+        match &self.update_check {
+            UpdateCheck::Available(info)
+                if !self
+                    .settings
+                    .skipped_update_version
+                    .as_deref()
+                    .is_some_and(|skipped| same_version(skipped, &info.version)) =>
+            {
+                Some(info)
+            }
+            _ => None,
+        }
+    }
+
+    /// The automatic check: runs only while enabled and when the last check
+    /// (if any) is `CHECK_INTERVAL` old. A clock set back counts as due.
+    fn check_for_updates_if_due(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.check_updates {
+            return;
+        }
+        let due = self.last_update_check.is_none_or(|last| {
+            SystemTime::now()
+                .duration_since(last)
+                .map_or(true, |elapsed| elapsed >= CHECK_INTERVAL)
+        });
+        if due {
+            self.check_for_updates(false, cx);
+        }
+    }
+
+    /// Ask GitHub for the latest BoxPilot release, off the UI thread. An
+    /// automatic check (`manual` false) never runs while the setting is off;
+    /// "Check now" always does. One check at a time. Goes through sing-box's
+    /// local proxy while it runs, in either mode (`local_proxy`), directly
+    /// otherwise. A newer release that isn't skipped gets one Info toast per
+    /// session.
+    pub fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
+        if self.update_check == UpdateCheck::Checking || !(manual || self.settings.check_updates) {
+            return;
+        }
+        let proxy = self.sing_box_proxy(cx);
+        self.update_check = UpdateCheck::Checking;
+        self.last_update_check = Some(SystemTime::now());
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { fetch_latest(proxy.as_deref()) })
+                .await;
+            let _ = this.update(cx, |state: &mut AppState, cx| {
+                state.finish_update_check(result, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn finish_update_check(&mut self, result: Result<ReleaseInfo, String>, cx: &mut Context<Self>) {
+        self.update_check = match result {
+            Ok(info) if is_newer(&info.version, CURRENT_VERSION) => {
+                if should_notify(
+                    &info.version,
+                    CURRENT_VERSION,
+                    self.settings.skipped_update_version.as_deref(),
+                    self.update_notified.as_deref(),
+                ) {
+                    self.update_notified = Some(info.version.clone());
+                    cx.emit(StatusEvent {
+                        level: StatusLevel::Info,
+                        message: (s().updates.available_toast)(&info.version),
+                    });
+                }
+                UpdateCheck::Available(info)
+            }
+            Ok(_) => UpdateCheck::UpToDate,
+            Err(reason) => {
+                eprintln!("Update check failed: {reason}");
+                UpdateCheck::Failed(reason)
+            }
+        };
+        cx.notify();
+    }
+
+    /// "Skip this version" (`Some(version)`), or forget a skipped one (`None`).
+    pub fn skip_update_version(&mut self, version: Option<String>, cx: &mut Context<Self>) {
+        if self.settings.skipped_update_version == version {
+            return;
+        }
+        self.settings.skipped_update_version = version;
+        self.save_settings();
+        cx.notify();
+    }
+
     /// Delete every `*.db` file in `app_dir`. sing-box stores its DNS/fakeip
     /// cache as `cache.db`. No-op when the process is running or preparing —
     /// the file is locked on Windows and the UI button is disabled in that
@@ -619,7 +1881,7 @@ impl AppState {
         if !self.process.read(cx).is_stopped() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Warning,
-                message: "Disconnect first to clear the cache.".to_string(),
+                message: s().messages.disconnect_to_clear_cache.to_string(),
             });
             return;
         }
@@ -629,7 +1891,7 @@ impl AppState {
             Err(e) => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Error,
-                    message: format!("Failed to read app directory: {}", e),
+                    message: (s().messages.read_app_dir_failed)(&e.to_string()),
                 });
                 return;
             }
@@ -650,15 +1912,15 @@ impl AppState {
         let (level, message) = if !errors.is_empty() {
             (
                 StatusLevel::Error,
-                format!("Failed to delete cache: {}", errors.join("; ")),
+                (s().messages.delete_cache_failed)(&errors.join("; ")),
             )
         } else if deleted > 0 {
             (
                 StatusLevel::Success,
-                format!("Cleared {} cache file(s). Node selection reset.", deleted),
+                (s().messages.cache_cleared)(deleted as u64),
             )
         } else {
-            (StatusLevel::Info, "No cache files to clear.".to_string())
+            (StatusLevel::Info, s().messages.no_cache.to_string())
         };
         cx.emit(StatusEvent { level, message });
         cx.notify();
@@ -669,7 +1931,7 @@ impl AppState {
         if !self.settings.has_profiles() {
             cx.emit(StatusEvent {
                 level: StatusLevel::Warning,
-                message: "Add a subscription first.".to_string(),
+                message: s().messages.add_subscription_first.to_string(),
             });
             return;
         }
@@ -678,46 +1940,63 @@ impl AppState {
     }
 
     /// Kick off a subscription fetch / local re-import for `profile_id` on
-    /// the background executor, writing `configs/<id>.json`. Fetching does
+    /// the background executor, landing in `configs/<id>.json`. Fetching does
     /// NOT activate the profile and never touches a running process — except
     /// for `FetchOrigin::UriImport`, which activates once the config landed
     /// on disk, because activating before the fetch would point a running
     /// sing-box at a config that doesn't exist yet; on failure it rolls the
     /// profile back if this import created it (see [`FetchOrigin`]). The
     /// `Task<()>` is stored in `update_status`(连同 profile id,供行级
-    /// spinner)so dropping it (e.g. by overwriting with another update)
-    /// cancels the in-flight fetch.
+    /// spinner);dropping it (an import taking over, the profile deleted)
+    /// discards the result, see [`UpdateStatus::Updating`]. A manual fetch
+    /// asked for while another is in flight is queued behind it.
     pub fn update_profile(
         &mut self,
         profile_id: String,
         origin: FetchOrigin,
         cx: &mut Context<Self>,
     ) {
-        if self.is_updating() {
-            return;
-        }
         let Some(profile) = self.settings.profiles.iter().find(|p| p.id == profile_id) else {
             return;
         };
         let profile_name = profile.name.clone();
         let source = profile.source.clone();
+        let proxy = self.subscription_proxy(profile, cx);
         // Reject an empty source up front, with a source-appropriate message.
         match &source {
             ProfileSource::Remote { url, .. } if url.trim().is_empty() => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Warning,
-                    message: "Subscription URL is empty.".to_string(),
+                    message: s().messages.url_empty.to_string(),
                 });
                 return;
             }
             ProfileSource::Local { path } if path.trim().is_empty() => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Warning,
-                    message: "No file selected.".to_string(),
+                    message: s().messages.no_file_selected.to_string(),
                 });
                 return;
             }
             _ => {}
+        }
+
+        if self.is_updating() {
+            // Only one fetch at a time (manual, import or auto-update). A
+            // manual one waits its turn instead of vanishing — e.g. the Add
+            // dialog's first fetch while an auto-update runs. Already being
+            // fetched or queued → nothing to add. Imports never get here
+            // busy: `import_profile` takes over first.
+            let already = self.updating_profile_id() == Some(profile_id.as_str())
+                || self.queued_fetches.contains(&profile_id);
+            if origin == FetchOrigin::Manual && !already {
+                self.queued_fetches.push_back(profile_id);
+                cx.emit(StatusEvent {
+                    level: StatusLevel::Info,
+                    message: (s().messages.queued_update)(&profile_name),
+                });
+            }
+            return;
         }
 
         let app_dir = self.app_dir.clone();
@@ -725,6 +2004,7 @@ impl AppState {
         let sing_box = self.sing_box_path();
         let sing_box_version = self.sing_box_version.clone();
         let status_id = profile_id.clone();
+        let fetch = self.begin_fetch(&profile_id);
 
         let task = cx.spawn(async move |this, cx| {
             let result = cx
@@ -733,6 +2013,7 @@ impl AppState {
                     match source {
                         ProfileSource::Remote { url, .. } => perform_update(
                             url.trim(),
+                            proxy.as_deref(),
                             &app_dir,
                             &config_path,
                             Some(sing_box.as_path()),
@@ -743,15 +2024,33 @@ impl AppState {
                             &app_dir,
                             &config_path,
                             Some(sing_box.as_path()),
-                        ),
+                        )
+                        .map(|outcome| Fetched {
+                            outcome,
+                            usage: None,
+                        }),
                     }
                 })
                 .await;
 
             let _ = this.update(cx, |state, cx| {
                 state.update_status = UpdateStatus::Idle;
-                let (level, message) = match result {
-                    Ok(UpdateOutcome::Changed) => {
+                // Defensive: whatever deletes the profile or supersedes this
+                // fetch also drops this task, so this continuation shouldn't
+                // run. If it does, the result (and its staged config) goes.
+                if !state.fetch_applies(&profile_id, fetch) {
+                    cx.notify();
+                    state.run_queued_fetches(cx);
+                    return;
+                }
+                let (landed, usage) = split_fetched(result);
+                let usage_changed = landed.is_ok() && state.record_usage(&profile_id, usage);
+                state.record_fetch_result(
+                    &profile_id,
+                    landed.as_ref().map(|_| ()).map_err(String::as_str),
+                );
+                let (level, message) = match landed {
+                    Ok(true) => {
                         // Content changed → stamp the "last updated" time, then
                         // persist the URL just used (and any other settings).
                         // Manual update intentionally does NOT auto-restart
@@ -761,14 +2060,14 @@ impl AppState {
                         state.save_settings();
                         (
                             StatusLevel::Success,
-                            format!("\"{}\" updated.", profile_name),
+                            (s().messages.profile_updated)(&profile_name),
                         )
                     }
-                    Ok(UpdateOutcome::Unchanged) => {
+                    Ok(false) => {
                         state.save_settings();
                         (
                             StatusLevel::Info,
-                            format!("\"{}\" is up to date.", profile_name),
+                            (s().messages.profile_up_to_date)(&profile_name),
                         )
                     }
                     Err(msg) => {
@@ -777,7 +2076,7 @@ impl AppState {
                         }
                         (
                             StatusLevel::Error,
-                            format!("\"{}\": {}", profile_name, msg),
+                            (s().messages.profile_failed)(&profile_name, &msg),
                         )
                     }
                 };
@@ -787,12 +2086,17 @@ impl AppState {
                     state.set_active_profile(profile_id.clone(), cx);
                 }
                 cx.emit(StatusEvent { level, message });
+                if usage_changed {
+                    state.warn_usage(&profile_id, cx);
+                }
                 cx.notify();
+                state.run_queued_fetches(cx);
             });
         });
 
         self.update_status = UpdateStatus::Updating {
             profile_id: status_id,
+            fetch,
             origin,
             _task: task,
         };
@@ -814,6 +2118,11 @@ impl AppState {
         if !name.is_empty() {
             profile.name = name;
         }
+        // A new URL, file or route (Update through sing-box): the old
+        // failure no longer says anything.
+        if profile.source != source {
+            self.fetch_errors.remove(&id);
+        }
         profile.source = source;
         self.save_settings();
         cx.notify();
@@ -827,12 +2136,12 @@ impl AppState {
         source: ProfileSource,
         cx: &mut Context<Self>,
     ) -> String {
-        let id = self.settings.next_profile_id();
+        let id = self.new_profile_id();
         let number = id.strip_prefix('p').unwrap_or(&id).to_string();
         let name = {
             let trimmed = name.trim();
             if trimmed.is_empty() {
-                format!("Profile {}", number)
+                (s().profiles.default_name)(&number)
             } else {
                 trimmed.to_string()
             }
@@ -843,6 +2152,8 @@ impl AppState {
             name,
             source,
             last_updated_secs: None,
+            last_checked_secs: None,
+            usage: None,
         });
         self.save_settings();
         // First profile in an empty app → make it active so Home leaves the
@@ -855,8 +2166,8 @@ impl AppState {
     }
 
     /// Switch the active profile: persist, point `ProxyGroups` at the new
-    /// config, and restart sing-box if it's running (same pattern as
-    /// `set_proxy_mode`). If the new profile has no fetched config yet, the
+    /// config, and restart sing-box if it's running or starting (same
+    /// pattern as `set_proxy_mode`). If the new profile has no fetched config yet, the
     /// restart's `start_process` fails with the usual "Config not found"
     /// toast — honest, and the user is one Update click away from fixing it.
     pub fn set_active_profile(&mut self, id: String, cx: &mut Context<Self>) {
@@ -874,14 +2185,38 @@ impl AppState {
         cx.notify();
     }
 
-    /// Delete a profile and its fetched config file. Deleting the active
-    /// profile activates the first remaining one; deleting the *last* profile
-    /// stops sing-box and drops to the empty state.
+    /// A fresh id for a new profile (never a deleted one's, see
+    /// `AppSettings::next_profile_id`). A config already at its path was
+    /// left by an older release, which reused ids and could land a fetch for
+    /// a deleted profile; it belongs to no profile, so it goes.
+    fn new_profile_id(&mut self) -> String {
+        let id = self.settings.next_profile_id();
+        let _ = fs::remove_file(profile_config_path(&self.app_dir, &id));
+        id
+    }
+
+    /// Forget a removed profile's fetches: one in flight is dropped (its
+    /// result is discarded, see [`UpdateStatus`]), a queued one never runs,
+    /// and `fetch_applies` turns stale for any still finishing.
+    fn forget_profile_fetches(&mut self, id: &str) {
+        if self.updating_profile_id() == Some(id) {
+            self.update_status = UpdateStatus::Idle;
+        }
+        self.queued_fetches.retain(|queued| queued != id);
+        self.latest_fetch.remove(id);
+        self.fetch_errors.remove(id);
+    }
+
+    /// Delete a profile and its fetched config file, and drop any fetch of
+    /// it. Deleting the active profile activates the first remaining one;
+    /// deleting the *last* profile stops sing-box (or the start in
+    /// progress) and drops to the empty state.
     pub fn delete_profile(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(index) = self.settings.profiles.iter().position(|p| p.id == id) else {
             return;
         };
         self.settings.profiles.remove(index);
+        self.forget_profile_fetches(&id);
         let _ = fs::remove_file(profile_config_path(&self.app_dir, &id));
 
         if self.settings.active_profile_id == id {
@@ -899,7 +2234,7 @@ impl AppState {
                 }
                 None => {
                     // Deleted the last profile — drop to the empty state.
-                    if self.process.read(cx).is_running() {
+                    if self.start_phase(cx) != StartPhase::Idle {
                         self.stop_process(cx);
                     }
                     self.settings.active_profile_id = String::new();
@@ -911,6 +2246,8 @@ impl AppState {
         }
         self.save_settings();
         cx.notify();
+        // The deleted profile's fetch may have been the one in flight.
+        self.run_queued_fetches(cx);
     }
 
     /// Called by `RootView::new` once its subscribers are wired: opens the
@@ -936,7 +2273,7 @@ impl AppState {
             Err(reason) => {
                 cx.emit(StatusEvent {
                     level: StatusLevel::Warning,
-                    message: format!("Ignored import link: {}", reason),
+                    message: (s().messages.ignored_import)(&reason),
                 });
             }
         }
@@ -946,10 +2283,15 @@ impl AppState {
     /// for. Keeping it would dismiss Home's "Add subscription" empty card
     /// and make the failed import read as a success. The profile is never
     /// active at this point (imports only activate on success), so
-    /// `normalize_profiles` is just a safety net.
+    /// `normalize_profiles` is just a safety net, as is removing its config
+    /// file: a superseded import's result is discarded, never written.
     fn rollback_import_created(&mut self, profile_id: &str) {
         self.settings.profiles.retain(|p| p.id != profile_id);
         self.settings.normalize_profiles();
+        self.latest_fetch.remove(profile_id);
+        self.queued_fetches.retain(|queued| queued != profile_id);
+        self.fetch_errors.remove(profile_id);
+        let _ = fs::remove_file(profile_config_path(&self.app_dir, profile_id));
         self.save_settings();
     }
 
@@ -958,11 +2300,16 @@ impl AppState {
     /// profile once its config is on disk.
     pub fn import_profile(&mut self, request: ImportRequest, cx: &mut Context<Self>) {
         // An explicit user action outranks whatever fetch is in flight:
-        // dropping the task cancels it. If the cancelled fetch was itself an
-        // import that created its profile, roll that phantom back now — its
-        // failure arm will never run, and the URL lookup below must not
-        // resurrect it (re-clicking the same link mid-fetch would otherwise
-        // "reuse" the phantom and lose the created-by-import marker).
+        // dropping the task drops its continuation, so its result is never
+        // applied (an auto-update has no task here; its fetch finishes on
+        // its own, lands only if this import isn't for the same profile —
+        // `fetch_applies` — and leaves this import's state alone, see
+        // `release_auto_update`). Queued manual fetches still run after the
+        // import. If the superseded fetch was itself an import that created
+        // its profile, roll that phantom back now — its failure arm will
+        // never run, and the URL lookup below must not resurrect it
+        // (re-clicking the same link mid-fetch would otherwise "reuse" the
+        // phantom and lose the created-by-import marker).
         if let UpdateStatus::Updating {
             profile_id,
             origin: FetchOrigin::UriImport {
@@ -987,7 +2334,7 @@ impl AppState {
         {
             Some(existing) => (existing.id.clone(), false),
             None => {
-                let id = self.settings.next_profile_id();
+                let id = self.new_profile_id();
                 let name = request
                     .name
                     .clone()
@@ -999,8 +2346,11 @@ impl AppState {
                     source: ProfileSource::Remote {
                         url,
                         auto_update_interval_minutes: default_auto_update_interval(),
+                        update_via_sing_box: default_update_via_sing_box(),
                     },
                     last_updated_secs: None,
+                    last_checked_secs: None,
+                    usage: None,
                 });
                 self.save_settings();
                 (id, true)
@@ -1009,6 +2359,36 @@ impl AppState {
         self.update_profile(id, FetchOrigin::UriImport { created_profile }, cx);
         cx.notify();
     }
+}
+
+/// Unix seconds now (0 should the clock read before 1970).
+fn now_secs() -> u64 {
+    to_unix_secs(SystemTime::now()).unwrap_or(0)
+}
+
+/// A fetch result split into the committed config outcome (see
+/// `UpdateOutcome::commit`) and the usage reading that came with it.
+fn split_fetched(
+    result: Result<Fetched, String>,
+) -> (Result<bool, String>, Option<SubscriptionUsage>) {
+    match result {
+        Ok(Fetched { outcome, usage }) => (outcome.commit(), usage),
+        Err(err) => (Err(err), None),
+    }
+}
+
+/// The toast for `profile`'s subscription usage, if it needs attention:
+/// its level, the toast level (Warning → warning, Critical → error) and the
+/// message, which names the profile, never its URL.
+fn usage_alert(profile: &Profile, now: u64) -> Option<(UsageLevel, StatusLevel, String)> {
+    let usage = profile.usage?;
+    let message = usage.alert_message(&profile.name, now)?;
+    let level = usage.level(now);
+    let status_level = match level {
+        UsageLevel::Critical => StatusLevel::Error,
+        _ => StatusLevel::Warning,
+    };
+    Some((level, status_level, message))
 }
 
 impl Drop for AppState {

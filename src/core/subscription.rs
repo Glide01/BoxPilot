@@ -1,10 +1,22 @@
-use crate::core::clash_api::ClashApi;
-use crate::core::settings::{AppSettings, CLASH_API_PORT, HTTP_TIMEOUT_SECS, PROXY_PORT};
+use crate::core::atomic_write::{
+    stage_atomic, unique_suffix, write_atomic, FileAccess, StagedFile,
+};
+use crate::core::jsonc;
+use crate::core::paths::create_private_dir;
+use crate::core::settings::{AppSettings, HTTP_TIMEOUT_SECS, PROXY_PORT};
+use crate::core::singbox_api::{is_boxpilot_api_service, SingBoxApi};
+use crate::core::sub_usage::{parse_userinfo, SubscriptionUsage, USERINFO_HEADER};
+use crate::core::timefmt::to_unix_secs;
+use crate::i18n::s;
+use boxpilot_runconfig::{config_listen_ports, pick_port_avoiding, Inject};
 use reqwest::blocking::Client;
+use reqwest::Proxy;
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
-use std::time::Duration;
+use std::io;
+use std::net::{Ipv4Addr, TcpListener};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// Subscription User-Agent. Servers sniff the literal `sing-box` token to
 /// decide whether to serve sing-box JSON or Clash YAML, and read the version
@@ -20,39 +32,84 @@ pub fn user_agent(sing_box_version: Option<&str>) -> String {
     )
 }
 
-/// Result of a subscription fetch + write.
+/// Result of a subscription fetch / local import.
 ///
-/// `Changed` means we wrote a new `config.json` to disk; the caller should
-/// persist settings and (for auto-update) restart sing-box if running.
-/// `Unchanged` means the fetched config was byte-identical to what's already
-/// on disk; nothing was written and no further action is needed.
+/// `Changed` carries the new, validated config staged next to the profile's
+/// `configs/<id>.json` but not yet in place: the fetch runs on the
+/// background executor and can't know whether its profile still exists, so
+/// the caller checks that on the UI thread and then `commit`s, or drops the
+/// outcome to discard it. `Unchanged` means the fetched config was
+/// byte-identical to what's already on disk; nothing was written.
 #[derive(Debug)]
 pub enum UpdateOutcome {
-    Changed,
+    Changed(StagedFile),
     Unchanged,
 }
 
-/// Strip BoxPilot-managed sections from config (used when saving subscription
-/// data). Both `inbounds` and `experimental` are re-injected mode-specifically
-/// at process start by `prepare_config`, so the canonical on-disk form
-/// contains neither. Subscription-provided `experimental` content is
-/// intentionally discarded — same ownership rule as inbounds.
-pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
-    let mut json: Value = serde_json::from_str(config_data)
-        .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
-    let obj = json
-        .as_object_mut()
-        .ok_or_else(|| "Config is not a JSON object".to_string())?;
-    obj.remove("inbounds");
-    obj.remove("experimental");
-    serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("Failed to serialize config: {}", e))
+impl UpdateOutcome {
+    /// Land the outcome: move a `Changed` config into place. `Ok(true)` when
+    /// the profile's config changed, `Ok(false)` when it was already current.
+    pub fn commit(self) -> Result<bool, String> {
+        match self {
+            UpdateOutcome::Changed(staged) => {
+                let target = staged.target().to_path_buf();
+                staged
+                    .commit()
+                    .map_err(|e| (s().errors.write_config)(&target.display().to_string(), &e.to_string()))?;
+                Ok(true)
+            }
+            UpdateOutcome::Unchanged => Ok(false),
+        }
+    }
 }
 
-/// The TUN interface's IPv4 address — always present in TUN mode.
-const TUN_IPV4_ADDRESS: &str = "172.18.0.1/30";
-/// Added to the TUN interface only when `RuntimeOptions::tun_ipv6` is on.
-const TUN_IPV6_ADDRESS: &str = "fdfe:dcba:9876::1/126";
+/// A successful subscription fetch: the config outcome, plus the traffic /
+/// expiry the server reported in its `subscription-userinfo` header (`None`
+/// when it sent none, or nothing usable). Carried on `Unchanged` too: usage
+/// moves even when the config doesn't.
+#[derive(Debug)]
+pub struct Fetched {
+    pub outcome: UpdateOutcome,
+    pub usage: Option<SubscriptionUsage>,
+}
+
+/// Strip BoxPilot-managed sections from config (used when saving subscription
+/// data). BoxPilot owns `inbounds`: `prepare_config` injects them for the
+/// current mode at process start, so the canonical on-disk form has none and
+/// the subscription's own are discarded. BoxPilot's own `api` service goes
+/// too, should the input carry one (`is_boxpilot_api_service`), so
+/// `prepare_config` never adds a second. Everything else stays as the
+/// config wrote it, its own controllers included: its `api` services and its
+/// whole `experimental` (clash_api, v2ray_api, cache_file), which
+/// `prepare_config` merges into rather than replaces (ADR 0002). A `services`
+/// array left empty is removed, so strip ∘ prepare gives back the canonical
+/// form, short of the `cache_file.enabled` that prepare forces on. The input
+/// may carry what sing-box tolerates beyond JSON — comments, trailing commas
+/// (`jsonc`) — the output is plain JSON.
+pub fn strip_inbounds(config_data: &str) -> Result<String, String> {
+    let mut json: Value = jsonc::parse(config_data)
+        .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
+    let obj = json
+        .as_object_mut()
+        .ok_or_else(|| s().errors.not_object.to_string())?;
+    obj.remove("inbounds");
+    if let Some(services) = obj.get_mut("services").and_then(Value::as_array_mut) {
+        services.retain(|service| !is_boxpilot_api_service(service));
+        if services.is_empty() {
+            obj.remove("services");
+        }
+    }
+    serde_json::to_string_pretty(&json)
+        .map_err(|e| (s().errors.serialize_config)(&e.to_string()))
+}
+
+/// The TUN interface's IPv4 address — always present in TUN mode. Public so
+/// `core::lan` can leave the TUN's own /30 out of the LAN addresses. The
+/// injection that uses it lives in `boxpilot_runconfig`, which the
+/// privileged helper shares.
+pub use boxpilot_runconfig::TUN_IPV4_ADDRESS;
+#[cfg(test)]
+use boxpilot_runconfig::{address_port, API_SERVICE_TAG, TUN_IPV6_ADDRESS};
 
 /// Everything `prepare_config` needs to turn a canonical config into the form
 /// sing-box actually runs. Grouped into one struct so the injected shape can
@@ -64,143 +121,262 @@ pub struct RuntimeOptions {
     pub proxy_mode: bool,
     pub set_system_proxy: bool,
     pub proxy_port: u16,
-    pub clash_api_port: u16,
+    /// The sing-box API endpoint (port + secret) of the run this config is
+    /// for: a port from `pick_api_port` and a fresh secret. The clients must
+    /// use this same value, or sing-box rejects them.
+    pub api: SingBoxApi,
     /// TUN mode only: give the TUN interface an IPv6 address so IPv6 traffic
     /// is routed into the tunnel. Off means the interface carries no IPv6
     /// route at all and IPv6 traffic leaves via the physical interface — this
     /// injects nothing into `dns`/`route`, which stay the subscription's.
     pub tun_ipv6: bool,
+    /// Settings › Network "Allow LAN connections": the mixed inbound
+    /// listens on every IPv4 interface (`0.0.0.0`) instead of loopback, in
+    /// TUN and Proxy mode alike. The system proxy sing-box sets still points
+    /// at `127.0.0.1` — it substitutes loopback for an unspecified listen
+    /// address (`common/listener/listener.go`) — so `set_system_proxy` and
+    /// `process::disable_system_proxy` are unaffected.
+    pub allow_lan: bool,
 }
 
-impl Default for RuntimeOptions {
-    /// Mirrors `AppSettings::default()`: TUN mode, default ports, IPv6 off.
-    fn default() -> Self {
-        Self {
-            proxy_mode: false,
-            set_system_proxy: false,
-            proxy_port: PROXY_PORT,
-            clash_api_port: CLASH_API_PORT,
-            tun_ipv6: false,
-        }
-    }
-}
-
-impl From<&AppSettings> for RuntimeOptions {
-    fn from(settings: &AppSettings) -> Self {
+impl RuntimeOptions {
+    /// The options for one sing-box start: the user's settings, plus that
+    /// start's API endpoint, whose `api` then goes to the clients.
+    pub fn new(settings: &AppSettings, api: SingBoxApi) -> Self {
         Self {
             proxy_mode: settings.proxy_mode,
             set_system_proxy: settings.set_system_proxy,
             proxy_port: settings.proxy_port,
-            clash_api_port: settings.clash_api_port,
+            api,
             tun_ipv6: settings.tun_ipv6,
+            allow_lan: settings.allow_lan,
         }
     }
 }
 
-/// Inject mode-specific inbounds into config (used at process start)
+/// The tests' baseline: mirrors `AppSettings::default()` (default proxy
+/// port, IPv6 off), but in TUN mode on every platform, though a first run on
+/// macOS starts in Proxy mode (`DEFAULT_PROXY_MODE`); with a fresh API
+/// secret on a fixed port.
+#[cfg(test)]
+impl Default for RuntimeOptions {
+    fn default() -> Self {
+        let settings = AppSettings {
+            proxy_mode: false,
+            ..AppSettings::default()
+        };
+        Self::new(&settings, SingBoxApi::new(tests::API_PORT))
+    }
+}
+
+/// The loopback port BoxPilot's `api` service gets for one sing-box start:
+/// one the OS reports free right now, other than the local proxy port and the
+/// config's own listener ports (`config_listen_ports`), which aren't bound
+/// yet while sing-box is down. Nothing holds the port afterwards, so another
+/// program can take it before sing-box binds; sing-box then fails to start
+/// on it (`is_api_bind_failure`), and `AppState` starts once more, which
+/// picks again (`ApiPortRetry`).
+pub fn pick_api_port(config_data: &str, proxy_port: u16) -> Result<u16, String> {
+    let json: Value = jsonc::parse(config_data)
+        .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
+    let mut excluded = config_listen_ports(&json);
+    excluded.push(proxy_port);
+    pick_port_avoiding(&excluded, free_loopback_port)
+        .map_err(|e| (s().errors.api_port)(&e.to_string()))
+}
+
+/// A port the OS hands out for `127.0.0.1:0`, with the listener that holds
+/// it: the candidates `pick_port_avoiding` draws from.
+fn free_loopback_port() -> io::Result<(u16, TcpListener)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    Ok((listener.local_addr()?.port(), listener))
+}
+
+/// Whether a line sing-box printed says it could not listen on `api_port`,
+/// i.e. BoxPilot's `api` service lost its port (to another program, between
+/// `pick_api_port` and the bind, or to a reserved range on Windows). sing-box
+/// exits right after it: `FATAL[0000] start service: finish-start
+/// service/api[boxpilot-api]: listen tcp 127.0.0.1:41234: bind: address
+/// already in use`.
+pub fn is_api_bind_failure(line: &str, api_port: u16) -> bool {
+    line.contains(&format!("listen tcp 127.0.0.1:{}: bind: ", api_port))
+}
+
+/// The object at `parent[key]`, created empty — or replacing a non-object —
+/// if need be. `parent` must be an object. The tests build canonical configs
+/// with it; `prepare_config` leaves this to `boxpilot_runconfig`.
+#[cfg(test)]
+fn object_entry<'a>(parent: &'a mut Value, key: &str) -> &'a mut Value {
+    if !parent[key].is_object() {
+        parent[key] = Value::Object(Default::default());
+    }
+    &mut parent[key]
+}
+
+/// Inject mode-specific inbounds into config (used at process start).
+///
+/// `boxpilot_runconfig::inject` writes BoxPilot's parts, the same ones the
+/// privileged helper writes: the inbounds, `cache_file.enabled` (sing-box
+/// then remembers the selected nodes), and BoxPilot's own `api` service on
+/// `opts.api`. Everything else runs as the config wrote it, its own
+/// controllers included (ADR 0002). sing-box may set the system proxy here:
+/// it runs as the user.
 pub fn prepare_config(config_data: &str, opts: RuntimeOptions) -> Result<String, String> {
-    let mut json: Value = serde_json::from_str(config_data)
-        .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
-
-    let mut mixed_inbound = serde_json::json!({
-        "type": "mixed",
-        "tag": "proxy",
-        "listen": "127.0.0.1",
-        "listen_port": opts.proxy_port
-    });
-    if opts.set_system_proxy {
-        mixed_inbound["set_system_proxy"] = serde_json::Value::Bool(true);
-    }
-
-    let inbounds = if opts.proxy_mode {
-        serde_json::Value::Array(vec![mixed_inbound])
-    } else {
-        let mut address = vec![serde_json::Value::from(TUN_IPV4_ADDRESS)];
-        if opts.tun_ipv6 {
-            address.push(serde_json::Value::from(TUN_IPV6_ADDRESS));
-        }
-        let tun_inbound = serde_json::json!({
-            "type": "tun",
-            "tag": "tun0",
-            "address": address,
-            "auto_route": true,
-            "strict_route": true,
-            "stack": "mixed"
-        });
-        serde_json::Value::Array(vec![tun_inbound, mixed_inbound])
-    };
-
-    json["inbounds"] = inbounds;
-
-    // Clash API for runtime selector switching. With cache_file enabled,
-    // sing-box (≥1.8) automatically persists the chosen selector node across
-    // restarts (cache.db) — the old `store_selected` field was removed
-    // upstream and now fails config validation as an unknown field.
-    json["experimental"] = serde_json::json!({
-        "clash_api": {
-            "external_controller": ClashApi::new(opts.clash_api_port).external_controller()
+    let mut json: Value = jsonc::parse(config_data)
+        .map_err(|e| (s().errors.parse_config)(&e.to_string()))?;
+    let root = json
+        .as_object_mut()
+        .ok_or_else(|| s().errors.not_object.to_string())?;
+    let api = opts.api.service();
+    boxpilot_runconfig::inject(
+        root,
+        &Inject {
+            proxy_mode: opts.proxy_mode,
+            set_system_proxy: opts.set_system_proxy,
+            forbid_system_proxy: false,
+            proxy_port: opts.proxy_port,
+            tun_ipv6: opts.tun_ipv6,
+            allow_lan: opts.allow_lan,
+            api: &api,
         },
-        "cache_file": {
-            "enabled": true
-        }
-    });
-
+    );
     serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("Failed to serialize config: {}", e))
+        .map_err(|e| (s().errors.serialize_config)(&e.to_string()))
 }
 
-/// Fetch the subscription, strip its inbounds, and write to `config_path`
-/// (the profile's `configs/<id>.json`) — but only if the result differs from
-/// what's already on disk. `app_dir` is still needed separately: it's where
+/// Write a prepared runtime config. It carries the API secret, so on Unix
+/// the file is owner-only (sing-box, the privileged TUN copy included, runs
+/// as the same user); on Windows it inherits the per-user data folder's ACL.
+/// Replaced atomically, and the new secret only ever lands in a 0600 file.
+pub fn save_runtime_config(path: &Path, prepared: &str) -> io::Result<()> {
+    write_atomic(path, prepared.as_bytes(), FileAccess::OwnerOnly)
+}
+
+/// The local proxy BoxPilot's own HTTP requests (subscription fetches, the
+/// BoxPilot update check) go through: the mixed inbound `prepare_config`
+/// injects on `proxy_port`, which exists in TUN and Proxy mode alike and
+/// always answers on loopback (Allow LAN only widens it to `0.0.0.0`).
+/// `None` while sing-box isn't running (stopped, or still starting): there
+/// is nothing to go through.
+pub fn local_proxy(sing_box_running: bool, proxy_port: u16) -> Option<String> {
+    sing_box_running.then(|| format!("http://127.0.0.1:{proxy_port}"))
+}
+
+/// Fetch the subscription, strip its inbounds, and stage it for `config_path`
+/// (the profile's `configs/<id>.json`; see `UpdateOutcome`) — but only if
+/// the result differs from what's already on disk. `app_dir` is still needed separately: it's where
 /// the validation temp file goes so `sing-box check -D` resolves relative
-/// resources exactly like at runtime.
+/// resources exactly like at runtime. `proxy` is the route for the download
+/// (see `download`): the running sing-box's local proxy, or `None` for a
+/// direct connection.
 ///
 /// Settings persistence is the caller's responsibility (`AppState::save_settings`),
-/// so the caller doesn't risk clobbering settings fields not visible here.
+/// so the caller doesn't risk clobbering settings fields not visible here —
+/// that includes storing the returned `Fetched::usage`.
 pub fn perform_update(
     sub_url: &str,
+    proxy: Option<&str>,
     app_dir: &Path,
     config_path: &Path,
     sing_box: Option<&Path>,
     sing_box_version: Option<&str>,
-) -> Result<UpdateOutcome, String> {
+) -> Result<Fetched, String> {
     if !sub_url.starts_with("http://") && !sub_url.starts_with("https://") {
-        return Err("Invalid URL: must start with http:// or https://".to_string());
+        return Err(s().errors.invalid_sub_url.to_string());
     }
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+    let (config_data, usage) = download(sub_url, proxy, &user_agent(sing_box_version))?;
+    let outcome = apply_config_text(&config_data, app_dir, config_path, sing_box)?;
+    Ok(Fetched { outcome, usage })
+}
+
+/// Download the subscription: its body, and the usage its
+/// `subscription-userinfo` header reports. With a `proxy` (the running
+/// sing-box), any failure of that attempt — no connection, a timeout, a
+/// non-2xx status (a provider refusing proxy IPs), a broken body — is
+/// followed by one direct attempt, whose result is the answer; the proxied
+/// failure only goes to stderr. Two attempts can take up to twice
+/// `HTTP_TIMEOUT_SECS`. In TUN mode "direct" still follows the system route,
+/// i.e. sing-box's TUN: BoxPilot never adds route rules to a profile's
+/// config (ADR 0002). With no `proxy`, one direct attempt; environment
+/// proxies are ignored either way, as they may point at a sing-box that
+/// isn't running.
+fn download(
+    sub_url: &str,
+    proxy: Option<&str>,
+    user_agent: &str,
+) -> Result<(String, Option<SubscriptionUsage>), String> {
+    if let Some(proxy) = proxy {
+        match download_once(sub_url, Some(proxy), user_agent) {
+            Ok(downloaded) => return Ok(downloaded),
+            Err(e) => eprintln!("Fetch through sing-box failed ({e}); retrying directly"),
+        }
+    }
+    download_once(sub_url, None, user_agent)
+}
+
+/// One download attempt, through `proxy` or direct.
+fn download_once(
+    sub_url: &str,
+    proxy: Option<&str>,
+    user_agent: &str,
+) -> Result<(String, Option<SubscriptionUsage>), String> {
+    let builder = Client::builder().timeout(Duration::from_secs(HTTP_TIMEOUT_SECS));
+    let builder = match proxy {
+        Some(proxy) => builder
+            .proxy(Proxy::all(proxy).map_err(|e| (s().errors.http_client)(&http_error_text(e)))?),
+        None => builder.no_proxy(),
+    };
+    let client = builder
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| (s().errors.http_client)(&e.to_string()))?;
 
     let response = client
         .get(sub_url)
-        .header("User-Agent", user_agent(sing_box_version))
+        .header("User-Agent", user_agent)
         .send()
         .map_err(|e| {
-        if e.is_timeout() {
-            "Update timed out. Please try again.".to_string()
-        } else {
-            format!("Network error fetching subscription: {}", e)
-        }
-    })?;
+            if e.is_timeout() {
+                s().errors.update_timed_out.to_string()
+            } else {
+                (s().errors.network_error)(&http_error_text(e))
+            }
+        })?;
 
     if !response.status().is_success() {
-        return Err(format!(
-            "Failed to download subscription. Status: {}",
-            response.status()
-        ));
+        return Err((s().errors.download_status)(&response.status().to_string()));
     }
+
+    // Before `text()`, which consumes the response.
+    let now = to_unix_secs(SystemTime::now()).unwrap_or(0);
+    let usage = response
+        .headers()
+        .get(USERINFO_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_userinfo(value, now));
 
     let config_data = response
         .text()
-        .map_err(|e| format!("Failed to read subscription response: {}", e))?;
+        .map_err(|e| (s().errors.read_response)(&http_error_text(e)))?;
+    Ok((config_data, usage))
+}
 
-    apply_config_text(&config_data, app_dir, config_path, sing_box)
+/// A reqwest error for a message that reaches toasts and stderr. Its
+/// `Display` ends in ` for url (<full url>)`, and the subscription URL often
+/// carries an access token, so the URL goes. What's left ("error sending
+/// request") says little, so the innermost cause follows (a DNS failure, a
+/// refused connection, a TLS error), which names no URL.
+fn http_error_text(e: reqwest::Error) -> String {
+    use std::error::Error;
+    let e = e.without_url();
+    match std::iter::successors(e.source(), |&cause| cause.source()).last() {
+        Some(cause) => format!("{} ({})", e, cause),
+        None => e.to_string(),
+    }
 }
 
 /// Shared tail once the raw config text is in hand: strip → unchanged-detection
-/// → `sing-box check` validation → write. Both the remote (HTTP) and local
+/// → `sing-box check` validation → stage. Both the remote (HTTP) and local
 /// (file) sources funnel through here.
 fn apply_config_text(
     raw: &str,
@@ -232,26 +408,25 @@ fn apply_config_text(
     // back to the JSON-only checks above.
     if let Some(sing_box) = sing_box {
         if sing_box.exists() {
-            validate_downloaded_config(sing_box, app_dir, &stripped)?;
+            validate_downloaded_config(sing_box, app_dir, config_path, &stripped)?;
         }
     }
 
     if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+        create_private_dir(parent)
+            .map_err(|e| (s().errors.create_failed)(&parent.display().to_string(), &e.to_string()))?;
     }
-    fs::write(config_path, &stripped).map_err(|e| {
-        format!(
-            "Failed to write config ({}): {}",
-            config_path.display(),
-            e
-        )
-    })?;
+    // Staged beside the target and renamed over it by `UpdateOutcome::commit`:
+    // a crash mid-write must not corrupt the profile's (possibly active)
+    // config, and a result nobody wants any more must not land at all.
+    // Owner-only on Unix: it holds server passwords and UUIDs.
+    let staged = stage_atomic(config_path, stripped.as_bytes(), FileAccess::OwnerOnly)
+        .map_err(|e| (s().errors.write_config)(&config_path.display().to_string(), &e.to_string()))?;
 
-    Ok(UpdateOutcome::Changed)
+    Ok(UpdateOutcome::Changed(staged))
 }
 
-/// Read a sing-box config from a local file and snapshot it into `config_path`
+/// Read a sing-box config from a local file and stage a snapshot for `config_path`
 /// (a Local profile's create / ⟳). Same strip + validate + unchanged-detection
 /// path as `perform_update`, just sourced from disk instead of HTTP.
 pub fn import_local_config(
@@ -261,13 +436,13 @@ pub fn import_local_config(
     sing_box: Option<&Path>,
 ) -> Result<UpdateOutcome, String> {
     if !source_path.exists() {
-        return Err(format!("File not found: {}", source_path.display()));
+        return Err((s().errors.file_not_found)(&source_path.display().to_string()));
     }
     if !source_path.is_file() {
-        return Err(format!("Not a file: {}", source_path.display()));
+        return Err((s().errors.not_a_file)(&source_path.display().to_string()));
     }
     let raw = fs::read_to_string(source_path)
-        .map_err(|e| format!("Failed to read {}: {}", source_path.display(), e))?;
+        .map_err(|e| (s().errors.read_failed)(&source_path.display().to_string(), &e.to_string()))?;
     apply_config_text(&raw, app_dir, config_path, sing_box)
 }
 
@@ -279,32 +454,72 @@ pub fn import_local_config(
 /// the subscription's outbounds/route/dns are identical across proxy modes, so
 /// validating the mixed shape is sufficient. The temp file is written into
 /// `app_dir` (so `-D` resolves relative resources like at runtime) and always
-/// removed afterwards.
+/// removed afterwards; its name is unique per call (see
+/// `validation_temp_path`). `config_path` is only used to name it.
 fn validate_downloaded_config(
     sing_box: &Path,
     app_dir: &Path,
+    config_path: &Path,
     stripped: &str,
 ) -> Result<(), String> {
-    // 校验用的入站/Clash API 端口与运行时无关,固定默认值即可;proxy_mode
+    // 校验用的入站端口和 API secret 与运行时无关,用默认值即可;API 端口照
+    // 运行时的规则挑(`check` 不监听,只求和配置自己的端口不撞);proxy_mode
     // 显式设 true,校验的就是注释里说的那个 mixed 形态。
+    let api = SingBoxApi::new(pick_api_port(stripped, PROXY_PORT)?);
     let prepared = prepare_config(
         stripped,
         RuntimeOptions {
             proxy_mode: true,
-            ..Default::default()
+            ..RuntimeOptions::new(&AppSettings::default(), api)
         },
     )?;
-    let tmp_path = app_dir.join("config_check.tmp");
-    fs::write(&tmp_path, &prepared)
-        .map_err(|e| format!("Failed to write validation temp file: {}", e))?;
+    let tmp_path = validation_temp_path(app_dir, config_path);
+    write_atomic(&tmp_path, prepared.as_bytes(), FileAccess::OwnerOnly)
+        .map_err(|e| (s().errors.validation_temp)(&e.to_string()))?;
     let result = crate::core::process::validate_config(sing_box, app_dir, &tmp_path);
     let _ = fs::remove_file(&tmp_path);
     result
 }
 
+/// `<app_dir>/config_check-<profile id>-<unique>.tmp`. Fetches can overlap (an
+/// import takes over from a fetch whose blocking work still runs to
+/// completion), and
+/// with one shared name a run could check or delete the other's file: a
+/// false pass that lets a broken config replace a good one, or a spurious
+/// failure.
+fn validation_temp_path(app_dir: &Path, config_path: &Path) -> PathBuf {
+    let profile = config_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    app_dir.join(format!("config_check-{}-{}.tmp", profile, unique_suffix()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// reqwest's `Display` ends in ` for url (<full url>)`; the token in the
+    /// query must not reach the message.
+    #[test]
+    fn http_errors_name_no_url() {
+        let client = Client::builder().no_proxy().build().unwrap();
+        // Port 1 on loopback: refused at once, no network involved.
+        let err = client
+            .get("http://127.0.0.1:1/sub/Xk2fP9qLm7RtW3vZ?token=secret")
+            .send()
+            .unwrap_err();
+        assert!(err.to_string().contains("secret"), "precondition: {}", err);
+        let text = http_error_text(err);
+        assert!(!text.contains("secret"), "{}", text);
+        assert!(!text.contains("Xk2fP9qLm7RtW3vZ"), "{}", text);
+        assert!(text.starts_with("error sending request ("), "{}", text);
+    }
+
+    use crate::core::singbox_api::is_boxpilot_api_service;
+
+    /// The fixed API port of `RuntimeOptions::default()`.
+    pub(super) const API_PORT: u16 = 7789;
 
     const SUB_CONFIG: &str = r#"{
         "log": {"level": "info"},
@@ -314,6 +529,35 @@ mod tests {
         "route": {"rules": []},
         "experimental": {"clash_api": {"external_controller": "0.0.0.0:9090"}}
     }"#;
+
+    /// A config with controllers of its own: an `api` service under
+    /// BoxPilot's tag, a clash_api, a v2ray_api, and a cache_file with
+    /// `enabled` off.
+    const CONTROLLED_CONFIG: &str = r#"{
+        "inbounds": [{"type": "mixed", "tag": "upstream-mixed", "listen_port": 2080}],
+        "outbounds": [{"type": "direct", "tag": "direct"}],
+        "services": [
+            {"type": "resolved", "tag": "resolved", "listen_port": 53},
+            {"type": "api", "tag": "boxpilot-api", "listen": "0.0.0.0", "listen_port": 9091}
+        ],
+        "experimental": {
+            "clash_api": {"external_controller": "127.0.0.1:9090", "secret": "theirs"},
+            "v2ray_api": {"listen": "127.0.0.1:8080", "stats": {"enabled": true}},
+            "cache_file": {"enabled": false, "path": "custom.db", "store_rdrc": true}
+        }
+    }"#;
+
+    /// BoxPilot's own service in a prepared config.
+    fn our_service(prepared: &Value) -> &Value {
+        let ours: Vec<&Value> = prepared["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|service| is_boxpilot_api_service(service))
+            .collect();
+        assert_eq!(ours.len(), 1, "exactly one BoxPilot api service");
+        ours[0]
+    }
 
     fn parse(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
@@ -363,33 +607,266 @@ mod tests {
         assert_eq!(once, twice);
     }
 
+    /// The config's own controllers are not BoxPilot's to strip.
     #[test]
-    fn strip_removes_experimental() {
-        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let json = parse(&stripped);
-        assert!(json.get("experimental").is_none());
+    fn strip_keeps_the_configs_own_controllers() {
+        let json = parse(&strip_inbounds(CONTROLLED_CONFIG).unwrap());
+        let original = parse(CONTROLLED_CONFIG);
+        assert!(json.get("inbounds").is_none());
+        assert_eq!(json["experimental"], original["experimental"]);
+        assert_eq!(json["services"], original["services"]);
     }
 
-    /// BoxPilot owns the `experimental` section: clash_api on the loopback port
-    /// for node switching, cache_file so sing-box persists the user's selector
-    /// choices across restarts and subscription updates (automatic when
-    /// enabled — sing-box ≥1.8 removed `store_selected` and rejects it as an
-    /// unknown field, so we must NOT inject it).
+    /// With no `experimental` of its own, a config gets just cache_file, so
+    /// sing-box persists the user's selector choices across restarts and
+    /// subscription updates (automatic when enabled — sing-box ≥1.8 removed
+    /// `store_selected` and rejects it as an unknown field, so we must NOT
+    /// inject it).
     #[test]
-    fn prepare_injects_clash_api_and_cache_file() {
-        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
-        let prepared = parse(&prepare_config(&stripped, proxy_opts()).unwrap());
+    fn prepare_injects_cache_file() {
+        let config = r#"{"outbounds": [{"type": "direct", "tag": "direct"}]}"#;
+        let prepared = parse(&prepare_config(config, proxy_opts()).unwrap());
         assert_eq!(
-            prepared["experimental"]["clash_api"]["external_controller"],
-            format!("127.0.0.1:{}", CLASH_API_PORT)
-        );
-        assert_eq!(prepared["experimental"]["cache_file"]["enabled"], true);
-        assert!(
-            prepared["experimental"]["cache_file"]
-                .get("store_selected")
-                .is_none(),
+            prepared["experimental"],
+            serde_json::json!({"cache_file": {"enabled": true}}),
             "store_selected was removed upstream; injecting it fails sing-box config validation"
         );
+    }
+
+    /// `experimental` is merged, not replaced: the config's clash_api,
+    /// v2ray_api and cache_file fields stay, and only `cache_file.enabled`
+    /// is forced on.
+    #[test]
+    fn prepare_merges_experimental() {
+        let prepared = parse(&prepare_config(CONTROLLED_CONFIG, proxy_opts()).unwrap());
+        let original = parse(CONTROLLED_CONFIG);
+        let experimental = &prepared["experimental"];
+        assert_eq!(
+            experimental["clash_api"],
+            original["experimental"]["clash_api"]
+        );
+        assert_eq!(
+            experimental["v2ray_api"],
+            original["experimental"]["v2ray_api"]
+        );
+        assert_eq!(
+            experimental["cache_file"],
+            serde_json::json!({"enabled": true, "path": "custom.db", "store_rdrc": true})
+        );
+
+        // A malformed `experimental` / `cache_file` gives way to a working one.
+        for config in [
+            r#"{"experimental": null}"#,
+            r#"{"experimental": {"cache_file": true, "clash_api": {}}}"#,
+        ] {
+            let prepared = parse(&prepare_config(config, proxy_opts()).unwrap());
+            assert_eq!(
+                prepared["experimental"]["cache_file"]["enabled"], true,
+                "{}",
+                config
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_injects_api_service_on_loopback() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        let prepared = parse(&prepare_config(&stripped, proxy_opts()).unwrap());
+        let services = prepared["services"].as_array().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0]["type"], "api");
+        assert_eq!(services[0]["tag"], API_SERVICE_TAG);
+        assert_eq!(services[0]["listen"], "127.0.0.1");
+        assert_eq!(services[0]["listen_port"], API_PORT);
+    }
+
+    /// The injected service is exactly the one `opts.api` describes — its
+    /// secret included — so the clients holding that `api` get in.
+    #[test]
+    fn prepare_injects_the_runs_api_secret() {
+        let opts = proxy_opts();
+        let prepared = parse(&prepare_config(SUB_CONFIG, opts).unwrap());
+        let service = &prepared["services"][0];
+        assert_eq!(*service, opts.api.service_config());
+        assert!(!service["secret"].as_str().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_config_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = sub_temp_dir("runtime_mode");
+        let path = dir.join("running_config.json");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        save_runtime_config(&path, "{}").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The options carry the settings and exactly the `api` they were
+    /// given, which is what the clients get.
+    #[test]
+    fn runtime_options_carry_settings_and_the_given_api() {
+        let settings = AppSettings {
+            proxy_mode: true,
+            set_system_proxy: true,
+            proxy_port: 18888,
+            tun_ipv6: true,
+            allow_lan: true,
+            ..AppSettings::default()
+        };
+        let api = SingBoxApi::new(41234);
+        let opts = RuntimeOptions::new(&settings, api);
+        assert_eq!(
+            opts,
+            RuntimeOptions {
+                proxy_mode: true,
+                set_system_proxy: true,
+                proxy_port: 18888,
+                api,
+                tun_ipv6: true,
+                allow_lan: true,
+            }
+        );
+    }
+
+    /// The config's own `api` service stays as written, next to ours; its
+    /// other services survive in order, and ours comes last.
+    #[test]
+    fn prepare_keeps_the_configs_api_service_next_to_ours() {
+        let config = r#"{
+            "outbounds": [{"type": "direct", "tag": "direct"}],
+            "services": [
+                {"type": "resolved", "tag": "resolved"},
+                {"type": "api", "tag": "api", "listen": "0.0.0.0", "listen_port": 9090},
+                {"type": "derp", "tag": "derp"}
+            ]
+        }"#;
+        let opts = proxy_opts();
+        let prepared = parse(&prepare_config(config, opts).unwrap());
+        let services = prepared["services"].as_array().unwrap();
+        assert_eq!(
+            services[..3],
+            parse(config)["services"].as_array().unwrap()[..]
+        );
+        assert_eq!(services.len(), 4);
+        assert_eq!(services[3], opts.api.service_config());
+    }
+
+    /// The config's own service under BoxPilot's tag keeps it; ours takes
+    /// the first free suffix.
+    #[test]
+    fn prepare_resolves_a_tag_collision() {
+        let prepared = parse(&prepare_config(CONTROLLED_CONFIG, proxy_opts()).unwrap());
+        assert_eq!(prepared["services"][1]["tag"], API_SERVICE_TAG);
+        assert_eq!(prepared["services"][1]["listen_port"], 9091);
+        assert_eq!(our_service(&prepared)["tag"], "boxpilot-api-2");
+
+        let config = r#"{"services": [
+            {"type": "api", "tag": "boxpilot-api-2"},
+            {"type": "derp", "tag": "boxpilot-api"}
+        ]}"#;
+        let prepared = parse(&prepare_config(config, proxy_opts()).unwrap());
+        assert_eq!(our_service(&prepared)["tag"], "boxpilot-api-3");
+    }
+
+    /// Only BoxPilot's own service is stripped (say from an imported
+    /// runtime config, whose secret is dead); the config's own `api`
+    /// services stay, whatever their tag.
+    #[test]
+    fn strip_removes_only_boxpilot_api_service() {
+        let runtime = prepare_config(CONTROLLED_CONFIG, proxy_opts()).unwrap();
+        let json = parse(&strip_inbounds(&runtime).unwrap());
+        assert_eq!(json["services"], parse(CONTROLLED_CONFIG)["services"]);
+
+        let only_ours = prepare_config(r#"{}"#, proxy_opts()).unwrap();
+        assert!(parse(&strip_inbounds(&only_ours).unwrap())
+            .get("services")
+            .is_none());
+    }
+
+    #[test]
+    fn config_listen_ports_cover_services_and_controllers() {
+        let mut ports = config_listen_ports(&parse(CONTROLLED_CONFIG));
+        ports.sort_unstable();
+        // The upstream inbound's 2080 is not among them: BoxPilot owns inbounds.
+        assert_eq!(ports, vec![53, 8080, 9090, 9091]);
+        assert!(config_listen_ports(&parse("{}")).is_empty());
+        assert_eq!(address_port("[::]:9090"), Some(9090));
+        assert_eq!(address_port(":9090"), Some(9090));
+        assert_eq!(address_port("0.0.0.0"), None);
+        assert_eq!(address_port("127.0.0.1:"), None);
+    }
+
+    /// Excluded draws are skipped, and their holders kept until the pick,
+    /// so the OS can't offer the same port again.
+    #[test]
+    fn port_picking_skips_excluded_ports() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let held = Rc::new(RefCell::new(Vec::new()));
+        let draws = [9090u16, 7788, 41234, 41235];
+        let mut drawn = 0;
+        let port = pick_port_avoiding(&[7788, 9090], || {
+            assert_eq!(
+                *held.borrow(),
+                draws[..drawn],
+                "rejected draws are still held"
+            );
+            let port = draws[drawn];
+            drawn += 1;
+            held.borrow_mut().push(port);
+            Ok((port, HeldPort(port, held.clone())))
+        })
+        .unwrap();
+        assert_eq!(port, 41234);
+        assert_eq!(drawn, 3);
+        assert!(
+            held.borrow().is_empty(),
+            "every holder is dropped by the end"
+        );
+
+        // A source that keeps offering excluded ports gives up.
+        let err = pick_port_avoiding(&[9090], || Ok((9090, ()))).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+    }
+
+    /// Stands in for the listener holding a drawn port: removes it from the
+    /// shared list of held ports when dropped.
+    struct HeldPort(u16, std::rc::Rc<std::cell::RefCell<Vec<u16>>>);
+
+    impl Drop for HeldPort {
+        fn drop(&mut self) {
+            self.1.borrow_mut().retain(|&port| port != self.0);
+        }
+    }
+
+    /// The real picker: a free loopback port, never one the config or the
+    /// proxy uses.
+    #[test]
+    fn picked_api_port_is_free_and_not_the_configs() {
+        let port = pick_api_port(CONTROLLED_CONFIG, PROXY_PORT).unwrap();
+        assert!(![53, 8080, 9090, 9091, PROXY_PORT].contains(&port));
+        TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("the port is free");
+        assert!(pick_api_port("not json", PROXY_PORT).is_err());
+    }
+
+    #[test]
+    fn api_bind_failure_names_our_port_only() {
+        let line = "FATAL[0000] start service: finish-start service/api[boxpilot-api]: \
+                    listen tcp 127.0.0.1:41234: bind: address already in use";
+        assert!(is_api_bind_failure(line, 41234));
+        assert!(!is_api_bind_failure(line, 4123));
+        let windows = "FATAL[0000] start service: finish-start service/api[boxpilot-api]: \
+                       listen tcp 127.0.0.1:41234: bind: An attempt was made to access a \
+                       socket in a way forbidden by its access permissions.";
+        assert!(is_api_bind_failure(windows, 41234));
+        let proxy = "FATAL[0000] start inbound/mixed[proxy]: listen tcp 127.0.0.1:7788: \
+                     bind: address already in use";
+        assert!(!is_api_bind_failure(proxy, 41234));
     }
 
     #[test]
@@ -428,22 +905,19 @@ mod tests {
     }
 
     #[test]
-    fn prepare_uses_custom_clash_api_port() {
+    fn prepare_uses_custom_api_port() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
         let prepared = parse(
             &prepare_config(
                 &stripped,
                 RuntimeOptions {
-                    clash_api_port: 17900,
+                    api: SingBoxApi::new(17900),
                     ..proxy_opts()
                 },
             )
             .unwrap(),
         );
-        assert_eq!(
-            prepared["experimental"]["clash_api"]["external_controller"],
-            "127.0.0.1:17900"
-        );
+        assert_eq!(prepared["services"][0]["listen_port"], 17900);
     }
 
     #[test]
@@ -462,6 +936,84 @@ mod tests {
         assert_eq!(prepared["inbounds"][0]["set_system_proxy"], true);
     }
 
+    /// "Allow LAN connections" moves the mixed inbound from loopback to
+    /// every IPv4 interface, in both modes; nothing else about the inbounds
+    /// changes, and the TUN inbound never gets a listen address.
+    #[test]
+    fn allow_lan_sets_the_mixed_listen_address_in_both_modes() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        for proxy_mode in [true, false] {
+            for (allow_lan, listen) in [(false, "127.0.0.1"), (true, "0.0.0.0")] {
+                let prepared = parse(
+                    &prepare_config(
+                        &stripped,
+                        RuntimeOptions {
+                            proxy_mode,
+                            allow_lan,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                );
+                let inbounds = prepared["inbounds"].as_array().unwrap();
+                let mixed = inbounds.last().unwrap();
+                assert_eq!(mixed["type"], "mixed");
+                assert_eq!(
+                    mixed["listen"], listen,
+                    "proxy_mode={proxy_mode}, allow_lan={allow_lan}"
+                );
+                assert_eq!(mixed["listen_port"], PROXY_PORT);
+                if !proxy_mode {
+                    assert_eq!(inbounds[0]["type"], "tun");
+                    assert!(inbounds[0].get("listen").is_none());
+                }
+            }
+        }
+    }
+
+    /// LAN access and the system proxy combine: sing-box still sets the
+    /// system proxy (to 127.0.0.1, its stand-in for an unspecified listen
+    /// address), so the flag is injected exactly as without LAN access.
+    #[test]
+    fn allow_lan_keeps_the_system_proxy_flag() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        for proxy_mode in [true, false] {
+            let prepared = parse(
+                &prepare_config(
+                    &stripped,
+                    RuntimeOptions {
+                        proxy_mode,
+                        set_system_proxy: true,
+                        allow_lan: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            );
+            let mixed = prepared["inbounds"].as_array().unwrap().last().unwrap();
+            assert_eq!(mixed["listen"], "0.0.0.0");
+            assert_eq!(mixed["set_system_proxy"], true);
+        }
+    }
+
+    /// BoxPilot's own sing-box API stays on loopback whatever the LAN
+    /// setting: only the proxy is shared.
+    #[test]
+    fn allow_lan_leaves_the_api_service_on_loopback() {
+        let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        let prepared = parse(
+            &prepare_config(
+                &stripped,
+                RuntimeOptions {
+                    allow_lan: true,
+                    ..proxy_opts()
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(prepared["services"][0]["listen"], "127.0.0.1");
+    }
+
     #[test]
     fn tun_mode_injects_tun_then_mixed() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
@@ -470,7 +1022,8 @@ mod tests {
         assert_eq!(inbounds.len(), 2);
         assert_eq!(inbounds[0]["type"], "tun");
         assert_eq!(inbounds[0]["auto_route"], true);
-        assert_eq!(inbounds[0]["strict_route"], true);
+        // Off on Linux only (TUN_STRICT_ROUTE).
+        assert_eq!(inbounds[0]["strict_route"], !cfg!(target_os = "linux"));
         assert_eq!(inbounds[1]["type"], "mixed");
     }
 
@@ -512,15 +1065,17 @@ mod tests {
     #[test]
     fn tun_ipv6_does_not_affect_proxy_mode() {
         let stripped = strip_inbounds(SUB_CONFIG).unwrap();
+        // One options value for both, so the API secret matches too.
+        let opts = proxy_opts();
         let with = prepare_config(
             &stripped,
             RuntimeOptions {
                 tun_ipv6: true,
-                ..proxy_opts()
+                ..opts
             },
         )
         .unwrap();
-        let without = prepare_config(&stripped, proxy_opts()).unwrap();
+        let without = prepare_config(&stripped, opts).unwrap();
         assert_eq!(with, without);
     }
 
@@ -544,32 +1099,48 @@ mod tests {
     /// config and comparing to the freshly stripped download. Current
     /// releases keep the profile file canonical, but files from older
     /// releases carry mode-specific inbounds injected at process start —
-    /// tolerating them requires strip ∘ prepare to be the identity on
-    /// stripped configs, for every mode combination.
+    /// tolerating them requires strip ∘ prepare to give back the canonical
+    /// form, for every mode combination. The one thing prepare adds that
+    /// strip keeps is `cache_file.enabled`, which canonical configs that
+    /// already have it on can't tell apart; and a config strip gives back
+    /// prepares to exactly one BoxPilot service again.
     #[test]
     fn strip_after_prepare_recovers_canonical_form() {
-        let canonical = strip_inbounds(SUB_CONFIG).unwrap();
-        for proxy_mode in [true, false] {
-            for set_system_proxy in [true, false] {
-                for tun_ipv6 in [true, false] {
-                    let on_disk = prepare_config(
-                        &canonical,
-                        RuntimeOptions {
-                            proxy_mode,
-                            set_system_proxy,
-                            tun_ipv6,
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap();
-                    let recovered = strip_inbounds(&on_disk).unwrap();
-                    assert_eq!(
-                        recovered, canonical,
-                        "strip(prepare(x, proxy_mode={}, system_proxy={}, tun_ipv6={})) must equal x",
-                        proxy_mode, set_system_proxy, tun_ipv6
-                    );
+        let with_cache_on = |config: &str| {
+            let mut json = parse(config);
+            object_entry(object_entry(&mut json, "experimental"), "cache_file")["enabled"] =
+                Value::Bool(true);
+            serde_json::to_string_pretty(&json).unwrap()
+        };
+        for source in [SUB_CONFIG, CONTROLLED_CONFIG] {
+            let canonical = strip_inbounds(&with_cache_on(source)).unwrap();
+            for proxy_mode in [true, false] {
+                for set_system_proxy in [true, false] {
+                    for tun_ipv6 in [true, false] {
+                        for allow_lan in [true, false] {
+                            let opts = RuntimeOptions {
+                                proxy_mode,
+                                set_system_proxy,
+                                tun_ipv6,
+                                allow_lan,
+                                ..Default::default()
+                            };
+                            let on_disk = prepare_config(&canonical, opts).unwrap();
+                            let recovered = strip_inbounds(&on_disk).unwrap();
+                            assert_eq!(
+                                recovered, canonical,
+                                "strip(prepare(x, proxy_mode={}, system_proxy={}, tun_ipv6={}, allow_lan={})) must equal x",
+                                proxy_mode, set_system_proxy, tun_ipv6, allow_lan
+                            );
+                            assert_eq!(prepare_config(&recovered, opts).unwrap(), on_disk);
+                        }
+                    }
                 }
             }
+            // With cache_file off, strip ∘ prepare only turns it on.
+            let canonical = strip_inbounds(source).unwrap();
+            let on_disk = prepare_config(&canonical, proxy_opts()).unwrap();
+            assert_eq!(strip_inbounds(&on_disk).unwrap(), with_cache_on(&canonical));
         }
     }
 
@@ -588,12 +1159,52 @@ mod tests {
         fs::write(&src, SUB_CONFIG).unwrap();
         let config_path = dir.join("configs").join("p1.json");
         let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
-        assert!(matches!(outcome, UpdateOutcome::Changed));
+        assert!(matches!(outcome, UpdateOutcome::Changed(_)));
+        assert!(!config_path.exists(), "nothing lands before commit");
+        assert_eq!(outcome.commit(), Ok(true));
         let json = parse(&fs::read_to_string(&config_path).unwrap());
         assert!(json.get("inbounds").is_none(), "inbounds must be stripped");
-        assert!(json.get("experimental").is_none(), "experimental must be stripped");
+        assert_eq!(json["experimental"], parse(SUB_CONFIG)["experimental"]);
         assert_eq!(json["outbounds"], parse(SUB_CONFIG)["outbounds"]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// sing-box runs a config with comments and trailing commas, so it
+    /// imports; the snapshot is plain JSON, which a start reads back.
+    #[test]
+    fn import_local_accepts_comments_and_trailing_commas() {
+        let dir = sub_temp_dir("import_jsonc");
+        let src = dir.join("source.json");
+        let commented = r#"
+            // exported from another client
+            {
+              "log": {"level": "warn"}, # quiet
+              /* the nodes */
+              "outbounds": [
+                {"type": "direct", "tag": "direct"},
+              ],
+            }
+        "#;
+        fs::write(&src, commented).unwrap();
+        let config_path = dir.join("configs").join("p1.json");
+        let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
+        assert_eq!(outcome.commit(), Ok(true));
+        let saved = fs::read_to_string(&config_path).unwrap();
+        assert_eq!(
+            parse(&saved),
+            serde_json::json!({"log": {"level": "warn"}, "outbounds": [{"type": "direct", "tag": "direct"}]})
+        );
+        assert!(prepare_config(&saved, proxy_opts()).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A canonical config edited by hand to carry a comment still starts.
+    #[test]
+    fn prepare_accepts_a_commented_config() {
+        let commented = "{\n  // hand-edited\n  \"outbounds\": [{\"type\": \"direct\", \"tag\": \"direct\"}],\n}";
+        assert!(pick_api_port(commented, PROXY_PORT).is_ok());
+        let prepared = parse(&prepare_config(commented, proxy_opts()).unwrap());
+        assert_eq!(prepared["outbounds"][0]["tag"], "direct");
     }
 
     #[test]
@@ -602,10 +1213,206 @@ mod tests {
         let src = dir.join("source.json");
         fs::write(&src, SUB_CONFIG).unwrap();
         let config_path = dir.join("configs").join("p1.json");
-        import_local_config(&src, &dir, &config_path, None).unwrap();
+        import_local_config(&src, &dir, &config_path, None)
+            .unwrap()
+            .commit()
+            .unwrap();
         let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
         assert!(matches!(outcome, UpdateOutcome::Unchanged));
+        assert_eq!(outcome.commit(), Ok(false));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A result that is dropped instead of committed (its profile was
+    /// deleted, or a newer fetch took over) leaves nothing behind.
+    #[test]
+    fn dropped_import_leaves_no_files() {
+        let dir = sub_temp_dir("import_dropped");
+        let src = dir.join("source.json");
+        fs::write(&src, SUB_CONFIG).unwrap();
+        let config_path = dir.join("configs").join("p1.json");
+        let outcome = import_local_config(&src, &dir, &config_path, None).unwrap();
+        drop(outcome);
+        assert_eq!(fs::read_dir(dir.join("configs")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Concurrent validations (even of the same profile) never share a temp
+    /// file, and it stays in `app_dir` so `-D` relative resources resolve.
+    #[test]
+    fn validation_temp_paths_are_unique_per_call() {
+        let app_dir = Path::new("/data/BoxPilot");
+        let config = app_dir.join("configs").join("p3.json");
+        let a = validation_temp_path(app_dir, &config);
+        let b = validation_temp_path(app_dir, &config);
+        assert_ne!(a, b);
+        for path in [&a, &b] {
+            assert_eq!(path.parent(), Some(app_dir));
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with("config_check-p3-"), "got {}", name);
+            assert!(name.ends_with(".tmp"), "got {}", name);
+        }
+    }
+
+    /// A loopback HTTP server that answers exactly one request with `200`,
+    /// the given `subscription-userinfo` header and `body`. Returns the URL
+    /// (with a token-looking query, as real subscription URLs have) and the
+    /// server thread, which yields the request head it received.
+    fn serve_once(
+        userinfo: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        serve_status_once("200 OK", userinfo, body)
+    }
+
+    /// `serve_once` with any status line, e.g. `403 Forbidden`.
+    fn serve_status_once(
+        status: &'static str,
+        userinfo: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap() == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\n\
+                 Subscription-Userinfo: {}\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{}",
+                status,
+                userinfo,
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&head).into_owned()
+        });
+        (format!("http://127.0.0.1:{}/sub?token=abc", port), server)
+    }
+
+    #[test]
+    fn fetch_carries_usage_on_changed_and_unchanged() {
+        const BODY: &str = r#"{"outbounds":[{"type":"direct","tag":"direct"}]}"#;
+        let dir = sub_temp_dir("fetch_usage");
+        let config_path = dir.join("configs").join("p1.json");
+
+        let (url, server) = serve_once(
+            "upload=1024; download=2048; total=1e6; expire=1800000000",
+            BODY,
+        );
+        let fetched = perform_update(&url, None, &dir, &config_path, None, Some("1.14.0")).unwrap();
+        let head = server.join().unwrap();
+        assert!(head.contains("sing-box 1.14.0"), "User-Agent: {}", head);
+        assert!(matches!(fetched.outcome, UpdateOutcome::Changed(_)));
+        let usage = fetched.usage.expect("usage parsed");
+        assert_eq!(
+            (usage.upload, usage.download, usage.total, usage.expire),
+            (1024, 2048, 1_000_000, Some(1_800_000_000))
+        );
+        assert!(usage.fetched_at > 1_700_000_000, "stamped with now");
+        assert_eq!(fetched.outcome.commit(), Ok(true));
+
+        let (url, server) = serve_once("upload=4096; download=8192; total=1e6", BODY);
+        let fetched = perform_update(&url, None, &dir, &config_path, None, None).unwrap();
+        server.join().unwrap();
+        assert!(matches!(fetched.outcome, UpdateOutcome::Unchanged));
+        let usage = fetched.usage.expect("usage parsed on Unchanged too");
+        assert_eq!((usage.upload, usage.download, usage.expire), (4096, 8192, None));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const FETCH_BODY: &str = r#"{"outbounds":[{"type":"direct","tag":"direct"}]}"#;
+    const UA: &str = "BoxPilot/test";
+
+    /// A loopback port nothing listens on: bound, then let go.
+    fn dead_port() -> u16 {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[test]
+    fn local_proxy_only_while_sing_box_runs() {
+        assert_eq!(
+            local_proxy(true, 18200).as_deref(),
+            Some("http://127.0.0.1:18200")
+        );
+        assert_eq!(local_proxy(false, 18200), None);
+    }
+
+    #[test]
+    fn download_goes_through_the_given_proxy() {
+        // The "proxy" answers the forwarded request itself; the host in the
+        // URL never resolves, so only a proxied request can succeed.
+        let (proxy, server) = serve_once("upload=1; download=2; total=3", FETCH_BODY);
+        let proxy = proxy.trim_end_matches("/sub?token=abc").to_string();
+        let (body, usage) = download("http://sub.invalid/sub?token=abc", Some(&proxy), UA).unwrap();
+        assert_eq!(body, FETCH_BODY);
+        assert_eq!(usage.map(|u| u.total), Some(3));
+        let head = server.join().unwrap();
+        assert!(
+            head.starts_with("GET http://sub.invalid/sub?token=abc HTTP/1.1"),
+            "{head}"
+        );
+    }
+
+    /// sing-box isn't listening (yet): straight on to the direct attempt.
+    #[test]
+    fn download_falls_back_to_direct_when_the_proxy_is_down() {
+        let (url, server) = serve_once("upload=1; download=2; total=3", FETCH_BODY);
+        let proxy = format!("http://127.0.0.1:{}", dead_port());
+        let (body, _) = download(&url, Some(&proxy), UA).unwrap();
+        assert_eq!(body, FETCH_BODY);
+        assert!(server.join().unwrap().starts_with("GET /sub?token=abc "));
+    }
+
+    /// A provider refusing the proxy's IP: the direct attempt follows.
+    #[test]
+    fn download_falls_back_to_direct_on_an_error_status() {
+        let (proxy, proxy_server) = serve_status_once("403 Forbidden", "", "");
+        let proxy = proxy.trim_end_matches("/sub?token=abc").to_string();
+        let (url, server) = serve_once("upload=1; download=2; total=3", FETCH_BODY);
+        let (body, usage) = download(&url, Some(&proxy), UA).unwrap();
+        assert_eq!(body, FETCH_BODY);
+        assert!(usage.is_some(), "usage comes from the direct answer");
+        let proxied = proxy_server.join().unwrap();
+        assert!(proxied.starts_with("GET http://127.0.0.1:"), "{proxied}");
+        assert!(server.join().unwrap().starts_with("GET /sub?token=abc "));
+    }
+
+    /// Both attempts failed: the direct attempt's error is the one
+    /// reported, and it names no URL.
+    #[test]
+    fn failed_fallback_reports_the_direct_error() {
+        let (proxy, proxy_server) = serve_status_once("502 Bad Gateway", "", "");
+        let proxy = proxy.trim_end_matches("/sub?token=abc").to_string();
+        let url = format!("http://127.0.0.1:{}/sub?token=secret", dead_port());
+        let err = download(&url, Some(&proxy), UA).unwrap_err();
+        proxy_server.join().unwrap();
+        assert!(err.starts_with("Network error"), "{err}");
+        assert!(!err.contains("502"), "{err}");
+        assert!(!err.contains("secret"), "{err}");
+    }
+
+    /// No proxy: one direct attempt, whose status is the error.
+    #[test]
+    fn direct_download_reports_its_status() {
+        let (url, server) = serve_status_once("404 Not Found", "", "");
+        let err = download(&url, None, UA).unwrap_err();
+        server.join().unwrap();
+        assert!(err.contains("404"), "{err}");
     }
 
     #[test]

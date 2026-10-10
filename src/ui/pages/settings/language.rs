@@ -1,0 +1,58 @@
+//! Settings › General "Language": System / English / 简体中文, applied live
+//! (`ui::locale`).
+
+use super::SettingsPage;
+use crate::core::settings::LanguagePreference;
+use crate::i18n::s;
+use crate::state::AppState;
+use crate::ui::{
+    locale,
+    widgets::{choice_select, setting_row},
+};
+use gpui::{AnyElement, Context, Entity, IntoElement, ParentElement, Window};
+use gpui_component::ActiveTheme;
+
+/// The options, in display order (never rely on `LanguagePreference`'s
+/// variant order: serde's `other` fallback forces `System` last).
+const OPTIONS: [LanguagePreference; 3] = [
+    LanguagePreference::System,
+    LanguagePreference::English,
+    LanguagePreference::SimplifiedChinese,
+];
+
+/// A language reads its own name in every UI language, so it can be found
+/// from either; only "System" is translated.
+fn label(preference: LanguagePreference) -> &'static str {
+    match preference {
+        LanguagePreference::System => s().settings.follow_system,
+        LanguagePreference::English => "English",
+        LanguagePreference::SimplifiedChinese => "简体中文",
+    }
+}
+
+/// This slot's rows, in display order; empty = nothing to show.
+pub(super) fn rows(
+    app_state: &Entity<AppState>,
+    window: &mut Window,
+    cx: &mut Context<SettingsPage>,
+) -> Vec<AnyElement> {
+    let current = app_state.read(cx).settings.language;
+    let app_state = app_state.clone();
+    let control = choice_select(
+        "language",
+        OPTIONS.map(|preference| (preference, label(preference))),
+        current,
+        move |preference, _, cx| {
+            // Language first, so everything the save notifies (pages,
+            // tray) already reads the new strings.
+            locale::apply(preference, cx);
+            app_state.update(cx, |state, cx| state.set_language(preference, cx));
+        },
+        window,
+        cx,
+    );
+
+    vec![setting_row(cx.theme(), s().settings.language, None)
+        .child(control)
+        .into_any_element()]
+}

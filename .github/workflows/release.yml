@@ -1,11 +1,20 @@
 # .github/workflows/release.yml
-# Build and package the Windows release of BoxPilot.
+# Build and package the Windows, Linux and macOS releases of BoxPilot.
 #
-# GPUI's Windows backend (DirectX 11 + MSVC `windows` crate bindings) does not
-# support MinGW cross-compilation; Zed upstream rejects MinGW builds. Production
-# runs natively on `windows-latest` with MSVC.
+# windows — MSI. GPUI's Windows backend (DirectX 11 + MSVC `windows` crate
+#           bindings) does not support MinGW cross-compilation; Zed upstream
+#           rejects MinGW builds, so this runs natively on `windows-latest`.
+# linux   — x86_64 AppImage, built on ubuntu-22.04 so the binary only needs
+#           the older glibc that ships there.
+# macos   — one DMG per architecture (arm64, x86_64), signed ad hoc. GPUI's
+#           Metal shaders are compiled with Xcode's `xcrun metal`, so this
+#           runs natively on a macOS runner, never cross from Linux. The
+#           DMG carries the privileged helper (ADR 0006), which the arm64
+#           leg installs from it and drives on the runner.
+# publish — attaches all of them to the GitHub release once every build
+#           succeeds; only for the release branches and version tags.
 
-name: Build Windows Release
+name: Build Release
 
 on:
   push:
@@ -29,23 +38,25 @@ on:
         required: false
         default: ""
 
-# sing-box version bundled into the MSI. Pinned explicitly (no implicit
-# "latest") so builds are reproducible and never silently grab the wrong
-# version. Set the repo/org Actions variable SINGBOX_VERSION, or override
-# per-run via the workflow_dispatch input above. The download step fails fast
-# if neither is set. Optionally set SINGBOX_SHA256 to the .zip asset digest
-# shown on the sing-box release page to pin the archive contents.
+# sing-box version bundled into the MSI, the AppImage and the DMGs. Pinned explicitly
+# (no implicit "latest") so builds are reproducible and never silently grab
+# the wrong version. Set the repo/org Actions variable SINGBOX_VERSION, or
+# override per-run via the workflow_dispatch input above. The download steps
+# fail fast if neither is set. Optionally set SINGBOX_SHA256 (Windows .zip),
+# SINGBOX_SHA256_LINUX (linux-amd64 .tar.gz), SINGBOX_SHA256_DARWIN_ARM64 and
+# SINGBOX_SHA256_DARWIN_AMD64 (darwin-* .tar.gz) to the asset digests shown
+# on the sing-box release page to pin the archive contents.
 env:
   SINGBOX_VERSION: ${{ inputs.singbox_version || vars.SINGBOX_VERSION }}
 
-# Needed so the built-in GITHUB_TOKEN can create/update the rolling CI release
-# (and its tag). Release assets do NOT count against the Actions artifact
-# storage quota, which is why we publish there instead of upload-artifact.
+# The build jobs only read the repo. The publish job alone gets
+# contents: write, which the built-in GITHUB_TOKEN needs to create/update the
+# releases (and the rolling ci-latest tag).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
 
     steps:
@@ -148,6 +159,57 @@ jobs:
           Copy-Item $exe.FullName -Destination "release/sing-box.exe"
           Write-Host "Bundled sing-box from $($exe.FullName)"
 
+      # The privileged helper's directory (ADR 0006 rules 3 and 7), which
+      # wix/main.wxs installs into the fixed [ProgramFiles64Folder]BoxPilot\Helper:
+      # the helper (the Build step builds every default member, the helper
+      # crate included), its own copy of sing-box, the libcronet.dll the
+      # archive ships beside sing-box.exe if any, and manifest.json with
+      # their SHA-256. Staged under the target dir so the MSI's sources sit
+      # next to the others; the script empties the directory first, so a
+      # copy restored from the cache never leaks in.
+      - name: Stage the privileged helper
+        run: |
+          $ver = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
+          $exe = @(Get-ChildItem -Path "singbox-extract" -Recurse -Filter "sing-box.exe")
+          if ($exe.Count -ne 1) {
+            Write-Error "Expected one sing-box.exe in the archive, found $($exe.Count)."
+            exit 1
+          }
+          ./packaging/windows/stage-helper.ps1 `
+            -Helper target/x86_64-pc-windows-msvc/release/boxpilot-helper.exe `
+            -SingBox $exe[0].FullName `
+            -SingBoxVersion $ver `
+            -OutDir target/x86_64-pc-windows-msvc/release/helper
+
+      # The helper refuses to run on a manifest it can't parse or files
+      # that don't match it, so check them here with its own parser, and
+      # that wix/main.wxs installs exactly the staged files. No -p: the same
+      # package set as the Test step, so the same features, and the test
+      # binary it built runs without recompiling anything.
+      - name: Check the staged helper
+        run: |
+          $env:BOXPILOT_HELPER_STAGE = (Resolve-Path "target/x86_64-pc-windows-msvc/release/helper").Path
+          $env:BOXPILOT_HELPER_SINGBOX_VERSION = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
+          cargo test --target x86_64-pc-windows-msvc --test install_manifest -- --ignored --exact the_staged_helper_directory_is_what_the_helper_accepts
+
+      # The helper's sing-box runs as SYSTEM, and the GUI that starts it gets
+      # its `api` service's secret, so every RPC of that service runs as
+      # SYSTEM for the GUI. A new one must be audited before it does (ADR
+      # 0006, "Audited at every SINGBOX_VERSION bump"):
+      # crates/boxpilot-helper/tests/api_rpcs.rs lists the audited RPCs, and
+      # this fails the release when the bundled version's
+      # daemon/started_service.proto declares any other set. $ver was
+      # validated by the download step.
+      - name: Check sing-box's API RPCs against the audited list
+        run: |
+          $ver = "$env:SINGBOX_VERSION".Trim().TrimStart('v')
+          $proto = Join-Path $env:RUNNER_TEMP "started_service.proto"
+          $url = "https://raw.githubusercontent.com/SagerNet/sing-box/v$ver/daemon/started_service.proto"
+          Write-Host "Fetching $url"
+          Invoke-WebRequest -Uri $url -OutFile $proto
+          $env:BOXPILOT_SINGBOX_PROTO = $proto
+          cargo test --target x86_64-pc-windows-msvc --test api_rpcs -- --ignored
+
       - name: Install WiX Toolset
         run: choco install wixtoolset -y
 
@@ -161,15 +223,587 @@ jobs:
         run: |
           Copy-Item "release/sing-box.exe" -Destination "target/x86_64-pc-windows-msvc/release/sing-box.exe"
 
+      # The repository is a Cargo workspace (the GUI plus crates/), and
+      # cargo-wix refuses to guess which member to package. HelperLibcronet
+      # tells wix/main.wxs whether the helper directory holds libcronet.dll,
+      # read from the staged directory the manifest was written from.
       - name: Build MSI installer
-        run: cargo wix --no-build --nocapture --target x86_64-pc-windows-msvc -o release/
+        run: |
+          $cronet = if (Test-Path -LiteralPath "target/x86_64-pc-windows-msvc/release/helper/libcronet.dll") { "yes" } else { "no" }
+          cargo wix --package box_pilot_gui --no-build --nocapture --target x86_64-pc-windows-msvc -C "-dHelperLibcronet=$cronet" -o release/
 
-      # Publish to a single rolling pre-release ("ci-latest") instead of
-      # actions/upload-artifact — release assets don't count against the
-      # Actions artifact storage quota, and each push overwrites the assets so
-      # there's always one current build to download. Skipped on pull_request
-      # (PRs only build/test; fork PRs lack write access anyway). Both exes
-      # are bundled inside the MSI, so the MSI is the only attached asset.
+      # Hand the MSI to the publish job. Artifacts count against the Actions
+      # storage quota (release assets don't), so keep them only as long as
+      # the hand-off needs. Everything Windows gets (BoxPilot, its sing-box
+      # and the privileged helper's directory) is inside the MSI, so the MSI
+      # is the only Windows asset.
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxpilot-windows
+          path: release/*.msi
+          if-no-files-found: error
+          retention-days: 3
+
+      # ---- The privileged helper, installed and driven on this runner ----
+      #
+      # The helper was built and unit-tested on Linux; these steps install the
+      # MSI just built on this runner (elevated, and thrown away afterwards)
+      # and drive the BoxPilotHelper service from outside with a smoke client
+      # (crates/boxpilot-helper/examples/service_smoke.rs, never shipped), as
+      # the runner's administrator and as a fresh standard account. Each step
+      # is one stage of packaging/windows/helper-smoke.ps1, which has a
+      # function per check. They come after "Upload MSI", so the MSI is
+      # uploaded whatever they find. This is Windows Server: the client SKUs
+      # and the rest of docs/helper-windows-checklist.md stay manual.
+      - name: Build the helper smoke client and token probe
+        run: cargo build --release --target x86_64-pc-windows-msvc -p boxpilot-helper --example service_smoke --example token_probe
+
+      - name: "Helper smoke: install the MSI"
+        id: helper-install
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step install -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: the installed service, files and folders"
+        timeout-minutes: 5
+        run: ./packaging/windows/helper-smoke.ps1 -Step inspect -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      # Which token sing-box needs for TUN, measured on every run (ADR 0006,
+      # "Defense in depth"): crates/boxpilot-helper/examples/token_probe.rs,
+      # never shipped, runs as SYSTEM (a one-shot scheduled task) and starts
+      # the installed sing-box under one token after another, down the
+      # helper's own spawn path; then the helper's own token is checked under
+      # what the SCM gives it. It comes before the protocol step, so the
+      # first TUN adapter on this runner, which installs wintun's driver, is
+      # the probe's, with its smallest token. It is the regression check for
+      # sing-box and wintun upgrades: it fails if the shipped token plans
+      # (tokenplan::SING_BOX_TOKEN, HELPER_TOKEN) stop working or TUN needs a
+      # privilege NEVER_FOR_SING_BOX names. Narrower tokens failing are data.
+      - name: "Helper smoke: what sing-box's token needs (token probe)"
+        timeout-minutes: 30
+        run: ./packaging/windows/helper-smoke.ps1 -Step token-probe -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe -Probe target/x86_64-pc-windows-msvc/release/examples/token_probe.exe
+
+      - name: "Helper smoke: the protocol and TUN as an administrator"
+        timeout-minutes: 15
+        run: ./packaging/windows/helper-smoke.ps1 -Step protocol -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: the idle exit"
+        timeout-minutes: 5
+        run: ./packaging/windows/helper-smoke.ps1 -Step idle-exit -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: a standard account"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step standard-user -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: a broken install's exit codes"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step broken-install -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: killing the helper kills sing-box"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step kill-helper -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      - name: "Helper smoke: uninstall the MSI"
+        timeout-minutes: 10
+        run: ./packaging/windows/helper-smoke.ps1 -Step uninstall -Msi release/*.msi -Smoke target/x86_64-pc-windows-msvc/release/examples/service_smoke.exe
+
+      # The helper's own log (HelperState\helper.log, readable by
+      # administrators only, which the runner is), the MSI logs and the smoke
+      # client's background output, whatever the steps above found.
+      - name: "Helper smoke: logs"
+        if: always() && steps.helper-install.outcome != 'skipped'
+        timeout-minutes: 5
+        run: ./packaging/windows/helper-smoke.ps1 -Step logs
+
+  linux:
+    # 22.04 rather than ubuntu-latest: the AppImage links the host glibc, so
+    # building against an older one lets it run on more distributions.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read Cargo.toml version
+        run: |
+          cargo_version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$cargo_version" ]; then
+            echo "::error::Could not read the package version from Cargo.toml."
+            exit 1
+          fi
+          echo "CARGO_VERSION=$cargo_version" >> "$GITHUB_ENV"
+
+      # Same check as the Windows job: the AppImage file name comes from
+      # Cargo.toml, so a mismatched tag would publish assets that claim a
+      # different version than the tag says. The tag name is read via the
+      # runner-provided env var, never interpolated into the script.
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag 'v$tag' does not match Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml (and Cargo.lock) before tagging."
+            exit 1
+          fi
+          echo "Tag v$tag matches Cargo.toml version $CARGO_VERSION"
+
+      # Link-time deps of gpui's X11/Wayland backends and its font stack
+      # (xkbcommon + xkbcommon-x11, fontconfig, freetype). Wayland and Vulkan
+      # are loaded at runtime, but their headers keep the -sys crates happy.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libwayland-dev \
+            libvulkan-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      # Same keying and fallback as the Windows cache (see there).
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-gnu-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gnu-
+
+      - name: Test
+        run: cargo test --target x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Download sing-box from official GitHub release
+        run: |
+          # Read the version from the env var (set at workflow level), never
+          # interpolated into the script — avoids workflow injection.
+          ver=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
+          ver="${ver#v}"
+          if [ -z "$ver" ]; then
+            echo "::error::SINGBOX_VERSION is not set. Set the repo variable SINGBOX_VERSION (e.g. 1.11.0) or pass 'singbox_version' via Run workflow."
+            exit 1
+          fi
+          # Validate the format up front: digits + dots, optional pre-release
+          # suffix. Rejects anything that isn't a plausible sing-box tag.
+          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::SINGBOX_VERSION '$ver' is not a valid version (expected e.g. 1.11.0)."
+            exit 1
+          fi
+          asset="sing-box-$ver-linux-amd64"
+          url="https://github.com/SagerNet/sing-box/releases/download/v$ver/$asset.tar.gz"
+          echo "Downloading sing-box $ver from $url"
+          curl -fsSL --retry 3 -o sing-box.tar.gz "$url"
+
+      # Verify the archive as downloaded, before anything touches it. The
+      # expected hash is the asset digest GitHub shows on the sing-box release
+      # page — copy it into the SINGBOX_SHA256_LINUX variable when bumping
+      # SINGBOX_VERSION (it hashes the .tar.gz, not the inner binary).
+      - name: Verify sing-box archive integrity
+        if: vars.SINGBOX_SHA256_LINUX != ''
+        env:
+          SINGBOX_SHA256_LINUX: ${{ vars.SINGBOX_SHA256_LINUX }}
+        run: |
+          expected=$(printf '%s' "$SINGBOX_SHA256_LINUX" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          expected="${expected#sha256:}"
+          hash=$(sha256sum sing-box.tar.gz | cut -d ' ' -f 1)
+          if [ "$hash" != "$expected" ]; then
+            echo "::error::sing-box.tar.gz SHA256 mismatch! Expected: $expected, Got: $hash"
+            exit 1
+          fi
+          echo "sing-box.tar.gz SHA256 verified: $hash"
+
+      - name: Extract and stage sing-box
+        run: |
+          mkdir -p release singbox-extract
+          tar -xzf sing-box.tar.gz -C singbox-extract
+          # Robust against future folder-layout changes: just find the binary.
+          bin=$(find singbox-extract -type f -name sing-box | head -n 1)
+          if [ -z "$bin" ]; then
+            echo "::error::sing-box not found inside the downloaded archive."
+            exit 1
+          fi
+          install -m 0755 "$bin" release/sing-box
+          echo "Bundled sing-box from $bin"
+
+      - name: Build AppImage
+        run: |
+          packaging/linux/build-appimage.sh \
+            target/x86_64-unknown-linux-gnu/release/box_pilot_gui \
+            release/sing-box \
+            "$CARGO_VERSION" \
+            release
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxpilot-linux
+          path: release/*.AppImage
+          if-no-files-found: error
+          retention-days: 3
+
+  macos:
+    # macos-14 is Apple silicon: arm64 builds natively and runs the tests;
+    # x86_64 is cross-compiled with the same Xcode (its tests would only
+    # run under Rosetta).
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            singbox_asset: darwin-arm64
+            test: true
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            singbox_asset: darwin-amd64
+            test: false
+    env:
+      # Matches LSMinimumSystemVersion in packaging/macos/Info.plist.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read Cargo.toml version
+        run: |
+          cargo_version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$cargo_version" ]; then
+            echo "::error::Could not read the package version from Cargo.toml."
+            exit 1
+          fi
+          echo "CARGO_VERSION=$cargo_version" >> "$GITHUB_ENV"
+
+      # Same check as the Windows and Linux jobs: the DMG names come from
+      # Cargo.toml. The tag name is read via the runner-provided env var,
+      # never interpolated into the script.
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag 'v$tag' does not match Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml (and Cargo.lock) before tagging."
+            exit 1
+          fi
+          echo "Tag v$tag matches Cargo.toml version $CARGO_VERSION"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      # Same keying and fallback as the Windows cache (see there), per
+      # target. Restored and saved as two steps so that a failed build
+      # still saves its compiled dependencies (gpui dominates).
+      - name: Restore cargo registry and target
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Test
+        if: matrix.test
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Save cargo registry and target
+        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Download sing-box from official GitHub release
+        env:
+          SINGBOX_ASSET: ${{ matrix.singbox_asset }}
+        run: |
+          # Read the version from the env var (set at workflow level), never
+          # interpolated into the script — avoids workflow injection.
+          ver=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
+          ver="${ver#v}"
+          if [ -z "$ver" ]; then
+            echo "::error::SINGBOX_VERSION is not set. Set the repo variable SINGBOX_VERSION (e.g. 1.11.0) or pass 'singbox_version' via Run workflow."
+            exit 1
+          fi
+          # Validate the format up front: digits + dots, optional pre-release
+          # suffix. Rejects anything that isn't a plausible sing-box tag.
+          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::SINGBOX_VERSION '$ver' is not a valid version (expected e.g. 1.11.0)."
+            exit 1
+          fi
+          asset="sing-box-$ver-$SINGBOX_ASSET"
+          url="https://github.com/SagerNet/sing-box/releases/download/v$ver/$asset.tar.gz"
+          echo "Downloading sing-box $ver from $url"
+          curl -fsSL --retry 3 -o sing-box.tar.gz "$url"
+
+      # Verify the archive as downloaded, before anything touches it. The
+      # expected hash is the asset digest GitHub shows on the sing-box release
+      # page — copy it into SINGBOX_SHA256_DARWIN_ARM64 / _AMD64 when bumping
+      # SINGBOX_VERSION (it hashes the .tar.gz, not the inner binary).
+      - name: Verify sing-box archive integrity
+        if: (matrix.arch == 'arm64' && vars.SINGBOX_SHA256_DARWIN_ARM64 != '') || (matrix.arch == 'x86_64' && vars.SINGBOX_SHA256_DARWIN_AMD64 != '')
+        env:
+          EXPECTED_SHA256: ${{ matrix.arch == 'arm64' && vars.SINGBOX_SHA256_DARWIN_ARM64 || vars.SINGBOX_SHA256_DARWIN_AMD64 }}
+        run: |
+          expected=$(printf '%s' "$EXPECTED_SHA256" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          expected="${expected#sha256:}"
+          hash=$(shasum -a 256 sing-box.tar.gz | cut -d ' ' -f 1)
+          if [ "$hash" != "$expected" ]; then
+            echo "::error::sing-box.tar.gz SHA256 mismatch! Expected: $expected, Got: $hash"
+            exit 1
+          fi
+          echo "sing-box.tar.gz SHA256 verified: $hash"
+
+      - name: Extract and stage sing-box
+        run: |
+          mkdir -p release singbox-extract
+          tar -xzf sing-box.tar.gz -C singbox-extract
+          # Robust against future folder-layout changes: just find the binary.
+          bin=$(find singbox-extract -type f -name sing-box | head -n 1)
+          if [ -z "$bin" ]; then
+            echo "::error::sing-box not found inside the downloaded archive."
+            exit 1
+          fi
+          # The privileged helper installs this same sing-box, and its
+          # manifest names no file beside it (ADR 0006 rules 3 and 7). If the
+          # archive ever ships one sing-box may load (a libcronet, as on
+          # Windows), it must be staged and hashed too before it ships.
+          for entry in "$(dirname "$bin")"/* "$(dirname "$bin")"/.[!.]*; do
+            [ -e "$entry" ] || continue
+            case "$(basename "$entry")" in
+              sing-box | LICENSE) ;;
+              *)
+                echo "::error::sing-box's archive has $(basename "$entry") beside sing-box. If sing-box loads it, the helper's manifest must hash it (packaging/macos/build-dmg.sh); either way, add it to this list."
+                exit 1
+                ;;
+            esac
+          done
+          install -m 0755 "$bin" release/sing-box
+          echo "Bundled sing-box from $bin"
+
+      # The DMG also carries the privileged helper (ADR 0006): the Build step
+      # built it (every default member, the helper crate included), and
+      # build-dmg.sh puts it, its manifest, its launchd plist and its install
+      # scripts into BoxPilot.app. $SINGBOX_VERSION was validated by the
+      # download step; it goes into the helper's manifest.
+      - name: Build DMG
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          singbox_version=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
+          packaging/macos/build-dmg.sh \
+            "target/$TARGET/release/box_pilot_gui" \
+            release/sing-box \
+            "$CARGO_VERSION" \
+            "$ARCH" \
+            release \
+            "${singbox_version#v}"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxpilot-macos-${{ matrix.arch }}
+          path: release/*.dmg
+          if-no-files-found: error
+          retention-days: 3
+
+      # The helper refuses to run on a manifest it can't parse or a sing-box
+      # that doesn't match it, so check the payload in the DMG just built
+      # with its own parser: the manifest hashes the app's sing-box as
+      # signed, and the scripts and the plist are the repository's. A host
+      # build (Apple silicon) checks either DMG: the test only reads files.
+      - name: Check the helper's payload in the DMG
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mount="$RUNNER_TEMP/dmg-check"
+          mkdir -p "$mount"
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "release/BoxPilot-$CARGO_VERSION-macos-$ARCH.dmg"
+          status=0
+          singbox_version=$(printf '%s' "$SINGBOX_VERSION" | tr -d '[:space:]')
+          BOXPILOT_HELPER_MACOS_CONTENTS="$mount/BoxPilot.app/Contents" \
+          BOXPILOT_HELPER_SINGBOX_VERSION="${singbox_version#v}" \
+            cargo test -p boxpilot-helper --test install_manifest -- --ignored --exact the_macos_payload_is_what_the_helper_accepts || status=$?
+          hdiutil detach "$mount" || hdiutil detach -force "$mount"
+          exit "$status"
+
+      # ---- The privileged helper, installed and driven on this runner ----
+      #
+      # The helper was built and unit-tested on Linux (and its POSIX layer
+      # here, by the Test step); these steps install it from the DMG just
+      # built, with sudo standing in for the administrator prompt (GitHub's
+      # macOS runners have passwordless sudo and are thrown away), and drive
+      # the daemon from outside with a smoke client
+      # (crates/boxpilot-helper/examples/mac_smoke.rs, never shipped), as the
+      # runner's account (the owner), as root and as a fresh standard
+      # account, then with the GUI's own client code
+      # (examples/gui_helper_smoke.rs). Each step is one stage of
+      # packaging/macos/helper-smoke.sh.
+      # Apple silicon only (`test: true`): the x86_64 leg is cross-built.
+      # They come after "Upload DMG", so the DMG is uploaded whatever they
+      # find, and each runs while the install held, so one round shows every
+      # finding.
+      # And the reader of sing-box's sandbox reports and the sandbox probe
+      # (examples/sandbox_report.rs, examples/sandbox_probe.rs, never
+      # shipped either).
+      - name: Build the helper smoke client
+        if: matrix.test
+        run: cargo build --release --target ${{ matrix.target }} -p boxpilot-helper --example mac_smoke --example sandbox_report --example sandbox_probe
+
+      # The GUI's own helper client against the same daemon
+      # (examples/gui_helper_smoke.rs, never shipped): a debug build of
+      # BoxPilot's crate, whose dependencies the Test step built already.
+      - name: Build the GUI's helper client check
+        if: matrix.test
+        run: cargo build --target ${{ matrix.target }} -p box_pilot_gui --example gui_helper_smoke
+
+      - name: "Helper smoke: install the helper from the DMG"
+        id: helper-install
+        if: matrix.test
+        timeout-minutes: 10
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: packaging/macos/helper-smoke.sh install "release/BoxPilot-$CARGO_VERSION-macos-$ARCH.dmg" "target/$TARGET/release/examples/mac_smoke"
+
+      - name: "Helper smoke: the installed files, socket and daemon"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 5
+        run: packaging/macos/helper-smoke.sh inspect
+
+      - name: "Helper smoke: the protocol and TUN as the owner"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 15
+        run: packaging/macos/helper-smoke.sh protocol
+
+      - name: "Helper smoke: the GUI's client, and the helper states it shows"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        env:
+          TARGET: ${{ matrix.target }}
+        run: packaging/macos/helper-smoke.sh gui-client "target/$TARGET/debug/examples/gui_helper_smoke"
+
+      - name: "Helper smoke: the idle exit"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 5
+        run: packaging/macos/helper-smoke.sh idle-exit
+
+      - name: "Helper smoke: another account"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh other-user
+
+      - name: "Helper smoke: a broken install's exit codes"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh broken-install
+
+      - name: "Helper smoke: killing the helper kills sing-box"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh kill-helper
+
+      - name: "Helper smoke: the system proxy, and its reset after a crash"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh system-proxy
+
+      # What sing-box's enforced, deny-by-default sandbox profile reported
+      # (ADR 0006, "Defense in depth";
+      # crates/boxpilot-helper/src/sandboxplan.rs): the kernel's sandbox
+      # reports since the install, from every step above that ran sing-box,
+      # summed up by operation and target under "==== sing-box's sandbox
+      # reports", with sing-box's denials. It is the profile's regression
+      # check: it fails on a denial sandboxplan::KNOWN_DENIALS doesn't
+      # explain, and if no report names sing-box though the steps saw it
+      # run (the collection is broken, or the sandbox wasn't applied). The
+      # logs step prints the summary again, last.
+      - name: "Helper smoke: what sing-box's sandbox profile reported"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 15
+        env:
+          TARGET: ${{ matrix.target }}
+        run: packaging/macos/helper-smoke.sh sandbox-reports "target/$TARGET/release/examples/sandbox_report"
+
+      # The shipped profile, run as root on a probe of its own
+      # (examples/sandbox_probe.rs): writing outside its run, reading a
+      # user's home, root's, another account's state, running a shell,
+      # forking and another local service's socket must be denied; what
+      # sing-box needs allowed. After the reports step, so the probe's own
+      # denials aren't in them.
+      - name: "Helper smoke: what sing-box's sandbox denies (sandbox probe)"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 5
+        env:
+          TARGET: ${{ matrix.target }}
+        run: packaging/macos/helper-smoke.sh sandbox-probe "target/$TARGET/release/examples/sandbox_probe"
+
+      - name: "Helper smoke: uninstall"
+        if: matrix.test && !cancelled() && steps.helper-install.outcome == 'success'
+        timeout-minutes: 10
+        run: packaging/macos/helper-smoke.sh uninstall
+
+      # The helper's own log (readable by root only, which the runner may
+      # become), launchd's state, the system log for the label, and the
+      # smoke client's output, whatever the steps above found; last, the
+      # sandbox summary, its denials and the probe's results.
+      - name: "Helper smoke: logs"
+        if: always() && matrix.test && steps.helper-install.outcome != 'skipped'
+        timeout-minutes: 5
+        run: packaging/macos/helper-smoke.sh logs
+
+  publish:
+    needs: [windows, linux, macos]
+    # Only the release branches and version tags publish. PRs only build/test
+    # (fork PRs lack write access anyway), and a manual run on any other
+    # branch must not overwrite the rolling ci-latest release.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' ||
+       github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      # Publish to a single rolling pre-release ("ci-latest") — release
+      # assets don't count against the Actions artifact storage quota, and
+      # each push overwrites the assets so there's always one current build
+      # to download. Skipped on pull_request.
       - name: Publish to rolling CI release
         if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
         # Third-party action holding contents:write — pinned to a full commit
@@ -182,8 +816,13 @@ jobs:
           prerelease: true
           body: |
             Rolling CI build from `${{ github.ref_name }}` @ `${{ github.sha }}`.
-            sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI.
-          files: release/*.msi
+            sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI, the AppImage and the macOS DMGs.
+
+            macOS DMGs are not notarized: after copying BoxPilot to Applications, allow its first open in System Settings › Privacy & Security › "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/BoxPilot.app`.
+          files: |
+            release/*.msi
+            release/*.AppImage
+            release/*.dmg
 
       # Version tags publish a real (non-prerelease) release with immutable
       # assets. The winget manifest records this URL + the MSI's SHA256, so
@@ -195,11 +834,16 @@ jobs:
         with:
           name: BoxPilot ${{ github.ref_name }}
           body: |
-            BoxPilot ${{ github.ref_name }} — sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI.
+            BoxPilot ${{ github.ref_name }} — sing-box `${{ env.SINGBOX_VERSION }}` bundled in the MSI, the AppImage and the macOS DMGs.
 
-            Install via winget: `winget install Glide01.BoxPilot`
+            Windows: install via winget: `winget install Glide01.BoxPilot`, or run the MSI.
+            Linux (x86_64): download the AppImage, `chmod +x` it and run it.
+            macOS 12 or later: download the DMG for your Mac (`arm64` for Apple silicon, `x86_64` for Intel) and drag BoxPilot to Applications. It is signed ad hoc, not notarized, so macOS blocks the first open: allow it in System Settings › Privacy & Security › "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/BoxPilot.app`. Proxy mode only for now: TUN mode is not available on macOS yet.
 
-            BoxPilot is MIT licensed. The bundled `sing-box.exe` is the official
-            [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binary,
-            distributed under its own GPL-3.0-or-later license.
-          files: release/*.msi
+            BoxPilot is MIT licensed. The bundled `sing-box` binaries are the official
+            [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binaries,
+            distributed under their own GPL-3.0-or-later license.
+          files: |
+            release/*.msi
+            release/*.AppImage
+            release/*.dmg

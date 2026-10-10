@@ -1,25 +1,31 @@
-//! Human-readable byte-rate formatting for the network-speed display. No gpui
-//! dependency — pure functions, unit-tested off-Windows via the core shim.
+//! Human-readable byte formatting for the network-speed display and the Home
+//! runtime stats. No gpui dependency — pure functions, unit-tested off-Windows
+//! via the core shim.
 
-/// Format a byte/second rate into a compact label: `0 B/s`, `512 B/s`,
-/// `12.3 KB/s`, `1.5 MB/s`, `2.0 GB/s`. Binary (1024) steps with one decimal
-/// place above the byte range — the convention Clash dashboards use for the
-/// traffic graph.
-pub fn format_speed(bytes_per_sec: u64) -> String {
+/// Format a byte count into a compact label: `0 B`, `512 B`, `12.3 KB`,
+/// `1.5 MB`, `2.0 GB`. Binary (1024) steps with one decimal place above the
+/// byte range — the convention Clash dashboards use. Totals beyond GB keep
+/// counting in GB (`2048.0 GB`); a desktop session never gets near that.
+pub fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * 1024.0;
     const GB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-    let bytes = bytes_per_sec as f64;
-    if bytes < KB {
-        format!("{} B/s", bytes_per_sec)
-    } else if bytes < MB {
-        format!("{:.1} KB/s", bytes / KB)
-    } else if bytes < GB {
-        format!("{:.1} MB/s", bytes / MB)
+    let value = bytes as f64;
+    if value < KB {
+        format!("{} B", bytes)
+    } else if value < MB {
+        format!("{:.1} KB", value / KB)
+    } else if value < GB {
+        format!("{:.1} MB", value / MB)
     } else {
-        format!("{:.1} GB/s", bytes / GB)
+        format!("{:.1} GB", value / GB)
     }
+}
+
+/// Format a byte/second rate: `format_bytes` plus `/s` (`0 B/s`, `1.5 MB/s`).
+pub fn format_speed(bytes_per_sec: u64) -> String {
+    format!("{}/s", format_bytes(bytes_per_sec))
 }
 
 #[cfg(test)]
@@ -58,5 +64,15 @@ mod tests {
         assert_eq!(format_speed(1024 + 512), "1.5 KB/s");
         // Exactly at a boundary crosses to the next unit.
         assert_eq!(format_speed(1024 * 1024), "1.0 MB/s");
+    }
+
+    #[test]
+    fn byte_counts_share_the_rate_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(50 * 1024 * 1024), "50.0 MB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
+        assert_eq!(format_bytes(2048 * 1024 * 1024 * 1024), "2048.0 GB");
     }
 }
