@@ -31,6 +31,14 @@ generate at will. Accepted deliberately: the same page can already spam *valid*
 links, which cost a confirmation dialog rather than a toast, so rate-limiting
 failures would buy nothing.
 
+On Linux, `xdg-open` likewise starts a new process per link, and the same flow
+applies: the attempt is forwarded over a Unix socket instead of the named pipe
+and ends in the same `ActivateRequested`. Wayland's focus-stealing prevention
+may turn `activate_window()` into a "request attention" hint (a flashing
+taskbar entry) rather than a raise, because the forwarding process has no
+activation token to hand over. The invariant still stands; on Wayland,
+"surfaces the window" can mean the compositor's attention hint.
+
 ## Considered options
 
 **Move the receiver to `RootView`** — spawning the drain task where the
@@ -42,3 +50,15 @@ reopening if deep-link handling ever grows more view-side behaviour.
 but that field is drained exactly once by `RootView::new`, so writing to it
 while the app is running swallows the message forever. Telling the two cases
 apart needs a "view attached" flag — i.e. the gate, minus the tidiness.
+
+## Update
+
+ADR 0004 lets the window close while BoxPilot keeps running in the tray.
+The invariant is unchanged ("seeing the window" can now mean reopening it),
+but the `ActivateRequested` subscriber moved from `RootView` to app level
+(`ui::app_window`), and a reopened window picks up a pending import itself.
+
+ADR 0005 adds macOS, where most launch attempts are not new processes at
+all: link clicks and reopens arrive at the running app as Apple events.
+`main` turns them into the same `LaunchAttempt`s on the same channel, so the
+invariant and the gate apply as they are.

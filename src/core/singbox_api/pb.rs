@@ -1,0 +1,1432 @@
+//! Protobuf messages from upstream `daemon/started_service.proto` (sing-box
+//! v1.14.x), hand-derived with the upstream field numbers — only the ones
+//! BoxPilot calls. Unknown fields are skipped by prost, so upstream additions
+//! stay harmless. Proto enums are kept as `int32` (wire-identical) and mapped
+//! to Rust enums in each domain module's `from_proto`. Field names follow
+//! the proto in snake_case; nothing outside `singbox_api` sees these types.
+
+// --- Service --------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Version {
+    #[prost(string, tag = "1")]
+    pub version: String,
+    #[prost(int32, tag = "2")]
+    pub api_version: i32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ServiceStatus {
+    /// `ServiceStatus.Type`: IDLE 0, STARTING 1, STARTED 2, STOPPING 3,
+    /// FATAL 4.
+    #[prost(int32, tag = "1")]
+    pub status: i32,
+    #[prost(string, tag = "2")]
+    pub error_message: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct StartedAt {
+    /// Unix milliseconds.
+    #[prost(int64, tag = "1")]
+    pub started_at: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DeprecatedWarnings {
+    #[prost(message, repeated, tag = "1")]
+    pub warnings: Vec<DeprecatedWarning>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DeprecatedWarning {
+    #[prost(string, tag = "1")]
+    pub message: String,
+    #[prost(bool, tag = "2")]
+    pub impending: bool,
+    #[prost(string, tag = "3")]
+    pub migration_link: String,
+    #[prost(string, tag = "4")]
+    pub description: String,
+    #[prost(string, tag = "5")]
+    pub deprecated_version: String,
+    #[prost(string, tag = "6")]
+    pub scheduled_version: String,
+}
+
+// --- Logs -----------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Log {
+    #[prost(message, repeated, tag = "1")]
+    pub messages: Vec<LogMessage>,
+    #[prost(bool, tag = "2")]
+    pub reset: bool,
+}
+
+/// `Log.Message`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct LogMessage {
+    /// `LogLevel`: PANIC 0, FATAL 1, ERROR 2, WARN 3, INFO 4, DEBUG 5,
+    /// TRACE 6.
+    #[prost(int32, tag = "1")]
+    pub level: i32,
+    #[prost(string, tag = "2")]
+    pub message: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DefaultLogLevel {
+    /// `LogLevel`.
+    #[prost(int32, tag = "1")]
+    pub level: i32,
+}
+
+// --- Status ---------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SubscribeStatusRequest {
+    /// Go `time.Duration` (nanoseconds); ≤ 0 means one second.
+    #[prost(int64, tag = "1")]
+    pub interval: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Status {
+    #[prost(uint64, tag = "1")]
+    pub memory: u64,
+    #[prost(int32, tag = "2")]
+    pub goroutines: i32,
+    #[prost(int32, tag = "3")]
+    pub connections_in: i32,
+    #[prost(int32, tag = "4")]
+    pub connections_out: i32,
+    #[prost(bool, tag = "5")]
+    pub traffic_available: bool,
+    /// Bytes uploaded during the last interval (0 in the first message).
+    #[prost(int64, tag = "6")]
+    pub uplink: i64,
+    /// Bytes downloaded during the last interval (0 in the first message).
+    #[prost(int64, tag = "7")]
+    pub downlink: i64,
+    #[prost(int64, tag = "8")]
+    pub uplink_total: i64,
+    #[prost(int64, tag = "9")]
+    pub downlink_total: i64,
+}
+
+// --- Groups and outbounds -------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Groups {
+    #[prost(message, repeated, tag = "1")]
+    pub group: Vec<Group>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Group {
+    #[prost(string, tag = "1")]
+    pub tag: String,
+    #[prost(string, tag = "2")]
+    pub r#type: String,
+    /// True only for `selector` groups.
+    #[prost(bool, tag = "3")]
+    pub selectable: bool,
+    #[prost(string, tag = "4")]
+    pub selected: String,
+    #[prost(bool, tag = "5")]
+    pub is_expand: bool,
+    #[prost(message, repeated, tag = "6")]
+    pub items: Vec<GroupItem>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GroupItem {
+    #[prost(string, tag = "1")]
+    pub tag: String,
+    #[prost(string, tag = "2")]
+    pub r#type: String,
+    /// Unix seconds of the last successful URL test; 0 = no history.
+    #[prost(int64, tag = "3")]
+    pub url_test_time: i64,
+    /// Milliseconds.
+    #[prost(int32, tag = "4")]
+    pub url_test_delay: i32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UrlTestRequest {
+    #[prost(string, tag = "1")]
+    pub outbound_tag: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SelectOutboundRequest {
+    #[prost(string, tag = "1")]
+    pub group_tag: String,
+    #[prost(string, tag = "2")]
+    pub outbound_tag: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SetGroupExpandRequest {
+    #[prost(string, tag = "1")]
+    pub group_tag: String,
+    #[prost(bool, tag = "2")]
+    pub is_expand: bool,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OutboundList {
+    #[prost(message, repeated, tag = "1")]
+    pub outbounds: Vec<GroupItem>,
+}
+
+// --- Clash mode -----------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClashMode {
+    /// Field 3 upstream — not a typo.
+    #[prost(string, tag = "3")]
+    pub mode: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClashModeStatus {
+    #[prost(string, repeated, tag = "1")]
+    pub mode_list: Vec<String>,
+    #[prost(string, tag = "2")]
+    pub current_mode: String,
+}
+
+// --- Connections ----------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SubscribeConnectionsRequest {
+    /// Go `time.Duration` (nanoseconds); ≤ 0 means one second.
+    #[prost(int64, tag = "1")]
+    pub interval: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ConnectionEvents {
+    #[prost(message, repeated, tag = "1")]
+    pub events: Vec<ConnectionEvent>,
+    #[prost(bool, tag = "2")]
+    pub reset: bool,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ConnectionEvent {
+    /// `ConnectionEventType`: NEW 0, UPDATE 1, CLOSED 2.
+    #[prost(int32, tag = "1")]
+    pub r#type: i32,
+    #[prost(string, tag = "2")]
+    pub id: String,
+    #[prost(message, optional, tag = "3")]
+    pub connection: Option<Connection>,
+    #[prost(int64, tag = "4")]
+    pub uplink_delta: i64,
+    #[prost(int64, tag = "5")]
+    pub downlink_delta: i64,
+    /// Unix milliseconds.
+    #[prost(int64, tag = "6")]
+    pub closed_at: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Connection {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, tag = "2")]
+    pub inbound: String,
+    #[prost(string, tag = "3")]
+    pub inbound_type: String,
+    #[prost(int32, tag = "4")]
+    pub ip_version: i32,
+    #[prost(string, tag = "5")]
+    pub network: String,
+    #[prost(string, tag = "6")]
+    pub source: String,
+    #[prost(string, tag = "7")]
+    pub destination: String,
+    #[prost(string, tag = "8")]
+    pub domain: String,
+    #[prost(string, tag = "9")]
+    pub protocol: String,
+    #[prost(string, tag = "10")]
+    pub user: String,
+    #[prost(string, tag = "11")]
+    pub from_outbound: String,
+    /// Unix milliseconds.
+    #[prost(int64, tag = "12")]
+    pub created_at: i64,
+    /// Unix milliseconds; 0 while open.
+    #[prost(int64, tag = "13")]
+    pub closed_at: i64,
+    /// Never set by sing-box 1.14 (rates travel as UPDATE deltas).
+    #[prost(int64, tag = "14")]
+    pub uplink: i64,
+    /// Never set by sing-box 1.14 (rates travel as UPDATE deltas).
+    #[prost(int64, tag = "15")]
+    pub downlink: i64,
+    #[prost(int64, tag = "16")]
+    pub uplink_total: i64,
+    #[prost(int64, tag = "17")]
+    pub downlink_total: i64,
+    #[prost(string, tag = "18")]
+    pub rule: String,
+    #[prost(string, tag = "19")]
+    pub outbound: String,
+    #[prost(string, tag = "20")]
+    pub outbound_type: String,
+    #[prost(string, repeated, tag = "21")]
+    pub chain_list: Vec<String>,
+    #[prost(message, optional, tag = "22")]
+    pub process_info: Option<ProcessInfo>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ProcessInfo {
+    #[prost(uint32, tag = "1")]
+    pub process_id: u32,
+    #[prost(int32, tag = "2")]
+    pub user_id: i32,
+    #[prost(string, tag = "3")]
+    pub user_name: String,
+    #[prost(string, tag = "4")]
+    pub process_path: String,
+    #[prost(string, repeated, tag = "5")]
+    pub package_names: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct CloseConnectionRequest {
+    #[prost(string, tag = "1")]
+    pub id: String,
+}
+
+// --- Diagnostics ----------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct NetworkQualityTestRequest {
+    #[prost(string, tag = "1")]
+    pub config_url: String,
+    #[prost(string, tag = "2")]
+    pub outbound_tag: String,
+    #[prost(bool, tag = "3")]
+    pub serial: bool,
+    #[prost(int32, tag = "4")]
+    pub max_runtime_seconds: i32,
+    #[prost(bool, tag = "5")]
+    pub http3: bool,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct NetworkQualityTestProgress {
+    #[prost(int32, tag = "1")]
+    pub phase: i32,
+    #[prost(int64, tag = "2")]
+    pub download_capacity: i64,
+    #[prost(int64, tag = "3")]
+    pub upload_capacity: i64,
+    #[prost(int32, tag = "4")]
+    pub download_rpm: i32,
+    #[prost(int32, tag = "5")]
+    pub upload_rpm: i32,
+    #[prost(int32, tag = "6")]
+    pub idle_latency_ms: i32,
+    #[prost(int64, tag = "7")]
+    pub elapsed_ms: i64,
+    #[prost(bool, tag = "8")]
+    pub is_final: bool,
+    #[prost(string, tag = "9")]
+    pub error: String,
+    #[prost(int32, tag = "10")]
+    pub download_capacity_accuracy: i32,
+    #[prost(int32, tag = "11")]
+    pub upload_capacity_accuracy: i32,
+    #[prost(int32, tag = "12")]
+    pub download_rpm_accuracy: i32,
+    #[prost(int32, tag = "13")]
+    pub upload_rpm_accuracy: i32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct StunTestRequest {
+    #[prost(string, tag = "1")]
+    pub server: String,
+    #[prost(string, tag = "2")]
+    pub outbound_tag: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct StunTestProgress {
+    #[prost(int32, tag = "1")]
+    pub phase: i32,
+    #[prost(string, tag = "2")]
+    pub external_addr: String,
+    #[prost(int32, tag = "3")]
+    pub latency_ms: i32,
+    #[prost(int32, tag = "4")]
+    pub nat_mapping: i32,
+    #[prost(int32, tag = "5")]
+    pub nat_filtering: i32,
+    #[prost(bool, tag = "6")]
+    pub is_final: bool,
+    #[prost(string, tag = "7")]
+    pub error: String,
+    #[prost(bool, tag = "8")]
+    pub nat_type_supported: bool,
+}
+
+// --- Tailscale ------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleStatusUpdate {
+    #[prost(message, repeated, tag = "1")]
+    pub endpoints: Vec<TailscaleEndpointStatus>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleEndpointStatus {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub backend_state: String,
+    #[prost(string, tag = "3")]
+    pub state_text: String,
+    #[prost(string, tag = "4")]
+    pub auth_url: String,
+    #[prost(string, tag = "5")]
+    pub network_name: String,
+    #[prost(string, tag = "6")]
+    pub magic_dns_suffix: String,
+    /// `self` upstream.
+    #[prost(message, optional, tag = "7")]
+    pub self_peer: Option<TailscalePeer>,
+    #[prost(message, repeated, tag = "8")]
+    pub user_groups: Vec<TailscaleUserGroup>,
+    #[prost(message, optional, tag = "9")]
+    pub exit_node: Option<TailscalePeer>,
+    #[prost(bool, tag = "10")]
+    pub key_auth: bool,
+    #[prost(bool, tag = "11")]
+    pub can_share_files: bool,
+    #[prost(int32, tag = "12")]
+    pub waiting_file_count: i32,
+    #[prost(int32, tag = "13")]
+    pub receiving_file_count: i32,
+    #[prost(int32, tag = "14")]
+    pub unread_file_count: i32,
+    #[prost(string, repeated, tag = "15")]
+    pub cert_domains: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleUserGroup {
+    #[prost(int64, tag = "1")]
+    pub user_id: i64,
+    #[prost(string, tag = "2")]
+    pub login_name: String,
+    #[prost(string, tag = "3")]
+    pub display_name: String,
+    #[prost(string, tag = "4")]
+    pub profile_pic_url: String,
+    #[prost(message, repeated, tag = "5")]
+    pub peers: Vec<TailscalePeer>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscalePeer {
+    #[prost(string, tag = "1")]
+    pub host_name: String,
+    #[prost(string, tag = "2")]
+    pub dns_name: String,
+    #[prost(string, tag = "3")]
+    pub os: String,
+    #[prost(string, repeated, tag = "4")]
+    pub tailscale_ips: Vec<String>,
+    #[prost(bool, tag = "5")]
+    pub online: bool,
+    #[prost(bool, tag = "6")]
+    pub exit_node: bool,
+    #[prost(bool, tag = "7")]
+    pub exit_node_option: bool,
+    #[prost(bool, tag = "8")]
+    pub active: bool,
+    #[prost(int64, tag = "9")]
+    pub rx_bytes: i64,
+    #[prost(int64, tag = "10")]
+    pub tx_bytes: i64,
+    /// Unix seconds; 0 = no expiry.
+    #[prost(int64, tag = "11")]
+    pub key_expiry: i64,
+    #[prost(string, tag = "12")]
+    pub stable_id: String,
+    #[prost(bool, tag = "13")]
+    pub expired: bool,
+    #[prost(string, repeated, tag = "14")]
+    pub ssh_host_keys: Vec<String>,
+    #[prost(bool, tag = "15")]
+    pub sharee_node: bool,
+    /// Unix seconds; 0 = unknown.
+    #[prost(int64, tag = "16")]
+    pub last_seen: i64,
+    #[prost(bool, tag = "17")]
+    pub can_receive_files: bool,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscalePingRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub peer_ip: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscalePingResponse {
+    #[prost(double, tag = "1")]
+    pub latency_ms: f64,
+    #[prost(bool, tag = "2")]
+    pub is_direct: bool,
+    #[prost(string, tag = "3")]
+    pub endpoint: String,
+    #[prost(int32, tag = "4")]
+    pub derp_region_id: i32,
+    #[prost(string, tag = "5")]
+    pub derp_region_code: String,
+    #[prost(string, tag = "6")]
+    pub error: String,
+    #[prost(string, tag = "7")]
+    pub peer_relay: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SetTailscaleExitNodeRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub stable_id: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleLogoutRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+}
+
+// --- Notifications --------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct NotificationEvent {
+    #[prost(oneof = "notification_event::Event", tags = "1, 2")]
+    pub event: Option<notification_event::Event>,
+}
+
+pub mod notification_event {
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub enum Event {
+        #[prost(message, tag = "1")]
+        Send(super::Notification),
+        #[prost(message, tag = "2")]
+        Cancel(super::NotificationCancel),
+    }
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Notification {
+    #[prost(string, tag = "1")]
+    pub identifier: String,
+    #[prost(string, tag = "2")]
+    pub type_name: String,
+    #[prost(int32, tag = "3")]
+    pub type_id: i32,
+    #[prost(string, tag = "4")]
+    pub title: String,
+    #[prost(string, tag = "5")]
+    pub subtitle: String,
+    #[prost(string, tag = "6")]
+    pub body: String,
+    #[prost(string, tag = "7")]
+    pub open_url: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct NotificationCancel {
+    #[prost(string, tag = "1")]
+    pub identifier: String,
+    #[prost(int32, tag = "2")]
+    pub type_id: i32,
+}
+
+/// Request encodings pinned byte for byte, so a field-number slip can't hide
+/// behind a symmetric encode/decode round trip. Tag byte = `field << 3 |
+/// wire type` (0 varint, 1 fixed64, 2 length-delimited).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+
+    fn bytes(message: &impl Message) -> Vec<u8> {
+        message.encode_to_vec()
+    }
+
+    #[test]
+    fn subscribe_requests_carry_interval_in_field_1() {
+        let second = 1_000_000_000i64;
+        let expected = [0x08, 0x80, 0x94, 0xeb, 0xdc, 0x03];
+        assert_eq!(
+            bytes(&SubscribeStatusRequest { interval: second }),
+            expected
+        );
+        assert_eq!(
+            bytes(&SubscribeConnectionsRequest { interval: second }),
+            expected
+        );
+    }
+
+    #[test]
+    fn group_requests_use_upstream_field_numbers() {
+        assert_eq!(
+            bytes(&UrlTestRequest {
+                outbound_tag: "a".into()
+            }),
+            [0x0a, 1, b'a']
+        );
+        assert_eq!(
+            bytes(&SelectOutboundRequest {
+                group_tag: "g".into(),
+                outbound_tag: "n".into()
+            }),
+            [0x0a, 1, b'g', 0x12, 1, b'n']
+        );
+        assert_eq!(
+            bytes(&SetGroupExpandRequest {
+                group_tag: "g".into(),
+                is_expand: true
+            }),
+            [0x0a, 1, b'g', 0x10, 1]
+        );
+    }
+
+    #[test]
+    fn clash_mode_lives_in_field_3() {
+        assert_eq!(
+            bytes(&ClashMode {
+                mode: "Rule".into()
+            }),
+            [0x1a, 4, b'R', b'u', b'l', b'e']
+        );
+    }
+
+    #[test]
+    fn close_connection_request_uses_field_1() {
+        assert_eq!(
+            bytes(&CloseConnectionRequest { id: "x".into() }),
+            [0x0a, 1, b'x']
+        );
+    }
+
+    #[test]
+    fn diagnostic_requests_use_upstream_field_numbers() {
+        assert_eq!(
+            bytes(&NetworkQualityTestRequest {
+                config_url: "u".into(),
+                outbound_tag: "o".into(),
+                serial: true,
+                max_runtime_seconds: 5,
+                http3: true,
+            }),
+            [0x0a, 1, b'u', 0x12, 1, b'o', 0x18, 1, 0x20, 5, 0x28, 1]
+        );
+        assert_eq!(
+            bytes(&StunTestRequest {
+                server: "s".into(),
+                outbound_tag: "o".into()
+            }),
+            [0x0a, 1, b's', 0x12, 1, b'o']
+        );
+    }
+
+    #[test]
+    fn tailscale_requests_use_upstream_field_numbers() {
+        assert_eq!(
+            bytes(&TailscalePingRequest {
+                endpoint_tag: "t".into(),
+                peer_ip: "p".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b'p']
+        );
+        assert_eq!(
+            bytes(&SetTailscaleExitNodeRequest {
+                endpoint_tag: "t".into(),
+                stable_id: "s".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b's']
+        );
+        assert_eq!(
+            bytes(&TailscaleLogoutRequest {
+                endpoint_tag: "t".into()
+            }),
+            [0x0a, 1, b't']
+        );
+    }
+
+    /// Responses with an oddity worth pinning: the oneof arms are fields 1
+    /// and 2 of `NotificationEvent`; `self` is field 7 of the endpoint
+    /// status; the ping latency is a double (fixed64 wire type).
+    #[test]
+    fn response_oddities_decode_from_upstream_bytes() {
+        let cancel = NotificationEvent::decode(&[0x12, 4, 0x0a, 0, 0x10, 7][..]).unwrap();
+        assert_eq!(
+            cancel.event,
+            Some(notification_event::Event::Cancel(NotificationCancel {
+                identifier: String::new(),
+                type_id: 7
+            }))
+        );
+
+        let status = TailscaleEndpointStatus::decode(&[0x3a, 3, 0x0a, 1, b'h'][..]).unwrap();
+        assert_eq!(status.self_peer.unwrap().host_name, "h");
+
+        let mut ping = vec![0x09];
+        ping.extend_from_slice(&12.5f64.to_le_bytes());
+        let ping = TailscalePingResponse::decode(ping.as_slice()).unwrap();
+        assert_eq!(ping.latency_ms, 12.5);
+    }
+}
+
+// --- Taildrop and Tailscale certificates ----------------------------------
+// (`taildrop.rs`; kept apart from the Tailscale section above.)
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct SubscribeTaildropInboxRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct MarkTaildropInboxReadRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TaildropInbox {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(message, repeated, tag = "2")]
+    pub files: Vec<TaildropFile>,
+    #[prost(message, repeated, tag = "3")]
+    pub receiving: Vec<TaildropReceivingFile>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TaildropFile {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(int64, tag = "2")]
+    pub size: i64,
+    #[prost(string, tag = "3")]
+    pub sender_name: String,
+    /// Unix seconds.
+    #[prost(int64, tag = "4")]
+    pub modified_at: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TaildropReceivingFile {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// -1 when the sender announced no length.
+    #[prost(int64, tag = "2")]
+    pub size: i64,
+    #[prost(int64, tag = "3")]
+    pub received_bytes: i64,
+    /// `senderID` upstream.
+    #[prost(string, tag = "4")]
+    pub sender_id: String,
+    #[prost(string, tag = "5")]
+    pub sender_name: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DownloadTaildropFileRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+}
+
+/// The first message carries only `size`; the rest only `data`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DownloadTaildropFileChunk {
+    #[prost(int64, tag = "1")]
+    pub size: i64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DeleteTaildropFileRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct CancelTaildropReceivingRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    /// `senderID` upstream.
+    #[prost(string, tag = "2")]
+    pub sender_id: String,
+    #[prost(string, tag = "3")]
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleCertificateRequest {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub domain: String,
+    #[prost(int64, tag = "3")]
+    pub min_validity_seconds: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TailscaleCertificate {
+    /// `certificatePEM` upstream.
+    #[prost(bytes = "vec", tag = "1")]
+    pub certificate_pem: Vec<u8>,
+    /// `privateKeyPEM` upstream.
+    #[prost(bytes = "vec", tag = "2")]
+    pub private_key_pem: Vec<u8>,
+}
+
+/// Same byte-for-byte pinning as `tests` above, for the Taildrop and
+/// certificate messages.
+#[cfg(test)]
+mod taildrop_tests {
+    use super::*;
+    use prost::Message;
+
+    fn bytes(message: &impl Message) -> Vec<u8> {
+        message.encode_to_vec()
+    }
+
+    #[test]
+    fn taildrop_requests_use_upstream_field_numbers() {
+        assert_eq!(
+            bytes(&SubscribeTaildropInboxRequest {
+                endpoint_tag: "t".into()
+            }),
+            [0x0a, 1, b't']
+        );
+        assert_eq!(
+            bytes(&MarkTaildropInboxReadRequest {
+                endpoint_tag: "t".into()
+            }),
+            [0x0a, 1, b't']
+        );
+        assert_eq!(
+            bytes(&DownloadTaildropFileRequest {
+                endpoint_tag: "t".into(),
+                name: "n".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b'n']
+        );
+        assert_eq!(
+            bytes(&DeleteTaildropFileRequest {
+                endpoint_tag: "t".into(),
+                name: "n".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b'n']
+        );
+        assert_eq!(
+            bytes(&CancelTaildropReceivingRequest {
+                endpoint_tag: "t".into(),
+                sender_id: "s".into(),
+                name: "n".into()
+            }),
+            [0x0a, 1, b't', 0x12, 1, b's', 0x1a, 1, b'n']
+        );
+    }
+
+    #[test]
+    fn certificate_request_uses_upstream_field_numbers() {
+        assert_eq!(
+            bytes(&TailscaleCertificateRequest {
+                endpoint_tag: "t".into(),
+                domain: "d".into(),
+                min_validity_seconds: 300,
+            }),
+            [0x0a, 1, b't', 0x12, 1, b'd', 0x18, 0xac, 0x02]
+        );
+    }
+
+    /// Responses decoded from hand-built upstream bytes: nested inbox
+    /// entries (fields 2 and 3), a negative receiving size (10-byte varint),
+    /// and the bytes fields of the chunk and certificate.
+    #[test]
+    fn taildrop_responses_decode_from_upstream_bytes() {
+        #[rustfmt::skip]
+        let inbox = [
+            0x0a, 1, b't', // endpointTag
+            0x12, 7, 0x0a, 1, b'f', 0x10, 3, 0x20, 9, // files[0]
+            0x1a, 18, // receiving[0]: size -1, receivedBytes 2, senderID "s", senderName ""
+            0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+            0x18, 2, 0x22, 1, b's', 0x2a, 0,
+        ];
+        let inbox = TaildropInbox::decode(&inbox[..]).unwrap();
+        assert_eq!(inbox.endpoint_tag, "t");
+        assert_eq!(
+            inbox.files,
+            vec![TaildropFile {
+                name: "f".into(),
+                size: 3,
+                sender_name: String::new(),
+                modified_at: 9
+            }]
+        );
+        assert_eq!(
+            inbox.receiving,
+            vec![TaildropReceivingFile {
+                name: String::new(),
+                size: -1,
+                received_bytes: 2,
+                sender_id: "s".into(),
+                sender_name: String::new(),
+            }]
+        );
+
+        let header = DownloadTaildropFileChunk::decode(&[0x08, 0x80, 0x01][..]).unwrap();
+        assert_eq!((header.size, header.data.len()), (128, 0));
+        let data = DownloadTaildropFileChunk::decode(&[0x12, 2, 0xde, 0xad][..]).unwrap();
+        assert_eq!((data.size, data.data), (0, vec![0xde, 0xad]));
+
+        let certificate =
+            TailscaleCertificate::decode(&[0x0a, 1, b'c', 0x12, 1, b'k'][..]).unwrap();
+        assert_eq!(certificate.certificate_pem, b"c");
+        assert_eq!(certificate.private_key_pem, b"k");
+    }
+}
+
+// ==========================================================================
+// OpenConnect / OpenVPN endpoints and USB/IP servers (`openconnect.rs`,
+// `openvpn.rs`, `usbip.rs`). One block at the end of the file, with its own
+// tests, so it merges cleanly beside other domains' additions.
+// ==========================================================================
+
+// --- OpenConnect ----------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectStatusUpdate {
+    #[prost(message, repeated, tag = "1")]
+    pub endpoints: Vec<OpenConnectEndpointStatus>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectEndpointStatus {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    /// `connecting`, `auth-pending`, `connected` or `error`.
+    #[prost(string, tag = "2")]
+    pub state: String,
+    #[prost(string, tag = "3")]
+    pub state_text: String,
+    #[prost(message, optional, tag = "4")]
+    pub auth_challenge: Option<OpenConnectAuthChallenge>,
+    #[prost(string, tag = "5")]
+    pub error: String,
+    #[prost(message, optional, tag = "6")]
+    pub tunnel_info: Option<OpenConnectTunnelInfo>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectTunnelInfo {
+    #[prost(string, tag = "1")]
+    pub server: String,
+    #[prost(string, tag = "2")]
+    pub flavor: String,
+    #[prost(string, tag = "3")]
+    pub transport: String,
+    #[prost(string, repeated, tag = "4")]
+    pub ipv4: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub ipv6: Vec<String>,
+    #[prost(string, repeated, tag = "6")]
+    pub dns: Vec<String>,
+    #[prost(uint32, tag = "7")]
+    pub mtu: u32,
+    /// Unix seconds; 0 = unknown.
+    #[prost(int64, tag = "8")]
+    pub connected_since: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthChallenge {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, tag = "2")]
+    pub banner: String,
+    #[prost(string, tag = "3")]
+    pub message: String,
+    #[prost(string, tag = "4")]
+    pub error: String,
+    #[prost(oneof = "open_connect_auth_challenge::Challenge", tags = "5, 6")]
+    pub challenge: Option<open_connect_auth_challenge::Challenge>,
+}
+
+pub mod open_connect_auth_challenge {
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub enum Challenge {
+        #[prost(message, tag = "5")]
+        Form(super::OpenConnectAuthForm),
+        #[prost(message, tag = "6")]
+        Browser(super::OpenConnectBrowserRequest),
+    }
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthForm {
+    #[prost(message, repeated, tag = "1")]
+    pub fields: Vec<OpenConnectAuthFormField>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthFormField {
+    #[prost(string, tag = "1")]
+    pub submission_key: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+    #[prost(string, tag = "3")]
+    pub label: String,
+    /// `text`, `password` or `select`.
+    #[prost(string, tag = "4")]
+    pub kind: String,
+    #[prost(string, tag = "5")]
+    pub value: String,
+    #[prost(message, repeated, tag = "6")]
+    pub options: Vec<OpenConnectAuthFormChoice>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthFormChoice {
+    #[prost(string, tag = "1")]
+    pub value: String,
+    #[prost(string, tag = "2")]
+    pub label: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserRequest {
+    #[prost(string, tag = "1")]
+    pub url: String,
+    #[prost(string, tag = "2")]
+    pub final_url: String,
+    #[prost(string, repeated, tag = "3")]
+    pub cookie_names: Vec<String>,
+    #[prost(string, repeated, tag = "4")]
+    pub header_names: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub callback_url_prefixes: Vec<String>,
+    #[prost(string, repeated, tag = "6")]
+    pub early_cookie_names: Vec<String>,
+    #[prost(string, tag = "7")]
+    pub cache_id: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserCookie {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub value: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserHeader {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, repeated, tag = "2")]
+    pub values: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthFormResponse {
+    /// `map<string, string>` keyed by submission key; a `BTreeMap` so the
+    /// encoding is deterministic.
+    #[prost(btree_map = "string, string", tag = "1")]
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectBrowserResult {
+    #[prost(string, tag = "1")]
+    pub final_url: String,
+    #[prost(message, repeated, tag = "2")]
+    pub cookies: Vec<OpenConnectBrowserCookie>,
+    #[prost(message, repeated, tag = "3")]
+    pub headers: Vec<OpenConnectBrowserHeader>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthResponseSubmission {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+    #[prost(
+        oneof = "open_connect_auth_response_submission::Response",
+        tags = "3, 4"
+    )]
+    pub response: Option<open_connect_auth_response_submission::Response>,
+}
+
+pub mod open_connect_auth_response_submission {
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub enum Response {
+        #[prost(message, tag = "3")]
+        Form(super::OpenConnectAuthFormResponse),
+        #[prost(message, tag = "4")]
+        Browser(super::OpenConnectBrowserResult),
+    }
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenConnectAuthChallengeCancel {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+}
+
+// --- OpenVPN --------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnStatusUpdate {
+    #[prost(message, repeated, tag = "1")]
+    pub endpoints: Vec<OpenVpnEndpointStatus>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnEndpointStatus {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    /// `connecting`, `auth-pending`, `connected` or `error`.
+    #[prost(string, tag = "2")]
+    pub state: String,
+    #[prost(string, tag = "3")]
+    pub state_text: String,
+    #[prost(message, optional, tag = "4")]
+    pub challenge: Option<OpenVpnChallenge>,
+    #[prost(string, tag = "5")]
+    pub error: String,
+    #[prost(message, optional, tag = "6")]
+    pub tunnel_info: Option<OpenVpnTunnelInfo>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnTunnelInfo {
+    #[prost(string, tag = "1")]
+    pub server: String,
+    // Field 2 is reserved upstream.
+    #[prost(string, tag = "3")]
+    pub network: String,
+    #[prost(string, repeated, tag = "4")]
+    pub ipv4: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub ipv6: Vec<String>,
+    #[prost(string, repeated, tag = "6")]
+    pub dns: Vec<String>,
+    #[prost(uint32, tag = "7")]
+    pub mtu: u32,
+    /// Unix seconds; 0 = unknown.
+    #[prost(int64, tag = "8")]
+    pub connected_since: i64,
+    #[prost(string, tag = "9")]
+    pub cipher: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnChallenge {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    /// `credentials`, `secret`, `message` or `open-url`.
+    #[prost(string, tag = "2")]
+    pub kind: String,
+    #[prost(string, tag = "3")]
+    pub username: String,
+    #[prost(string, tag = "4")]
+    pub message: String,
+    #[prost(string, tag = "5")]
+    pub url: String,
+    #[prost(string, tag = "6")]
+    pub secret_message: String,
+    #[prost(bool, tag = "7")]
+    pub echo: bool,
+    #[prost(string, tag = "8")]
+    pub previous_error: String,
+    /// Unix seconds; 0 = none.
+    #[prost(int64, tag = "9")]
+    pub deadline: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnChallengeSubmission {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+    #[prost(string, tag = "3")]
+    pub username: String,
+    #[prost(string, tag = "4")]
+    pub password: String,
+    #[prost(string, tag = "5")]
+    pub secret: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct OpenVpnChallengeCancel {
+    #[prost(string, tag = "1")]
+    pub endpoint_tag: String,
+    #[prost(string, tag = "2")]
+    pub challenge_id: String,
+}
+
+// --- USB/IP ---------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbipServerStatusUpdate {
+    #[prost(message, repeated, tag = "1")]
+    pub servers: Vec<UsbipServerStatus>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbipServerStatus {
+    #[prost(string, tag = "1")]
+    pub server_tag: String,
+    #[prost(message, repeated, tag = "2")]
+    pub devices: Vec<UsbSharedDevice>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbSharedDevice {
+    #[prost(message, optional, tag = "1")]
+    pub descriptor: Option<UsbDeviceDescriptor>,
+    #[prost(string, tag = "2")]
+    pub bus_id: String,
+    #[prost(string, tag = "3")]
+    pub stable_id: String,
+    /// `USBBackend`: UNSPECIFIED 0, LINUX_SYSFS 1, DYNAMIC 2, DARWIN_IOKIT 3,
+    /// WINDOWS_VBOXUSB 4.
+    #[prost(int32, tag = "4")]
+    pub backend: i32,
+    /// `USBDeviceState`: IDLE 0, ATTACHED 1, UNAVAILABLE 2.
+    #[prost(int32, tag = "5")]
+    pub state: i32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbDeviceDescriptor {
+    #[prost(string, tag = "1")]
+    pub device_id: String,
+    #[prost(uint32, tag = "2")]
+    pub bus_num: u32,
+    #[prost(uint32, tag = "3")]
+    pub dev_num: u32,
+    /// Linux `usb_device_speed`.
+    #[prost(uint32, tag = "4")]
+    pub speed: u32,
+    #[prost(uint32, tag = "5")]
+    pub vendor_id: u32,
+    #[prost(uint32, tag = "6")]
+    pub product_id: u32,
+    #[prost(uint32, tag = "7")]
+    pub bcd_device: u32,
+    #[prost(uint32, tag = "8")]
+    pub device_class: u32,
+    #[prost(uint32, tag = "9")]
+    pub device_sub_class: u32,
+    #[prost(uint32, tag = "10")]
+    pub device_protocol: u32,
+    #[prost(uint32, tag = "11")]
+    pub configuration_value: u32,
+    #[prost(uint32, tag = "12")]
+    pub num_configurations: u32,
+    #[prost(message, repeated, tag = "13")]
+    pub interfaces: Vec<UsbInterface>,
+    #[prost(string, tag = "14")]
+    pub serial: String,
+    #[prost(string, tag = "15")]
+    pub product: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UsbInterface {
+    #[prost(uint32, tag = "1")]
+    pub interface_class: u32,
+    #[prost(uint32, tag = "2")]
+    pub interface_sub_class: u32,
+    #[prost(uint32, tag = "3")]
+    pub interface_protocol: u32,
+}
+
+/// Byte-exact pins for the block above, same rules as `tests`.
+#[cfg(test)]
+mod vpn_tests {
+    use super::*;
+    use prost::Message;
+
+    #[test]
+    fn openconnect_form_submission_uses_upstream_field_numbers() {
+        let mut values = std::collections::BTreeMap::new();
+        values.insert("k".to_string(), "v".to_string());
+        let submission = OpenConnectAuthResponseSubmission {
+            endpoint_tag: "t".into(),
+            challenge_id: "c".into(),
+            response: Some(open_connect_auth_response_submission::Response::Form(
+                OpenConnectAuthFormResponse { values },
+            )),
+        };
+        // Field 3 (form) holds field 1: one map entry (key 1, value 2).
+        assert_eq!(
+            submission.encode_to_vec(),
+            [0x0a, 1, b't', 0x12, 1, b'c', 0x1a, 8, 0x0a, 6, 0x0a, 1, b'k', 0x12, 1, b'v']
+        );
+    }
+
+    #[test]
+    fn openconnect_browser_submission_uses_upstream_field_numbers() {
+        let submission = OpenConnectAuthResponseSubmission {
+            endpoint_tag: "t".into(),
+            challenge_id: "c".into(),
+            response: Some(open_connect_auth_response_submission::Response::Browser(
+                OpenConnectBrowserResult {
+                    final_url: "u".into(),
+                    cookies: vec![OpenConnectBrowserCookie {
+                        name: "n".into(),
+                        value: "v".into(),
+                    }],
+                    headers: vec![OpenConnectBrowserHeader {
+                        name: "h".into(),
+                        values: vec!["x".into()],
+                    }],
+                },
+            )),
+        };
+        assert_eq!(
+            submission.encode_to_vec(),
+            [
+                0x0a, 1, b't', 0x12, 1, b'c', // tag, challenge id
+                0x22, 19, // field 4: the browser result
+                0x0a, 1, b'u', // final URL
+                0x12, 6, 0x0a, 1, b'n', 0x12, 1, b'v', // one cookie
+                0x1a, 6, 0x0a, 1, b'h', 0x12, 1, b'x', // one header
+            ]
+        );
+    }
+
+    #[test]
+    fn cancel_requests_use_fields_1_and_2() {
+        let expected = [0x0a, 1, b't', 0x12, 1, b'c'];
+        assert_eq!(
+            OpenConnectAuthChallengeCancel {
+                endpoint_tag: "t".into(),
+                challenge_id: "c".into()
+            }
+            .encode_to_vec(),
+            expected
+        );
+        assert_eq!(
+            OpenVpnChallengeCancel {
+                endpoint_tag: "t".into(),
+                challenge_id: "c".into()
+            }
+            .encode_to_vec(),
+            expected
+        );
+    }
+
+    #[test]
+    fn openvpn_submission_uses_upstream_field_numbers() {
+        assert_eq!(
+            OpenVpnChallengeSubmission {
+                endpoint_tag: "t".into(),
+                challenge_id: "c".into(),
+                username: "u".into(),
+                password: "p".into(),
+                secret: "s".into(),
+            }
+            .encode_to_vec(),
+            [0x0a, 1, b't', 0x12, 1, b'c', 0x1a, 1, b'u', 0x22, 1, b'p', 0x2a, 1, b's']
+        );
+    }
+
+    /// Response oddities: the challenge oneof arms are fields 5 and 6; the
+    /// OpenVPN tunnel skips reserved field 2; the USB/IP enums are varints in
+    /// fields 4 and 5 of the shared device.
+    #[test]
+    fn vpn_responses_decode_from_upstream_bytes() {
+        // authChallenge { id "1", browser { url "u" } }
+        let status = OpenConnectEndpointStatus::decode(
+            &[0x22, 8, 0x0a, 1, b'1', 0x32, 3, 0x0a, 1, b'u'][..],
+        )
+        .unwrap();
+        let challenge = status.auth_challenge.unwrap();
+        assert_eq!(challenge.id, "1");
+        assert_eq!(
+            challenge.challenge,
+            Some(open_connect_auth_challenge::Challenge::Browser(
+                OpenConnectBrowserRequest {
+                    url: "u".into(),
+                    ..Default::default()
+                }
+            ))
+        );
+
+        // form { fields [{ submissionKey "k", kind "select",
+        //                  options [{ value "a" }] }] }
+        let challenge = OpenConnectAuthChallenge::decode(
+            &[
+                0x2a, 18, 0x0a, 16, 0x0a, 1, b'k', 0x22, 6, b's', b'e', b'l', b'e', b'c', b't',
+                0x32, 3, 0x0a, 1, b'a',
+            ][..],
+        )
+        .unwrap();
+        let Some(open_connect_auth_challenge::Challenge::Form(form)) = challenge.challenge else {
+            panic!("expected a form challenge");
+        };
+        assert_eq!(form.fields[0].submission_key, "k");
+        assert_eq!(form.fields[0].kind, "select");
+        assert_eq!(form.fields[0].options[0].value, "a");
+
+        let tunnel = OpenVpnTunnelInfo::decode(
+            &[0x1a, 1, b'n', 0x38, 0xdc, 0x0b, 0x40, 9, 0x4a, 1, b'c'][..],
+        )
+        .unwrap();
+        assert_eq!(
+            (tunnel.network.as_str(), tunnel.mtu, tunnel.connected_since),
+            ("n", 1500, 9)
+        );
+        assert_eq!(tunnel.cipher, "c");
+
+        let challenge = OpenVpnChallenge::decode(&[0x12, 1, b's', 0x38, 1, 0x48, 42][..]).unwrap();
+        assert_eq!((challenge.kind.as_str(), challenge.echo), ("s", true));
+        assert_eq!(challenge.deadline, 42);
+
+        // descriptor { vendorId 0x501 }, busId "1", backend 2, state 1
+        let device = UsbSharedDevice::decode(
+            &[0x0a, 3, 0x28, 0x81, 0x0a, 0x12, 1, b'1', 0x20, 2, 0x28, 1][..],
+        )
+        .unwrap();
+        assert_eq!(device.descriptor.unwrap().vendor_id, 0x501);
+        assert_eq!(device.bus_id, "1");
+        assert_eq!((device.backend, device.state), (2, 1));
+    }
+}

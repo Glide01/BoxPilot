@@ -1,0 +1,409 @@
+//! Table checks. Never `set_language` here: tests share the process-wide
+//! language and run in parallel — read `EN` / `ZH_CN` directly.
+
+use super::*;
+
+#[test]
+fn locale_tags_pick_the_language() {
+    for zh in [
+        "zh",
+        "zh-CN",
+        "zh_CN.UTF-8",
+        "zh-Hans-SG",
+        "zh-TW",
+        "zh_HK",
+        "ZH-cn",
+        " zh-CN ",
+    ] {
+        assert_eq!(
+            language_for_locale(Some(zh)),
+            Language::SimplifiedChinese,
+            "{zh:?}"
+        );
+    }
+    for other in [
+        "en-US",
+        "en",
+        "ja-JP",
+        "de_DE.UTF-8",
+        "zha",
+        "",
+        "C",
+        "POSIX",
+    ] {
+        assert_eq!(
+            language_for_locale(Some(other)),
+            Language::English,
+            "{other:?}"
+        );
+    }
+    assert_eq!(language_for_locale(None), Language::English);
+}
+
+#[test]
+fn explicit_preferences_ignore_the_os() {
+    assert_eq!(resolve(LanguagePreference::English), Language::English);
+    assert_eq!(
+        resolve(LanguagePreference::SimplifiedChinese),
+        Language::SimplifiedChinese
+    );
+}
+
+#[test]
+fn languages_map_to_their_tables_and_component_locales() {
+    assert!(std::ptr::eq(Language::English.strings(), &EN));
+    assert!(std::ptr::eq(Language::SimplifiedChinese.strings(), &ZH_CN));
+    assert_eq!(Language::English.component_locale(), "en");
+    assert_eq!(Language::SimplifiedChinese.component_locale(), "zh-CN");
+    for language in [Language::English, Language::SimplifiedChinese] {
+        assert_eq!(Language::from_u8(language.to_u8()), language);
+    }
+}
+
+/// A hand-picked spread of plain strings from every area.
+fn plain(t: &Strings) -> Vec<&'static str> {
+    vec![
+        t.common.cancel,
+        t.common.copied,
+        t.status.disconnected,
+        t.status.starting,
+        t.status.connected,
+        t.status.connect,
+        t.status.disconnect,
+        t.status.cancel_start,
+        t.time.just_now,
+        t.nav.home,
+        t.nav.groups,
+        t.nav.connections,
+        t.nav.profiles,
+        t.nav.logs,
+        t.nav.tools,
+        t.nav.settings,
+        t.home.no_subscription_title,
+        t.home.clash_mode,
+        t.home.proxy_mode,
+        t.home.mode_proxy,
+        t.home.system_proxy,
+        t.profiles.add_title,
+        t.profiles.update_section,
+        t.profiles.auto_update,
+        t.profiles.interval_off,
+        t.profiles.interval_daily,
+        t.profiles.update_via_sing_box,
+        t.profiles.update_via_sing_box_hint,
+        t.profiles.delete_body,
+        t.profiles.updating,
+        t.profiles.update_failed,
+        t.profiles.click_to_update,
+        t.profiles.click_to_reread,
+        t.usage.expires_today,
+        t.groups.search_placeholder,
+        t.groups.test_all,
+        t.groups.test_group,
+        t.connections.active_tab,
+        t.groups.timeout,
+        t.connections.filter_placeholder,
+        t.connections.close_all,
+        t.connections.speed,
+        t.connections.col_speed,
+        t.connections.col_network,
+        t.connections.col_destination,
+        t.connections.col_process,
+        t.connections.col_source,
+        t.connections.col_inbound,
+        t.connections.col_rule,
+        t.connections.columns,
+        t.connections.reset_columns,
+        t.connections.keep_basic_column,
+        t.connections.rule,
+        t.connections.sort_ascending,
+        t.connections.sort_descending,
+        t.connections.hide_direct,
+        t.connections.hide_direct_hint,
+        t.connections.pause,
+        t.connections.pause_hint,
+        t.connections.resume,
+        t.connections.resume_hint,
+        t.connections.paused,
+        t.connection_details.close_panel,
+        t.connection_details.gone_title,
+        t.connection_details.gone_hint,
+        t.connection_details.overview,
+        t.connection_details.route,
+        t.connection_details.source_section,
+        t.connection_details.traffic_section,
+        t.connection_details.destination,
+        t.connection_details.chain,
+        t.connection_details.switch_node,
+        t.connection_details.from_outbound,
+        t.connection_details.opened_at,
+        t.connection_details.duration,
+        t.logs.configured_level,
+        t.logs.reset_columns,
+        t.tools.nat_unsupported,
+        t.tools.nat_full_cone_hint,
+        t.tailscale.waiting_approval,
+        t.tailscale.https_hint,
+        t.vpn.step_too_new,
+        t.vpn.default_server_hint,
+        t.settings.language,
+        t.settings.follow_system,
+        t.settings.appearance,
+        t.settings.allow_lan,
+        t.settings.close_on_switch,
+        t.settings.close_on_switch_hint,
+        t.settings.clear_cache_hint,
+        t.settings.clear_cache_hint_connected,
+        t.settings.clear_cache_action,
+        t.updates.check_automatically,
+        t.updates.rate_limited,
+        t.config_viewer.preview_hint,
+        t.chart.last_two_minutes,
+        t.tray.show,
+        t.tray.quit,
+        t.dialogs.import_title,
+        t.dialogs.tun_grant_body,
+        t.messages.ready,
+        t.messages.api_port_retry,
+        t.errors.invalid_sub_url,
+        t.errors.tun_dismissed,
+        t.helper.not_installed,
+        t.helper.disabled,
+        t.helper.connect_denied,
+        t.helper.not_allowed,
+        t.helper.busy,
+        t.helper.lost_running,
+        t.helper.exit_manifest,
+        t.helper.whole_config,
+        t.helper.runs_program,
+        t.helper.filesystem_path,
+        t.home.tun_needs_helper,
+        t.settings.helper,
+        t.settings.helper_not_installed,
+        t.settings.helper_turned_off,
+        t.settings.helper_ready,
+        t.settings.helper_other_owner,
+        t.settings.helper_stale,
+        t.settings.helper_no_bundle,
+        t.settings.helper_as_root,
+        t.settings.install_helper,
+        t.settings.reinstall_helper,
+        t.settings.remove_helper,
+        t.dialogs.helper_install_title,
+        t.dialogs.helper_install_body,
+        t.dialogs.helper_reinstall_body,
+        t.dialogs.helper_take_over_body,
+        t.dialogs.helper_turn_on_body,
+        t.dialogs.helper_remove_body,
+        t.helper.mac_not_installed,
+        t.helper.mac_turned_off,
+        t.helper.mac_connect_denied,
+        t.helper.mac_not_allowed,
+        t.helper.mac_version_mismatch,
+        t.helper.mac_exit_manifest,
+        t.helper.mac_no_bundle,
+        t.helper.install_prompt,
+        t.helper.remove_prompt,
+        t.helper.prompt_dismissed,
+        t.helper.busy_installing,
+    ]
+}
+
+#[test]
+fn no_string_is_empty() {
+    for t in [&EN, &ZH_CN] {
+        for text in plain(t) {
+            assert!(!text.trim().is_empty());
+        }
+    }
+}
+
+#[test]
+fn chinese_is_translated() {
+    // Same text in both tables means a string was copied, not translated
+    // (product names and protocol words are allowed to match).
+    let same: Vec<_> = plain(&EN)
+        .into_iter()
+        .zip(plain(&ZH_CN))
+        .filter(|(en, zh)| en == zh)
+        .collect();
+    assert!(same.is_empty(), "untranslated: {same:?}");
+    assert_eq!(ZH_CN.status.connect, "连接");
+    assert_eq!(ZH_CN.status.disconnect, "断开");
+    assert_eq!(ZH_CN.status.connected, "已连接");
+    assert_eq!(ZH_CN.home.clash_mode, "Clash 模式");
+    assert_eq!(ZH_CN.groups.test_all, "全部测速");
+}
+
+/// sing-box is never "内核" (CONTEXT.md).
+#[test]
+fn chinese_never_calls_sing_box_the_core() {
+    let text = format!(
+        "{} {} {} {}",
+        plain(&ZH_CN).join(" "),
+        (ZH_CN.messages.sing_box_too_old)("1.13.0", "1.14.0"),
+        (ZH_CN.messages.start_failed)("sing-box", "a.json", "x"),
+        (ZH_CN.vpn.unknown_step)("x"),
+    );
+    assert!(!text.contains("内核"));
+    // The UI term for the helper is 特权助手 (CONTEXT.md, ADR 0006).
+    for text in [
+        ZH_CN.helper.not_installed,
+        ZH_CN.helper.disabled,
+        ZH_CN.helper.lost_running,
+        ZH_CN.helper.mac_not_installed,
+        ZH_CN.helper.mac_turned_off,
+        ZH_CN.helper.install_prompt,
+        ZH_CN.settings.helper,
+        ZH_CN.dialogs.helper_install_title,
+        ZH_CN.home.tun_needs_helper,
+    ] {
+        assert!(text.contains("特权助手"), "{text}");
+    }
+    assert!(EN.helper.not_installed.contains("privileged helper"));
+}
+
+#[test]
+fn formatted_messages_fill_in_their_values() {
+    assert_eq!((EN.home.running_for)("1h 23m"), "Running for 1h 23m");
+    assert_eq!((ZH_CN.home.running_for)("1小时23分"), "已运行 1小时23分");
+
+    assert_eq!((EN.time.days_ago)(1), "1 day ago");
+    assert_eq!((EN.time.days_ago)(3), "3 days ago");
+    assert_eq!((ZH_CN.time.days_ago)(3), "3 天前");
+    assert_eq!((ZH_CN.time.minutes_ago)(5), "5 分钟前");
+
+    assert_eq!((EN.usage.expires_in_days)(1), "expires in 1 day");
+    assert_eq!((EN.usage.expires_in_days)(12), "expires in 12 days");
+    assert_eq!((ZH_CN.usage.expires_in_days)(12), "12 天后到期");
+    assert_eq!(
+        (EN.usage.alert)("Work", "92% of traffic used"),
+        "\"Work\" subscription: 92% of traffic used."
+    );
+    assert_eq!(
+        (ZH_CN.usage.alert)("Work", "流量已用 92%"),
+        "订阅「Work」：流量已用 92%。"
+    );
+
+    assert_eq!(
+        (EN.profiles.auto_update_every)(30),
+        "Auto-updates every 30 min."
+    );
+    assert_eq!(
+        (ZH_CN.profiles.auto_update_every)(30),
+        "每 30 分钟自动更新。"
+    );
+    assert_eq!(
+        (EN.profiles.updated_on)("2026-10-03", "14:32"),
+        "Updated on 2026-10-03 at 14:32."
+    );
+    assert_eq!((ZH_CN.profiles.updated_today)("14:32"), "今天 14:32 更新。");
+
+    assert_eq!((EN.connections.close_matching)(3), "Close 3 matching");
+    assert_eq!((ZH_CN.connections.close_matching)(3), "关闭 3 个匹配项");
+    assert_eq!((EN.connections.shown_of)(3, 10), "3 of 10 shown");
+    assert_eq!((ZH_CN.connections.shown_of)(3, 10), "显示 3 / 10");
+
+    assert_eq!((EN.logs.count_of)(3, 10), "3 of 10");
+    assert_eq!((ZH_CN.logs.count_of)(3, 10), "3 / 10");
+
+    assert_eq!((EN.vpn.cookies)("a", 1), "the a cookie");
+    assert_eq!((EN.vpn.cookies)("a, b", 2), "the a, b cookies");
+    assert_eq!((ZH_CN.vpn.cookies)("a, b", 2), "Cookie a, b");
+
+    assert_eq!(
+        (EN.tray.tooltip)(EN.status.connected),
+        "BoxPilot — Connected"
+    );
+    assert_eq!(
+        (ZH_CN.tray.tooltip)(ZH_CN.status.connected),
+        "BoxPilot — 已连接"
+    );
+
+    assert_eq!(
+        (EN.updates.available_toast)("1.14.0"),
+        "BoxPilot 1.14.0 is available — see Settings › About."
+    );
+    assert_eq!((ZH_CN.chart.mins_secs_ago)(1, 5), "1 分 5 秒前");
+}
+
+#[test]
+fn chinese_uses_full_width_punctuation() {
+    // ASCII ',' ':' ';' right after a CJK character reads wrong in Chinese.
+    let samples = [
+        ZH_CN.profiles.update_via_sing_box_hint.to_string(),
+        ZH_CN.profiles.delete_body.to_string(),
+        ZH_CN.tools.nat_unsupported.to_string(),
+        ZH_CN.tools.nat_symmetric_hint.to_string(),
+        ZH_CN.settings.lan_off.to_string(),
+        (ZH_CN.messages.clash_mode_failed)("x"),
+        (ZH_CN.errors.read_failed)("a", "b"),
+        (ZH_CN.settings.lan_on_at)("192.168.1.2:7788"),
+        ZH_CN.connection_details.close_panel.to_string(),
+        ZH_CN.connections.pause_hint.to_string(),
+        (ZH_CN.helper.refused)(&(ZH_CN.helper.refusal_at)(
+            ZH_CN.helper.whole_config,
+            ZH_CN.helper.not_an_object,
+        )),
+        (ZH_CN.helper.read_file)("a.pem", "/certificate/certificate_path/0", "x"),
+        (ZH_CN.helper.exited)(ZH_CN.helper.exit_state_dir),
+        (ZH_CN.helper.too_many_files)(65, 64),
+        (ZH_CN.helper.start_too_large)(1, 2),
+        (ZH_CN.helper.service_failed)("1053"),
+        (ZH_CN.helper.type_not_allowed)("bridge"),
+        (ZH_CN.helper.too_big)("2 > 1"),
+        (ZH_CN.helper.invalid_json)("EOF"),
+        ZH_CN.helper.not_installed.to_string(),
+        ZH_CN.helper.disabled.to_string(),
+        ZH_CN.helper.not_allowed.to_string(),
+        ZH_CN.helper.busy.to_string(),
+        ZH_CN.helper.non_canonical_key.to_string(),
+        ZH_CN.helper.inbounds.to_string(),
+        ZH_CN.helper.directory.to_string(),
+        ZH_CN.helper.server_file_scan.to_string(),
+        ZH_CN.helper.mac_not_installed.to_string(),
+        ZH_CN.helper.mac_turned_off.to_string(),
+        ZH_CN.helper.mac_not_allowed.to_string(),
+        (ZH_CN.helper.mac_bad_reply)("x"),
+        (ZH_CN.helper.exited)(ZH_CN.helper.mac_exit_manifest),
+        (ZH_CN.helper.install_failed)("x"),
+        ZH_CN.settings.helper_not_installed.to_string(),
+        ZH_CN.settings.helper_turned_off.to_string(),
+        ZH_CN.settings.helper_other_owner.to_string(),
+        (ZH_CN.settings.helper_broken)("x"),
+        ZH_CN.dialogs.helper_install_body.to_string(),
+        ZH_CN.dialogs.helper_take_over_body.to_string(),
+        ZH_CN.dialogs.helper_turn_on_body.to_string(),
+        ZH_CN.dialogs.helper_remove_body.to_string(),
+        ZH_CN.home.tun_needs_helper.to_string(),
+    ];
+    for sample in samples {
+        let chars: Vec<char> = sample.chars().collect();
+        for pair in chars.windows(2) {
+            let cjk = ('\u{4e00}'..='\u{9fff}').contains(&pair[0]);
+            assert!(
+                !(cjk && matches!(pair[1], ',' | ':' | ';' | '(' | ')')),
+                "{sample:?}"
+            );
+        }
+    }
+}
+
+/// macOS lists the ad hoc signed helper in Login Items under its label,
+/// not BoxPilot's name (`AssociatedBundleIdentifiers` matches by signing
+/// team, which an ad hoc signature hasn't): every text that sends the user
+/// there names the entry as macOS shows it.
+#[test]
+fn login_items_texts_name_the_helpers_entry() {
+    use boxpilot_protocol::endpoint::macos::LABEL;
+    for t in [&EN, &ZH_CN] {
+        let texts: Vec<_> = plain(t)
+            .into_iter()
+            .filter(|text| text.contains("Login Items") || text.contains("登录项"))
+            .collect();
+        assert_eq!(texts.len(), 4, "{texts:?}");
+        for text in texts {
+            assert!(text.contains(LABEL), "{text}");
+        }
+    }
+}

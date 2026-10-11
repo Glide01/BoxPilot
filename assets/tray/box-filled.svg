@@ -1,0 +1,12 @@
+<!-- Menu bar glyph, connected: the same box filled, its edges and the tape
+     cut out. 22pt square (rendered at 44px); alpha only (template). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <mask id="cuts" maskUnits="userSpaceOnUse" x="0" y="0" width="22" height="22">
+    <rect width="22" height="22" fill="#fff"/>
+    <path fill="none" stroke="#000" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"
+          d="M4 6.75 L11 10.5 L18 6.75 M11 10.5 V19"/>
+    <path fill="#000" d="M13.6 4.4 L15.4 5.35 L8.4 9.1 V12.6 L6.6 11.65 V8.15 Z"/>
+  </mask>
+  <path mask="url(#cuts)" fill="#000" stroke="#000" stroke-width="1.5" stroke-linejoin="round"
+        d="M11 3 L18 6.75 V15.25 L11 19 L4 15.25 V6.75 Z"/>
+</svg>

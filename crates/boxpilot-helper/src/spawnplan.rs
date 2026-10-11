@@ -1,0 +1,422 @@
+//! What sing-box is started with on Windows, as pure data (ADR 0006 rule 2,
+//! "Environment", and "Defense in depth"): its command line, its
+//! environment block and its process mitigations; its token is
+//! `tokenplan::SING_BOX_TOKEN`. The Windows layer passes them to
+//! `CreateProcessAsUserW` with the full application path, so nothing is
+//! searched for.
+//!
+//! - **Arguments**: `run -D <run dir> -c <run dir>\config.json
+//!   --disable-color`, quoted by the rules the MSVC runtime and Go both
+//!   parse by, so a path with spaces stays one argument.
+//! - **Environment**: built from nothing, never inherited from the service:
+//!   `SystemRoot` and `windir`, a `PATH` of only `System32` and the Windows
+//!   directory (the naive outbound loads `libcronet.dll` from beside
+//!   sing-box, then from `PATH`, and a user-writable `PATH` entry would let
+//!   a user plant that DLL in a SYSTEM process), and `TEMP`, `TMP` and
+//!   `USERPROFILE` inside the run directory.
+//! - **Mitigations** ([`SING_BOX_MITIGATIONS`]): no image from a remote
+//!   share or with a low integrity label, no legacy extension points.
+//! - **Token** (`tokenplan::SING_BOX_TOKEN`): the helper's own process
+//!   token, restricted (`CreateRestrictedToken`): every privilege but
+//!   `SeChangeNotifyPrivilege` deleted, not merely disabled, so sing-box
+//!   can't enable it again, and the integrity level lowered to High.
+//!
+//! **macOS** takes the same arguments, as an argv (`posix_spawn` by
+//! absolute path: nothing is searched for, and no shell parses anything),
+//! and its own environment from nothing: [`posix_environment`].
+
+#![forbid(unsafe_code)]
+
+use std::fmt;
+
+/// `PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON`
+/// (winbase.h): no AppInit DLLs, Winsock LSPs, global window hooks or IMEs
+/// are loaded into the process. Windows 8 and later.
+pub const MITIGATION_EXTENSION_POINT_DISABLE: u64 = 1 << 32;
+/// `PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON`: no
+/// image from a remote device (a UNC share). Windows 10 1511 and later.
+pub const MITIGATION_IMAGE_LOAD_NO_REMOTE: u64 = 1 << 52;
+/// `PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON`:
+/// no image a low-integrity process could have written (one with a low
+/// mandatory label). Windows 10 1511 and later.
+pub const MITIGATION_IMAGE_LOAD_NO_LOW_LABEL: u64 = 1 << 56;
+
+/// The process mitigations sing-box starts with
+/// (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`, one DWORD64): only ones that
+/// can't stop a sing-box from working. Not `IMAGE_LOAD_PREFER_SYSTEM32`
+/// (bit 60), which would change where `libcronet.dll` is looked for.
+pub const SING_BOX_MITIGATIONS: u64 = MITIGATION_EXTENSION_POINT_DISABLE
+    | MITIGATION_IMAGE_LOAD_NO_REMOTE
+    | MITIGATION_IMAGE_LOAD_NO_LOW_LABEL;
+
+/// Why a command line or environment block could not be built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanError {
+    /// A value holds a NUL, which would end it early.
+    Nul,
+    /// A variable name is empty or holds `=`.
+    BadName,
+    /// The program path holds a `"`, which no Windows path can.
+    QuoteInProgram,
+}
+
+impl fmt::Display for PlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            PlanError::Nul => "a value holds a NUL character",
+            PlanError::BadName => "an environment variable name is empty or holds `=`",
+            PlanError::QuoteInProgram => "the program path holds a quote",
+        })
+    }
+}
+
+impl std::error::Error for PlanError {}
+
+/// sing-box's arguments for a run in `run_dir`, its config at `config`.
+pub fn sing_box_args(run_dir: &str, config: &str) -> Vec<String> {
+    vec![
+        "run".into(),
+        "-D".into(),
+        run_dir.into(),
+        "-c".into(),
+        config.into(),
+        "--disable-color".into(),
+    ]
+}
+
+/// The command line `CreateProcessW` takes: `program`, quoted as Windows
+/// reads `argv[0]` (whole, between quotes, no escapes), then each of
+/// `args` quoted by the MSVC rules.
+pub fn command_line(program: &str, args: &[String]) -> Result<String, PlanError> {
+    if program.contains('"') {
+        return Err(PlanError::QuoteInProgram);
+    }
+    if program.contains('\0') || args.iter().any(|arg| arg.contains('\0')) {
+        return Err(PlanError::Nul);
+    }
+    let mut line = format!("\"{program}\"");
+    for arg in args {
+        line.push(' ');
+        quote(arg, &mut line);
+    }
+    Ok(line)
+}
+
+/// Append `arg` so `CommandLineToArgvW` and the MSVC runtime read it back
+/// as exactly `arg`: bare when it has no space, tab, newline or quote;
+/// otherwise in quotes, each `"` escaped, and the backslashes before a `"`
+/// or the closing quote doubled.
+fn quote(arg: &str, out: &mut String) {
+    let plain = !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\u{b}', '"']);
+    if plain {
+        out.push_str(arg);
+        return;
+    }
+    out.push('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            c => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+}
+
+/// sing-box's whole environment: the Windows directory `system_root`,
+/// `temp` for `TEMP` and `TMP`, `profile` for `USERPROFILE`. Sorted by
+/// name, case-insensitively, as an environment block must be.
+pub fn environment(system_root: &str, temp: &str, profile: &str) -> Vec<(String, String)> {
+    let root = system_root.trim_end_matches('\\');
+    let mut vars = vec![
+        ("SystemRoot".to_owned(), root.to_owned()),
+        ("windir".to_owned(), root.to_owned()),
+        ("PATH".to_owned(), format!("{root}\\System32;{root}")),
+        ("TEMP".to_owned(), temp.to_owned()),
+        ("TMP".to_owned(), temp.to_owned()),
+        ("USERPROFILE".to_owned(), profile.to_owned()),
+    ];
+    vars.sort_by_key(|(name, _)| name.to_uppercase());
+    vars
+}
+
+/// sing-box's `PATH` on macOS: the system's own directories, all
+/// SIP-protected. sing-box runs `networksetup` by name for the system proxy
+/// (`common/settings/proxy_darwin.go`), so it needs one, and nothing a user
+/// can write may be in it.
+pub const POSIX_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// sing-box's whole environment on macOS, built from nothing, never
+/// inherited from the helper (ADR 0006 rule 2, "Environment"): `PATH`
+/// ([`POSIX_PATH`]), and `HOME` and `TMPDIR` inside the run directory. No
+/// `SUDO_*`, no user's `HOME`. Sorted by name.
+pub fn posix_environment(home: &str, tmp: &str) -> Vec<(String, String)> {
+    vec![
+        ("HOME".to_owned(), home.to_owned()),
+        ("PATH".to_owned(), POSIX_PATH.to_owned()),
+        ("TMPDIR".to_owned(), tmp.to_owned()),
+    ]
+}
+
+/// The `name=value` strings `posix_spawn` takes as its environment.
+pub fn posix_environment_strings(vars: &[(String, String)]) -> Result<Vec<String>, PlanError> {
+    vars.iter()
+        .map(|(name, value)| {
+            if name.is_empty() || name.contains('=') {
+                return Err(PlanError::BadName);
+            }
+            if name.contains('\0') || value.contains('\0') {
+                return Err(PlanError::Nul);
+            }
+            Ok(format!("{name}={value}"))
+        })
+        .collect()
+}
+
+/// The UTF-16 environment block `CreateProcessW` takes with
+/// `CREATE_UNICODE_ENVIRONMENT`: each `name=value` NUL-terminated, and one
+/// more NUL at the end.
+pub fn environment_block(vars: &[(String, String)]) -> Result<Vec<u16>, PlanError> {
+    let mut block = Vec::new();
+    for (name, value) in vars {
+        if name.is_empty() || name.contains('=') {
+            return Err(PlanError::BadName);
+        }
+        if name.contains('\0') || value.contains('\0') {
+            return Err(PlanError::Nul);
+        }
+        block.extend(name.encode_utf16());
+        block.push(u16::from(b'='));
+        block.extend(value.encode_utf16());
+        block.push(0);
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The MSVC runtime's reading of a command line's arguments after
+    /// `argv[0]` (the 2008 rules, which `CommandLineToArgvW` and Go share
+    /// for these cases), to check `quote` against.
+    fn parse_args(line: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        let mut chars = line.chars().peekable();
+        loop {
+            while chars.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
+                chars.next();
+            }
+            if chars.peek().is_none() {
+                return args;
+            }
+            let mut arg = String::new();
+            let mut quoted = false;
+            loop {
+                match chars.peek().copied() {
+                    None => break,
+                    Some(' ' | '\t') if !quoted => break,
+                    Some('\\') => {
+                        let mut n = 0;
+                        while chars.peek() == Some(&'\\') {
+                            chars.next();
+                            n += 1;
+                        }
+                        if chars.peek() == Some(&'"') {
+                            arg.extend(std::iter::repeat_n('\\', n / 2));
+                            if n % 2 == 1 {
+                                arg.push('"');
+                                chars.next();
+                            }
+                        } else {
+                            arg.extend(std::iter::repeat_n('\\', n));
+                        }
+                    }
+                    Some('"') => {
+                        chars.next();
+                        if quoted && chars.peek() == Some(&'"') {
+                            arg.push('"');
+                            chars.next();
+                        } else {
+                            quoted = !quoted;
+                        }
+                    }
+                    Some(c) => {
+                        arg.push(c);
+                        chars.next();
+                    }
+                }
+            }
+            args.push(arg);
+        }
+    }
+
+    /// The arguments of `line`, `argv[0]` skipped.
+    fn args_of(line: &str) -> Vec<String> {
+        let rest = line
+            .strip_prefix('"')
+            .and_then(|rest| rest.split_once('"'))
+            .expect("argv[0] is quoted")
+            .1;
+        parse_args(rest)
+    }
+
+    /// The winbase.h values (mingw-w64 and the Windows SDK agree), and
+    /// nothing else: "prefer System32" (bit 60) stays off.
+    #[test]
+    fn sing_box_starts_with_exactly_these_mitigations() {
+        assert_eq!(MITIGATION_EXTENSION_POINT_DISABLE, 0x0000_0001_0000_0000);
+        assert_eq!(MITIGATION_IMAGE_LOAD_NO_REMOTE, 0x0010_0000_0000_0000);
+        assert_eq!(MITIGATION_IMAGE_LOAD_NO_LOW_LABEL, 0x0100_0000_0000_0000);
+        assert_eq!(SING_BOX_MITIGATIONS, 0x0110_0001_0000_0000);
+        assert_eq!(SING_BOX_MITIGATIONS & (1 << 60), 0);
+    }
+
+    #[test]
+    fn sing_box_gets_exactly_its_arguments() {
+        let run = r"C:\Program Files\BoxPilot\HelperState\runs\0123abcd";
+        let config = format!(r"{run}\config.json");
+        let args = sing_box_args(run, &config);
+        let line = command_line(r"C:\Program Files\BoxPilot\Helper\sing-box.exe", &args).unwrap();
+        assert_eq!(
+            line,
+            r#""C:\Program Files\BoxPilot\Helper\sing-box.exe" run -D "C:\Program Files\BoxPilot\HelperState\runs\0123abcd" -c "C:\Program Files\BoxPilot\HelperState\runs\0123abcd\config.json" --disable-color"#
+        );
+        assert_eq!(args_of(&line), args);
+    }
+
+    #[test]
+    fn hard_arguments_round_trip() {
+        for arg in [
+            "",
+            "a b",
+            r"C:\Users\A B\Temp\",
+            r"C:\dir with space\\",
+            r#"say "hi""#,
+            r#"\""#,
+            r"\\server\share\x y",
+            "tab\there",
+            "new\nline",
+            r#"a\\"b"#,
+            "中文 路径",
+        ] {
+            let args = vec![arg.to_owned(), "next".to_owned()];
+            let line = command_line(r"C:\x.exe", &args).unwrap();
+            assert_eq!(args_of(&line), args, "{arg:?} as {line}");
+        }
+    }
+
+    #[test]
+    fn what_cant_be_passed_is_refused() {
+        assert_eq!(
+            command_line(r#"C:\a"b.exe"#, &[]),
+            Err(PlanError::QuoteInProgram)
+        );
+        assert_eq!(
+            command_line(r"C:\a.exe", &["x\0y".into()]),
+            Err(PlanError::Nul)
+        );
+    }
+
+    #[test]
+    fn the_environment_is_built_from_nothing() {
+        let vars = environment(r"C:\Windows\", r"C:\run\tmp", r"C:\run\home");
+        assert_eq!(
+            vars,
+            [
+                ("PATH", r"C:\Windows\System32;C:\Windows"),
+                ("SystemRoot", r"C:\Windows"),
+                ("TEMP", r"C:\run\tmp"),
+                ("TMP", r"C:\run\tmp"),
+                ("USERPROFILE", r"C:\run\home"),
+                ("windir", r"C:\Windows"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_posix_environment_is_built_from_nothing() {
+        let vars = posix_environment("/s/runs/ab/home", "/s/runs/ab/tmp");
+        assert_eq!(
+            vars,
+            [
+                ("HOME", "/s/runs/ab/home"),
+                ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+                ("TMPDIR", "/s/runs/ab/tmp"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        );
+        assert_eq!(
+            posix_environment_strings(&vars).unwrap(),
+            [
+                "HOME=/s/runs/ab/home",
+                "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+                "TMPDIR=/s/runs/ab/tmp"
+            ]
+        );
+        // Every PATH entry is a system directory, never /usr/local.
+        for dir in POSIX_PATH.split(':') {
+            assert!(
+                ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].contains(&dir),
+                "{dir}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posix_environment_that_cant_be_passed_is_refused() {
+        assert_eq!(
+            posix_environment_strings(&[("A=B".into(), "1".into())]),
+            Err(PlanError::BadName)
+        );
+        assert_eq!(
+            posix_environment_strings(&[("".into(), "1".into())]),
+            Err(PlanError::BadName)
+        );
+        assert_eq!(
+            posix_environment_strings(&[("A".into(), "1\0B=2".into())]),
+            Err(PlanError::Nul)
+        );
+        assert_eq!(
+            posix_environment_strings(&[]).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_block_is_nul_separated_and_double_terminated() {
+        let block = environment_block(&[("A".into(), "1".into()), ("Bé".into(), "".into())]);
+        assert_eq!(
+            block.unwrap(),
+            "A=1\0Bé=\0\0".encode_utf16().collect::<Vec<_>>()
+        );
+        assert_eq!(environment_block(&[]).unwrap(), [0, 0]);
+        assert_eq!(
+            environment_block(&[("A=B".into(), "1".into())]),
+            Err(PlanError::BadName)
+        );
+        assert_eq!(
+            environment_block(&[("".into(), "1".into())]),
+            Err(PlanError::BadName)
+        );
+        assert_eq!(
+            environment_block(&[("A".into(), "1\0B=2".into())]),
+            Err(PlanError::Nul)
+        );
+    }
+}

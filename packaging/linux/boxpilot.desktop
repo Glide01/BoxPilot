@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BoxPilot
+Comment=Desktop GUI for the sing-box proxy
+Exec=box-pilot %u
+Icon=boxpilot
+Terminal=false
+Categories=Network;
+MimeType=x-scheme-handler/sing-box;x-scheme-handler/boxpilot;
+StartupWMClass=boxpilot

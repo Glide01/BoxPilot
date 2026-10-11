@@ -8,6 +8,21 @@ use std::borrow::Cow;
 const POWER_SVG: &[u8] = include_bytes!("../../assets/icons/power.svg");
 const PENCIL_SVG: &[u8] = include_bytes!("../../assets/icons/pencil.svg");
 const REFRESH_CW_SVG: &[u8] = include_bytes!("../../assets/icons/refresh-cw.svg");
+const GAUGE_SVG: &[u8] = include_bytes!("../../assets/icons/gauge.svg");
+const SHIELD_CHECK_SVG: &[u8] = include_bytes!("../../assets/icons/shield-check.svg");
+const ZAP_SVG: &[u8] = include_bytes!("../../assets/icons/zap.svg");
+/// The Connections page's sort direction: ascending, descending.
+const SORT_ASCENDING_SVG: &[u8] = include_bytes!("../../assets/icons/arrow-down-narrow-wide.svg");
+const SORT_DESCENDING_SVG: &[u8] = include_bytes!("../../assets/icons/arrow-down-wide-narrow.svg");
+/// The Connections page's Columns menu.
+const COLUMNS_SVG: &[u8] = include_bytes!("../../assets/icons/columns-3.svg");
+/// Toast level glyphs, bold enough to read at 12px inside their disc.
+const TOAST_SUCCESS_SVG: &[u8] = include_bytes!("../../assets/icons/toast-success.svg");
+const TOAST_INFO_SVG: &[u8] = include_bytes!("../../assets/icons/toast-info.svg");
+const TOAST_WARNING_SVG: &[u8] = include_bytes!("../../assets/icons/toast-warning.svg");
+const TOAST_ERROR_SVG: &[u8] = include_bytes!("../../assets/icons/toast-error.svg");
+/// The app icon, at the head of the sidebar and in the title bar.
+const BRAND_ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
 pub struct AppAssets;
 
@@ -17,6 +32,17 @@ impl AssetSource for AppAssets {
             "icons/power.svg" => Ok(Some(Cow::Borrowed(POWER_SVG))),
             "icons/pencil.svg" => Ok(Some(Cow::Borrowed(PENCIL_SVG))),
             "icons/refresh-cw.svg" => Ok(Some(Cow::Borrowed(REFRESH_CW_SVG))),
+            "icons/gauge.svg" => Ok(Some(Cow::Borrowed(GAUGE_SVG))),
+            "icons/shield-check.svg" => Ok(Some(Cow::Borrowed(SHIELD_CHECK_SVG))),
+            "icons/zap.svg" => Ok(Some(Cow::Borrowed(ZAP_SVG))),
+            "icons/arrow-down-narrow-wide.svg" => Ok(Some(Cow::Borrowed(SORT_ASCENDING_SVG))),
+            "icons/arrow-down-wide-narrow.svg" => Ok(Some(Cow::Borrowed(SORT_DESCENDING_SVG))),
+            "icons/columns-3.svg" => Ok(Some(Cow::Borrowed(COLUMNS_SVG))),
+            "icons/toast-success.svg" => Ok(Some(Cow::Borrowed(TOAST_SUCCESS_SVG))),
+            "icons/toast-info.svg" => Ok(Some(Cow::Borrowed(TOAST_INFO_SVG))),
+            "icons/toast-warning.svg" => Ok(Some(Cow::Borrowed(TOAST_WARNING_SVG))),
+            "icons/toast-error.svg" => Ok(Some(Cow::Borrowed(TOAST_ERROR_SVG))),
+            "brand/icon.png" => Ok(Some(Cow::Borrowed(BRAND_ICON_PNG))),
             _ => Assets.load(path),
         }
     }

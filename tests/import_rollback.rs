@@ -1,7 +1,9 @@
 //! Regression test for the phantom-profile URI-import bug: with no profiles,
 //! Home shows the "Add subscription" empty card (keyed on
 //! `settings.has_profiles()`); a `sing-box://` import whose fetch fails must
-//! not dismiss it. The scenario needs a live gpui App (async fetch task +
+//! not dismiss it. The harness also covers fetch bookkeeping: a fetch asked
+//! for during another is queued, and a deleted profile's fetch writes
+//! nothing. The scenarios need a live gpui App (async fetch task +
 //! entity graph), which can't run inside the test process on macOS, so the
 //! harness bin runs headless as a subprocess and reports via exit code.
 

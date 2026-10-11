@@ -1,0 +1,224 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "https",
+        "tag": "dns-remote",
+        "server": "1.1.1.1",
+        "path": "/dns-query",
+        "detour": "proxy"
+      },
+      {
+        "type": "udp",
+        "tag": "dns-direct",
+        "server": "223.5.5.5"
+      },
+      {
+        "type": "fakeip",
+        "tag": "dns-fake",
+        "inet4_range": "198.18.0.0/15",
+        "inet6_range": "fc00::/18"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": ["geosite-cn"],
+        "server": "dns-direct"
+      },
+      {
+        "query_type": ["A", "AAAA"],
+        "server": "dns-fake"
+      }
+    ],
+    "final": "dns-remote",
+    "independent_cache": true
+  },
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": ["auto", "hk-vless-ws", "jp-vmess-grpc", "sg-hy2", "us-ss", "direct"],
+      "default": "auto"
+    },
+    {
+      "type": "urltest",
+      "tag": "auto",
+      "outbounds": ["hk-vless-ws", "jp-vmess-grpc", "sg-hy2", "us-ss"],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "3m",
+      "tolerance": 50
+    },
+    {
+      "type": "vless",
+      "tag": "hk-vless-ws",
+      "server": "hk01.example.net",
+      "server_port": 443,
+      "uuid": "bf000d23-0752-40b4-affe-68f7707a9661",
+      "tls": {
+        "enabled": true,
+        "server_name": "hk01.example.net",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/ray?ed=2048",
+        "headers": {
+          "Host": "hk01.example.net"
+        },
+        "max_early_data": 2048,
+        "early_data_header_name": "Sec-WebSocket-Protocol"
+      }
+    },
+    {
+      "type": "vmess",
+      "tag": "jp-vmess-grpc",
+      "server": "jp02.example.net",
+      "server_port": 443,
+      "uuid": "2f3c4a8e-7d1b-4c5e-9a6f-0b8d2e4c6a1f",
+      "security": "auto",
+      "alter_id": 0,
+      "tls": {
+        "enabled": true,
+        "server_name": "jp02.example.net"
+      },
+      "transport": {
+        "type": "grpc",
+        "service_name": "vmess-grpc"
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "sg-hy2",
+      "server": "sg03.example.net",
+      "server_port": 8443,
+      "password": "hy2-Ckq4Nw7vX2",
+      "up_mbps": 50,
+      "down_mbps": 200,
+      "obfs": {
+        "type": "salamander",
+        "password": "obfs-7Hn2Lp"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "sg03.example.net",
+        "alpn": ["h3"]
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "us-ss",
+      "server": "us04.example.net",
+      "server_port": 8388,
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "8JCsPssfgS8tiRwiMlhARg==",
+      "multiplex": {
+        "enabled": true,
+        "protocol": "h2mux",
+        "max_connections": 4
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "clash_mode": "Direct",
+        "outbound": "direct"
+      },
+      {
+        "clash_mode": "Global",
+        "outbound": "proxy"
+      },
+      {
+        "process_path": [
+          "C:\\Program Files\\Telegram Desktop\\Telegram.exe",
+          "/Applications/Telegram.app/Contents/MacOS/Telegram"
+        ],
+        "outbound": "proxy"
+      },
+      {
+        "process_path_regex": ["(?i)\\\\steamapps\\\\common\\\\"],
+        "outbound": "direct"
+      },
+      {
+        "type": "logical",
+        "mode": "and",
+        "rules": [
+          {
+            "rule_set": ["geosite-geolocation-!cn"]
+          },
+          {
+            "process_path": ["C:\\Windows\\System32\\svchost.exe"],
+            "invert": true
+          }
+        ],
+        "outbound": "proxy"
+      },
+      {
+        "rule_set": ["geosite-cn", "geoip-cn"],
+        "outbound": "direct"
+      }
+    ],
+    "rule_set": [
+      {
+        "type": "remote",
+        "tag": "geosite-cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+        "download_detour": "proxy"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-geolocation-!cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
+        "download_detour": "proxy",
+        "update_interval": "1d"
+      },
+      {
+        "type": "remote",
+        "tag": "geoip-cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+        "download_detour": "proxy"
+      }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns-direct"
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "store_fakeip": true
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "external_ui": "ui",
+      "external_ui_download_url": "https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip",
+      "external_ui_download_detour": "proxy",
+      "default_mode": "Rule"
+    }
+  }
+}

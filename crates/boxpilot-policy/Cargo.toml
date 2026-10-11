@@ -1,0 +1,19 @@
+[package]
+name = "boxpilot-policy"
+version = "0.1.0"
+edition = "2021"
+description = "The config policy BoxPilot's privileged helper runs a profile under (ADR 0006)"
+authors = ["BoxPilot Contributors"]
+license = "MIT"
+repository = "https://github.com/Glide01/BoxPilot"
+publish = false
+
+[lib]
+name = "boxpilot_policy"
+
+[dependencies]
+# `preserve_order` keeps the checked config in the profile's own key order,
+# so the config the helper runs reads like the profile it came from, and the
+# GUI and the helper list refusals in the same order whatever else the build
+# pulls in. The GUI's dependency graph already turns it on.
+serde_json = { version = "1.0", features = ["preserve_order"] }
