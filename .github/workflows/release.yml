@@ -838,7 +838,7 @@ jobs:
 
             Windows: install via winget: `winget install Glide01.BoxPilot`, or run the MSI.
             Linux (x86_64): download the AppImage, `chmod +x` it and run it.
-            macOS 12 or later: download the DMG for your Mac (`arm64` for Apple silicon, `x86_64` for Intel) and drag BoxPilot to Applications. It is signed ad hoc, not notarized, so macOS blocks the first open: allow it in System Settings › Privacy & Security › "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/BoxPilot.app`. Proxy mode only for now: TUN mode is not available on macOS yet.
+            macOS 12 or later: download the DMG for your Mac (`arm64` for Apple silicon, `x86_64` for Intel) and drag BoxPilot to Applications. It is signed ad hoc, not notarized, so macOS blocks the first open: allow it in System Settings › Privacy & Security › "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/BoxPilot.app`. TUN mode runs through a privileged helper: install it once in Settings › TUN, which asks for an administrator password.
 
             BoxPilot is MIT licensed. The bundled `sing-box` binaries are the official
             [SagerNet/sing-box](https://github.com/SagerNet/sing-box) release binaries,
