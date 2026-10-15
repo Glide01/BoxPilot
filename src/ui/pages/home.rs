@@ -263,6 +263,16 @@ fn figure(theme: &Theme, text: &str) -> Div {
         })
 }
 
+/// One half of a row of cards. Home lays its cards on four equal columns,
+/// as Surge does: the facts row takes one each, the delay card and the
+/// bottom row's two halves take two, the rate cards one. A card set
+/// straight into a `flex_1` row would grow by its own padding (its basis is
+/// its padding, a bare column's 0) and the halves would miss each other by
+/// that much; wrapped, every half starts from 0.
+fn half(content: impl IntoElement) -> Div {
+    div().flex().flex_1().min_w_0().child(content)
+}
+
 /// A card's caption: small and muted, like the facts row's.
 fn caption(theme: &Theme, text: impl Into<SharedString>) -> Div {
     div()
@@ -585,8 +595,8 @@ impl Render for HomePage {
                 .h_flex()
                 .items_stretch()
                 .gap_4()
-                .child(delay_card)
-                .child(rates)
+                .child(half(delay_card))
+                .child(half(rates))
         } else {
             div().v_flex().gap_4().child(delay_card).child(rates)
         };
@@ -858,7 +868,7 @@ impl Render for HomePage {
                     .child(connections_card)
                     .child(totals_card),
             )
-            .child(traffic_card);
+            .child(half(traffic_card));
 
         let body = div()
             .v_flex()
