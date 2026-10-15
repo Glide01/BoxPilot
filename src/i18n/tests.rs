@@ -158,7 +158,6 @@ fn plain(t: &Strings) -> Vec<&'static str> {
         t.updates.check_automatically,
         t.updates.rate_limited,
         t.config_viewer.preview_hint,
-        t.chart.last_two_minutes,
         t.tray.show,
         t.tray.quit,
         t.dialogs.import_title,

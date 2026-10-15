@@ -6,12 +6,14 @@ pub mod connection_details;
 pub mod connections_view;
 pub mod deeplink;
 pub mod groups_view;
+pub mod home_view;
 pub mod jsonc;
 pub mod lan;
 pub mod log_columns;
 #[cfg(target_os = "linux")]
 pub mod desktop_integration;
 pub mod log_merge;
+pub mod minute_series;
 pub mod network_tools;
 pub mod orchestration;
 #[cfg(unix)]

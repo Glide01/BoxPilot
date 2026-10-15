@@ -46,9 +46,6 @@ pub struct RootView {
     /// Last active profile name — the status tile's second line while
     /// disconnected; re-rendered when it changes, like `starting`.
     profile_name: Option<String>,
-    /// Whether the sidebar rail shows its labels (the button at the rail's
-    /// foot). Collapsed — icons only — at launch.
-    sidebar_expanded: bool,
     active_page: ActivePage,
     home: Entity<HomePage>,
     groups: Entity<GroupsPage>,
@@ -231,7 +228,6 @@ impl RootView {
             starting,
             update_badge,
             profile_name,
-            sidebar_expanded: false,
             active_page: ActivePage::Home,
             home,
             groups,
@@ -428,7 +424,6 @@ impl Render for RootView {
         let fg = theme.foreground;
         let muted = theme.muted_foreground;
         let colors = SidebarColors {
-            rail: chrome,
             fg,
             muted,
             accent: theme.primary,
@@ -448,13 +443,6 @@ impl Render for RootView {
                 _ => StatusDetail::None,
             }
         };
-        let expanded = self.sidebar_expanded;
-        // Collapsed, the button's tooltip carries the status beside it;
-        // expanded, it says what a click does, as Home's does.
-        let tip: Option<SharedString> = (!expanded).then(|| match detail.line() {
-            Some(line) => format!("{}\n{line}", status.label()).into(),
-            None => status.label().into(),
-        });
         let app_state = self.app_state.clone();
         let power = power_button(
             "sidebar-power",
@@ -468,11 +456,12 @@ impl Render for RootView {
         .on_click(move |_, _, cx| {
             app_state.update(cx, |state, cx| state.toggle_process(cx));
         })
-        .tooltip(move |window, cx| match &tip {
-            Some(tip) => Tooltip::new(tip.clone()).build(window, cx),
-            None => Tooltip::new(status.power_action_label())
+        // The status is beside it: the tooltip says what a click does, as
+        // Home's does.
+        .tooltip(move |window, cx| {
+            Tooltip::new(status.power_action_label())
                 .action(&ToggleProcess, Some(KEY_CONTEXT))
-                .build(window, cx),
+                .build(window, cx)
         })
         .into_any_element();
         let status = SidebarStatus {
@@ -506,7 +495,7 @@ impl Render for RootView {
         let strip = title_bar::draws_strip(window);
         let title_bar = strip.then(|| title_bar::title_bar(brand(true), window, cx));
         let header = (!strip).then(|| {
-            let name = rail_brand(expanded, colors);
+            let name = rail_brand(colors);
             if cfg!(target_os = "macos") {
                 title_bar::sidebar_top(name, window, cx).into_any_element()
             } else {
@@ -525,7 +514,6 @@ impl Render for RootView {
             .w_full()
             .child(sidebar(
                 header,
-                expanded,
                 self.active_page,
                 status,
                 colors,
@@ -537,16 +525,6 @@ impl Render for RootView {
                     settings: self.update_badge,
                 },
                 on_nav,
-                {
-                    let root = cx.entity().downgrade();
-                    move |_, cx: &mut App| {
-                        root.update(cx, |this, cx| {
-                            this.sidebar_expanded = !this.sidebar_expanded;
-                            cx.notify();
-                        })
-                        .ok();
-                    }
-                },
                 power,
             ))
             // Cached: the page re-renders only when it notifies (each page

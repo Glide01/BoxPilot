@@ -1,10 +1,11 @@
-//! Left navigation rail: the app's mark at the top (unless BoxPilot's
-//! title bar shows it), the pages as icons in groups set apart by a short
-//! rule, and sing-box's power button at the bottom. Expanded, the rail
-//! grows to show each icon's label, the app's name beside the mark and the
-//! status beside the button; collapsed, those are tooltips. Pure function —
-//! `RootView` supplies the active page, status, badges, whether the rail is
-//! expanded, and the navigation callback.
+//! Left navigation: the app's mark at the top (unless BoxPilot's title bar
+//! shows it), Home, then the pages in groups under small headings — what
+//! sing-box proxies (Groups, Connections), the endpoints the running config
+//! brings (Tailscale, VPN), what helps troubleshoot it (Logs, Tools) — and at
+//! the foot BoxPilot's own Profiles and Settings over sing-box's power
+//! button with its status beside it. Always this wide, every label shown:
+//! it never collapses to icons. Pure function — `RootView` supplies the
+//! active page, status, badges and the navigation callback.
 
 use crate::i18n::s;
 use crate::ui::pages::ActivePage;
@@ -12,25 +13,20 @@ use crate::ui::theme::PANEL_INSET;
 use crate::ui::widgets::text_centered;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{tooltip::Tooltip, Icon, IconName, StyledExt};
+use gpui_component::{Icon, IconName, StyledExt};
 
-/// The collapsed rail: an item and its padding either side — wider on
-/// macOS, where the traffic lights sit over it (from 12 px, three 14 px
-/// buttons 20 px apart, so out to 66 px): they keep as much room from the
-/// content panel as from the window's edge rather than running into it.
-pub const RAIL_WIDTH: f32 = if cfg!(target_os = "macos") { 80. } else { 64. };
-/// The expanded rail, wide enough for the longest label.
-pub const RAIL_EXPANDED_WIDTH: f32 = 208.;
-/// A nav item (and the mark and the power button's tile) is a square
-/// this size.
-const ITEM_SIZE: f32 = 40.;
-/// An expanded nav item's icon from its tile's edge (padding and border).
+/// The sidebar's width, wide enough for the longest label. On macOS the
+/// traffic lights sit over its top (out to 66 px), above the mark.
+pub const SIDEBAR_WIDTH: f32 = 208.;
+/// A nav item's height (and the mark's and the power button's tile).
+const ITEM_SIZE: f32 = 36.;
+/// A nav item's icon from its tile's edge (padding and border).
 const NAV_INSET: f32 = 11.;
 /// The sidebar's power button; the two lines beside it are set tight to
 /// make a block its height.
 pub const POWER_SIZE: f32 = 32.;
 pub const POWER_ICON_SIZE: f32 = 14.;
-const ITEM_RADIUS: f32 = 10.;
+const ITEM_RADIUS: f32 = 9.;
 const ICON_SIZE: f32 = 18.;
 
 /// One speed beside the power button: direction arrow + formatted rate
@@ -63,18 +59,6 @@ pub enum StatusDetail {
     /// rates it no longer sends.
     Reconnecting,
     None,
-}
-
-impl StatusDetail {
-    /// One line, for the collapsed rail's tooltip.
-    pub fn line(&self) -> Option<String> {
-        match self {
-            StatusDetail::Speed(down, up) => Some(format!("↓ {down}  ↑ {up}")),
-            StatusDetail::Profile(name) => Some(name.clone()),
-            StatusDetail::Reconnecting => Some(s().status.reconnecting.to_string()),
-            StatusDetail::None => None,
-        }
-    }
 }
 
 /// sing-box's state, in words beside the power button.
@@ -116,64 +100,45 @@ pub fn brand(compact: bool) -> Div {
         .child(name.font_weight(FontWeight::SEMIBOLD).child("BoxPilot"))
 }
 
-/// The rail's head: the app icon and, `expanded`, the app's name.
-pub fn rail_brand(expanded: bool, colors: SidebarColors) -> Div {
-    let tile = div()
-        .flex_none()
-        .size(px(ITEM_SIZE))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(img("brand/icon.png").size(px(34.)));
+/// The sidebar's head: the app icon and name.
+pub fn rail_brand(colors: SidebarColors) -> Div {
     div()
         .h_flex()
         .items_center()
-        .gap_3()
-        .child(tile)
-        .when(expanded, |head| {
-            head.child(
-                div()
-                    .text_base()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(colors.fg)
-                    .child("BoxPilot"),
-            )
-        })
+        .gap_2p5()
+        .pl(px(NAV_INSET - 6.))
+        .child(img("brand/icon.png").size(px(30.)).flex_none())
+        .child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.fg)
+                .child("BoxPilot"),
+        )
 }
 
-/// One nav entry: a square icon tile, or icon and label in a row when
-/// `expanded`. The selected one is raised; collapsed, the label is the
-/// tooltip.
-#[allow(clippy::too_many_arguments)]
+/// One nav entry: icon and label in a row; the selected one is raised.
 fn nav_item(
     page: ActivePage,
-    label: &'static str,
     icon: Icon,
     selected: bool,
     badge: bool,
-    expanded: bool,
     colors: SidebarColors,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let (tile, fg, muted) = (colors.tile, colors.fg, colors.muted);
     div()
         .id(("nav", page as usize))
-        .relative()
         .flex_none()
+        .w_full()
         .h(px(ITEM_SIZE))
-        .flex()
-        .flex_row()
+        .h_flex()
         .items_center()
+        .gap_3()
+        .px(px(NAV_INSET - 1.))
         .rounded(px(ITEM_RADIUS))
         .border_1()
         .cursor_pointer()
-        .map(|item| {
-            if expanded {
-                item.w_full().px(px(NAV_INSET - 1.)).gap_3()
-            } else {
-                item.w(px(ITEM_SIZE)).justify_center()
-            }
-        })
         .map(|item| {
             if selected {
                 item.bg(tile)
@@ -182,56 +147,50 @@ fn nav_item(
                     .font_weight(FontWeight::MEDIUM)
             } else {
                 item.border_color(transparent_black())
-                    .text_color(muted)
-                    .hover(move |style| style.bg(tile.opacity(0.6)).text_color(fg))
+                    .text_color(fg)
+                    .hover(move |style| style.bg(tile.opacity(0.6)))
             }
         })
         .child(
             icon.size(px(ICON_SIZE))
                 .flex_none()
-                .text_color(if selected { fg } else { muted }),
+                .text_color(if selected { colors.accent } else { muted }),
         )
-        .when(expanded, |item| {
-            item.child(div().flex_1().min_w_0().truncate().text_sm().child(label))
-        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .child(page.label()),
+        )
         .when(badge, |item| {
-            let dot = div()
-                .size(px(7.))
-                .rounded_full()
-                .bg(colors.accent)
-                .border_1()
-                .border_color(colors.rail);
-            item.child(if expanded {
-                dot.flex_none()
-            } else {
-                dot.absolute().top(px(6.)).right(px(6.))
-            })
-        })
-        .when(!expanded, |item| {
-            item.tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+            item.child(
+                div()
+                    .flex_none()
+                    .size(px(7.))
+                    .rounded_full()
+                    .bg(colors.accent),
+            )
         })
         .on_click(move |_, window, cx| on_nav(page, window, cx))
 }
 
-/// sing-box's power button, Home's in small, and beside it (expanded)
-/// two tight lines as tall as the button: the status and the profile, or
-/// the speeds. Collapsed, the button stands alone; its tooltip says the
-/// rest.
-fn status_power(
-    power: AnyElement,
-    status: SidebarStatus,
-    expanded: bool,
-    colors: SidebarColors,
-) -> Div {
-    let tile = div()
+/// A small heading over a group of nav entries.
+fn section_heading(title: &'static str, colors: SidebarColors) -> Div {
+    div()
         .flex_none()
-        .h(px(ITEM_SIZE))
-        .flex()
-        .flex_row()
-        .items_center();
-    if !expanded {
-        return tile.w(px(ITEM_SIZE)).justify_center().child(power);
-    }
+        .pt_4()
+        .pb_1()
+        .px(px(NAV_INSET))
+        .text_xs()
+        .text_color(colors.muted)
+        .child(title)
+}
+
+/// sing-box's power button, Home's in small, and beside it two tight lines
+/// as tall as the button: the status and the profile, or the speeds.
+fn status_power(power: AnyElement, status: SidebarStatus, colors: SidebarColors) -> Div {
     let label = || {
         div()
             .text_sm()
@@ -264,7 +223,12 @@ fn status_power(
     // The text where the nav labels start; the button a little left of
     // the nav icons' axis, to leave the text room.
     let inset = NAV_INSET + ICON_SIZE / 2. - POWER_SIZE / 2. - 2.;
-    tile.w_full()
+    div()
+        .flex_none()
+        .w_full()
+        .h(px(40.))
+        .h_flex()
+        .items_center()
         .pl(px(inset))
         .gap(px(NAV_INSET + ICON_SIZE + 12. - inset - POWER_SIZE))
         .child(power)
@@ -274,178 +238,86 @@ fn status_power(
 #[allow(clippy::too_many_arguments)]
 pub fn sidebar(
     header: Option<AnyElement>,
-    expanded: bool,
     active: ActivePage,
     status: SidebarStatus,
     colors: SidebarColors,
     optional: OptionalPages,
     badges: Badges,
     on_nav: impl Fn(ActivePage, &mut Window, &mut App) + Clone + 'static,
-    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
     power: AnyElement,
 ) -> impl IntoElement {
     let nav = &s().nav;
-    // Overview / traffic, then what sing-box runs from and says, then the
-    // app's own tools and settings.
-    let groups: [Vec<(ActivePage, &'static str, Icon)>; 3] = [
-        vec![
-            (
-                ActivePage::Home,
-                nav.home,
-                Icon::new(IconName::LayoutDashboard),
-            ),
-            (ActivePage::Groups, nav.groups, Icon::new(IconName::Globe)),
-            (
-                ActivePage::Connections,
-                nav.connections,
-                Icon::new(IconName::Network),
-            ),
-            (
-                ActivePage::Tailscale,
-                nav.tailscale,
-                Icon::new(IconName::Frame),
-            ),
+    let item = |page: ActivePage, icon: Icon| {
+        let badge = page == ActivePage::Settings && badges.settings;
+        nav_item(page, icon, active == page, badge, colors, on_nav.clone()).into_any_element()
+    };
+
+    let mut items = vec![item(ActivePage::Home, Icon::new(IconName::LayoutDashboard))];
+    items.push(section_heading(nav.section_proxy, colors).into_any_element());
+    items.push(item(ActivePage::Groups, Icon::new(IconName::Globe)));
+    items.push(item(ActivePage::Connections, Icon::new(IconName::Network)));
+    // Tailscale / VPN are offered only while the running config has them;
+    // their heading with them.
+    if optional.tailscale || optional.vpn {
+        items.push(section_heading(nav.section_endpoints, colors).into_any_element());
+        if optional.tailscale {
+            items.push(item(ActivePage::Tailscale, Icon::new(IconName::Frame)));
+        }
+        if optional.vpn {
             // gauge.svg / shield-check.svg aren't in gpui-component's
             // IconName set; AppAssets serves them.
-            (
+            items.push(item(
                 ActivePage::Vpn,
-                nav.vpn,
                 Icon::empty().path("icons/shield-check.svg"),
-            ),
-        ],
-        vec![
-            (
-                ActivePage::Profiles,
-                nav.profiles,
-                Icon::new(IconName::GalleryVerticalEnd),
-            ),
-            (
-                ActivePage::Logs,
-                nav.logs,
-                Icon::new(IconName::SquareTerminal),
-            ),
-        ],
-        vec![
-            (
-                ActivePage::Tools,
-                nav.tools,
-                Icon::empty().path("icons/gauge.svg"),
-            ),
-            (
-                ActivePage::Settings,
-                nav.settings,
-                Icon::new(IconName::Settings),
-            ),
-        ],
-    ];
-
-    let mut items: Vec<AnyElement> = Vec::new();
-    for (ix, group) in groups.into_iter().enumerate() {
-        if ix > 0 {
-            items.push(
-                div()
-                    .flex_none()
-                    .my_2()
-                    .h(px(1.))
-                    .map(|rule| {
-                        if expanded {
-                            rule.w_full()
-                        } else {
-                            rule.w(px(24.))
-                        }
-                    })
-                    .bg(colors.tile_border)
-                    .into_any_element(),
-            );
-        }
-        // Tailscale / VPN are offered only while the running config needs
-        // them.
-        for (page, label, icon) in group.into_iter().filter(|(page, ..)| match page {
-            ActivePage::Tailscale => optional.tailscale,
-            ActivePage::Vpn => optional.vpn,
-            _ => true,
-        }) {
-            let badge = match page {
-                ActivePage::Settings => badges.settings,
-                _ => false,
-            };
-            items.push(
-                nav_item(
-                    page,
-                    label,
-                    icon,
-                    active == page,
-                    badge,
-                    expanded,
-                    colors,
-                    on_nav.clone(),
-                )
-                .into_any_element(),
-            );
+            ));
         }
     }
+    items.push(section_heading(nav.section_troubleshoot, colors).into_any_element());
+    items.push(item(ActivePage::Logs, Icon::new(IconName::SquareTerminal)));
+    items.push(item(
+        ActivePage::Tools,
+        Icon::empty().path("icons/gauge.svg"),
+    ));
 
     div()
         .flex_none()
         .h_full()
-        .w(px(if expanded {
-            RAIL_EXPANDED_WIDTH
-        } else {
-            RAIL_WIDTH
-        }))
+        .w(px(SIDEBAR_WIDTH))
         .v_flex()
-        .when(!expanded, |rail| rail.items_center())
         .px_3()
         .pt_3()
         // The power button's tile ends on the content panel's bottom line.
         .pb(px(PANEL_INSET))
-        .gap_1()
+        .gap_0p5()
         .text_color(colors.fg)
-        .when_some(header, |rail, header| rail.child(header).child(div().h_4()))
+        .when_some(header, |rail, header| rail.child(header).child(div().h_3()))
         .children(items)
-        .child(div().flex_1())
-        .child(rail_toggle(expanded, colors, on_toggle))
-        .child(status_power(power, status, expanded, colors))
-}
-
-/// Shows or hides the labels beside the nav icons.
-fn rail_toggle(
-    expanded: bool,
-    colors: SidebarColors,
-    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    let (tile, fg, muted) = (colors.tile, colors.fg, colors.muted);
-    let icon = if expanded {
-        IconName::PanelLeftClose
-    } else {
-        IconName::PanelLeftOpen
-    };
-    div()
-        .id("rail-toggle")
-        .flex_none()
-        .size(px(ITEM_SIZE))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(ITEM_RADIUS))
-        .cursor_pointer()
-        .text_color(muted)
-        .hover(move |style| style.bg(tile.opacity(0.6)).text_color(fg))
-        .child(Icon::new(icon).size(px(ICON_SIZE)))
-        .tooltip(|window, cx| Tooltip::new(s().nav.toggle_sidebar).build(window, cx))
-        .on_click(move |_, window, cx| on_toggle(window, cx))
+        .child(div().flex_1().min_h_4())
+        .child(item(
+            ActivePage::Profiles,
+            Icon::new(IconName::GalleryVerticalEnd),
+        ))
+        .child(item(ActivePage::Settings, Icon::new(IconName::Settings)))
+        .child(
+            div()
+                .flex_none()
+                .my_2()
+                .mx_1()
+                .h(px(1.))
+                .bg(colors.tile_border),
+        )
+        .child(status_power(power, status, colors))
 }
 
 /// The colours the sidebar takes from the theme.
 #[derive(Clone, Copy)]
 pub struct SidebarColors {
-    /// The rail itself (the window chrome).
-    pub rail: Hsla,
     pub fg: Hsla,
     pub muted: Hsla,
-    /// The update dot.
+    /// The selected item's icon and the update dot.
     pub accent: Hsla,
-    /// The selected item's raised tile, and the rules between groups.
+    /// The selected item's raised tile.
     pub tile: Hsla,
+    /// Its border, and the rule over the power button.
     pub tile_border: Hsla,
 }

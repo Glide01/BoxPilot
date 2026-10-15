@@ -4,6 +4,7 @@
 
 use super::transport::{ApiError, IDLE_STREAM_READ_TIMEOUT};
 use super::{pb, SingBoxApi};
+use crate::core::connections_view::is_direct_or_dns;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -245,7 +246,19 @@ impl ConnectionTable {
     /// - CLOSED takes the final state when given (totals included), else
     ///   just stamps `closed_at`; rates drop to 0. A repeat CLOSED keeps the
     ///   first `closed_at`. Unknown ids without a connection are ignored.
-    pub fn apply(&mut self, batch: ConnectionEvents) {
+    ///
+    /// Returns the bytes the batch says proxied connections (any but
+    /// `connections_view::is_direct_or_dns`) moved since the last one: the
+    /// UPDATE deltas, plus what a CLOSED's final totals add to the last
+    /// known ones. What a `reset` or a NEW brings counts nothing: it moved
+    /// before this batch.
+    pub fn apply(&mut self, batch: ConnectionEvents) -> u64 {
+        let mut proxied: u64 = 0;
+        let mut count = |connection: &Connection, bytes: u64| {
+            if !is_direct_or_dns(connection) {
+                proxied = proxied.saturating_add(bytes);
+            }
+        };
         if batch.reset {
             self.connections.clear();
         }
@@ -266,6 +279,7 @@ impl ConnectionTable {
                             connection.downlink = downlink_delta;
                             connection.uplink_total += uplink_delta;
                             connection.downlink_total += downlink_delta;
+                            count(connection, uplink_delta.saturating_add(downlink_delta));
                         }
                     }
                 }
@@ -273,11 +287,18 @@ impl ConnectionTable {
                     closed_at,
                     connection,
                 } => {
-                    let earlier = self
-                        .connections
-                        .get(&event.id)
-                        .and_then(|known| known.closed_at);
+                    let known = self.connections.get(&event.id);
+                    let earlier = known.and_then(|known| known.closed_at);
                     let closed_at = earlier.unwrap_or(closed_at);
+                    // The last stretch an open connection moved before it
+                    // closed, if sing-box sent the final totals.
+                    if let (Some(known), Some(last)) = (known, &connection) {
+                        if !known.is_closed() {
+                            let before = known.uplink_total.saturating_add(known.downlink_total);
+                            let after = last.uplink_total.saturating_add(last.downlink_total);
+                            count(last, after.saturating_sub(before));
+                        }
+                    }
                     let entry = match connection {
                         Some(connection) => {
                             self.connections.insert(event.id.clone(), connection);
@@ -294,6 +315,7 @@ impl ConnectionTable {
             }
         }
         self.evict_closed();
+        proxied
     }
 
     /// Drop the oldest-closed connections beyond `CLOSED_CONNECTIONS_LIMIT`.
@@ -398,6 +420,39 @@ mod tests {
 
     fn batch(reset: bool, events: Vec<ConnectionEvent>) -> ConnectionEvents {
         ConnectionEvents { reset, events }
+    }
+
+    #[test]
+    fn apply_reports_the_bytes_proxied_connections_moved() {
+        let mut table = ConnectionTable::new();
+        // What a reset or a NEW brings moved before the batch.
+        assert_eq!(table.apply(batch(true, vec![new_event("a")])), 0);
+        let mut direct = Connection::from_proto(proto_connection("d"));
+        direct.outbound_type = "direct".into();
+        let direct_new = ConnectionEvent {
+            id: "d".into(),
+            kind: ConnectionEventKind::New(direct.clone()),
+        };
+        assert_eq!(table.apply(batch(false, vec![direct_new])), 0);
+        // Deltas count for the proxied one only.
+        assert_eq!(
+            table.apply(batch(false, vec![update("a", 5, 7), update("d", 100, 100)])),
+            12
+        );
+        // A close with final totals adds what moved since the last update:
+        // known 15 + 27 = 42, final 20 + 30 = 50.
+        let mut last = Connection::from_proto(proto_connection("a"));
+        last.uplink_total = 20;
+        last.downlink_total = 30;
+        assert_eq!(
+            table.apply(batch(false, vec![closed("a", 9_000, Some(last.clone()))])),
+            8
+        );
+        // A repeat close counts nothing more.
+        assert_eq!(
+            table.apply(batch(false, vec![closed("a", 9_500, Some(last))])),
+            0
+        );
     }
 
     #[test]
