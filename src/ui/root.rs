@@ -17,7 +17,7 @@ use crate::ui::sidebar::{
     brand, rail_brand, sidebar, Badges, OptionalPages, SidebarColors, SidebarStatus, StatusDetail,
     POWER_ICON_SIZE as SIDEBAR_POWER_ICON_SIZE, POWER_SIZE as SIDEBAR_POWER_SIZE,
 };
-use crate::ui::theme::{PANEL_INSET, PANEL_PADDING_X, PANEL_PADDING_Y, PANEL_RADIUS};
+use crate::ui::theme::{PANEL_INSET, PANEL_PADDING_X, PANEL_PADDING_Y};
 use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
 use crate::ui::widgets::power_button;
@@ -46,9 +46,6 @@ pub struct RootView {
     /// Last active profile name — the status tile's second line while
     /// disconnected; re-rendered when it changes, like `starting`.
     profile_name: Option<String>,
-    /// Whether the sidebar rail shows its labels (the button at the rail's
-    /// foot). Collapsed — icons only — at launch.
-    sidebar_expanded: bool,
     active_page: ActivePage,
     home: Entity<HomePage>,
     groups: Entity<GroupsPage>,
@@ -231,7 +228,6 @@ impl RootView {
             starting,
             update_badge,
             profile_name,
-            sidebar_expanded: false,
             active_page: ActivePage::Home,
             home,
             groups,
@@ -428,14 +424,12 @@ impl Render for RootView {
         let fg = theme.foreground;
         let muted = theme.muted_foreground;
         let colors = SidebarColors {
-            rail: chrome,
             fg,
             muted,
             accent: theme.primary,
             tile: theme.sidebar_accent,
             tile_border: theme.border,
         };
-        let (panel_bg, panel_border) = (theme.background, theme.border);
         // 电源按钮旁的文字:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
         let detail = if self.app_state.read(cx).api_stalled(cx) {
             StatusDetail::Reconnecting
@@ -448,13 +442,6 @@ impl Render for RootView {
                 _ => StatusDetail::None,
             }
         };
-        let expanded = self.sidebar_expanded;
-        // Collapsed, the button's tooltip carries the status beside it;
-        // expanded, it says what a click does, as Home's does.
-        let tip: Option<SharedString> = (!expanded).then(|| match detail.line() {
-            Some(line) => format!("{}\n{line}", status.label()).into(),
-            None => status.label().into(),
-        });
         let app_state = self.app_state.clone();
         let power = power_button(
             "sidebar-power",
@@ -468,11 +455,12 @@ impl Render for RootView {
         .on_click(move |_, _, cx| {
             app_state.update(cx, |state, cx| state.toggle_process(cx));
         })
-        .tooltip(move |window, cx| match &tip {
-            Some(tip) => Tooltip::new(tip.clone()).build(window, cx),
-            None => Tooltip::new(status.power_action_label())
+        // The status is beside it: the tooltip says what a click does, as
+        // Home's does.
+        .tooltip(move |window, cx| {
+            Tooltip::new(status.power_action_label())
                 .action(&ToggleProcess, Some(KEY_CONTEXT))
-                .build(window, cx),
+                .build(window, cx)
         })
         .into_any_element();
         let status = SidebarStatus {
@@ -506,7 +494,7 @@ impl Render for RootView {
         let strip = title_bar::draws_strip(window);
         let title_bar = strip.then(|| title_bar::title_bar(brand(true), window, cx));
         let header = (!strip).then(|| {
-            let name = rail_brand(expanded, colors);
+            let name = rail_brand(colors);
             if cfg!(target_os = "macos") {
                 title_bar::sidebar_top(name, window, cx).into_any_element()
             } else {
@@ -525,7 +513,6 @@ impl Render for RootView {
             .w_full()
             .child(sidebar(
                 header,
-                expanded,
                 self.active_page,
                 status,
                 colors,
@@ -537,23 +524,14 @@ impl Render for RootView {
                     settings: self.update_badge,
                 },
                 on_nav,
-                {
-                    let root = cx.entity().downgrade();
-                    move |_, cx: &mut App| {
-                        root.update(cx, |this, cx| {
-                            this.sidebar_expanded = !this.sidebar_expanded;
-                            cx.notify();
-                        })
-                        .ok();
-                    }
-                },
                 power,
             ))
             // Cached: the page re-renders only when it notifies (each page
             // observes the entities it reads), not on every root re-render —
             // the sidebar's speed line alone re-renders the root once a
             // second while connected.
-            // The page sits in a raised panel inset from the window chrome.
+            // The page sits straight on the window's canvas, beside the
+            // sidebar: no panel frames it, its cards stand on their own.
             .child(
                 div()
                     .flex_1()
@@ -562,11 +540,6 @@ impl Render for RootView {
                     .when(!strip, |panel| panel.my(px(PANEL_INSET)))
                     .mr(px(PANEL_INSET))
                     .v_flex()
-                    .rounded(px(PANEL_RADIUS))
-                    .border_1()
-                    .border_color(panel_border)
-                    .bg(panel_bg)
-                    .shadow_xs()
                     .overflow_hidden()
                     .px(px(PANEL_PADDING_X))
                     .py(px(PANEL_PADDING_Y))

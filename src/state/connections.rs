@@ -4,6 +4,7 @@
 //! stops (`AppState::sync_run_phase`), the same way `Traffic` and
 //! `ProxyGroups` are driven.
 
+use crate::core::minute_series::{unix_minute, MinuteSeries};
 use crate::core::settings::{StatusEvent, StatusLevel};
 use crate::core::singbox_api::{ConnectionEvents, ConnectionTable, SingBoxApi};
 use crate::state::drain::{next_batch_or, Wake};
@@ -12,7 +13,7 @@ use gpui::{Context, EventEmitter, Task};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Once a batch arrives, how long the drain task lets the rest of a burst
 /// queue up before applying it. sing-box sends rate updates once per
@@ -40,6 +41,10 @@ pub struct Connections {
     /// Whether a streaming session is up (sing-box running). The page tells
     /// "not connected" from "no connections" with it.
     pub live: bool,
+    /// Bytes proxied connections moved per minute over the last hour (what
+    /// `ConnectionTable::apply` reports): the Home traffic chart's
+    /// "Proxied". Cleared with the table.
+    pub proxied_minutes: MinuteSeries,
     /// sing-box API 句柄(端口 + 本次运行的 secret)。AppState 每次启动
     /// sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
@@ -60,6 +65,7 @@ impl Connections {
             table: ConnectionTable::new(),
             revision: 0,
             live: false,
+            proxied_minutes: MinuteSeries::default(),
             api,
             running: Arc::new(AtomicBool::new(false)),
             _drain: None,
@@ -85,6 +91,7 @@ impl Connections {
         let running = Arc::new(AtomicBool::new(true));
         self.running = running.clone();
         self.table.clear();
+        self.proxied_minutes.clear();
         self.revision += 1;
         self.live = true;
 
@@ -133,8 +140,10 @@ impl Connections {
                     if changed {
                         // Batches apply in order; a `reset` mid-queue wipes
                         // what came before it, as it should.
+                        let minute = unix_minute(SystemTime::now());
                         for batch in batches {
-                            state.table.apply(batch);
+                            let proxied = state.table.apply(batch);
+                            state.proxied_minutes.add(minute, proxied);
                         }
                         state.revision += 1;
                     }
@@ -162,6 +171,7 @@ impl Connections {
         self.running.store(false, Ordering::SeqCst);
         self._drain = None;
         self.table.clear();
+        self.proxied_minutes.clear();
         self.revision += 1;
         self.live = false;
         cx.notify();

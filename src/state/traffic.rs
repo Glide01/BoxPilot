@@ -10,6 +10,7 @@
 //! every second, idle or not, so a run with none for `STALL_AFTER` has an
 //! API that stopped answering (`stalled`), and the API pages say so.
 
+use crate::core::minute_series::{unix_minute, MinuteSeries};
 use crate::core::singbox_api::{ApiError, RuntimeStatus, SingBoxApi};
 use crate::state::drain::{next_batch_or, Wake};
 use futures_channel::mpsc;
@@ -18,7 +19,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Once a sample arrives, how long the drain task waits for stragglers
 /// before applying. Samples come ~1/sec, so this is almost always a batch of
@@ -72,6 +73,9 @@ pub struct Traffic {
     /// lands here (see `ingest`); cleared with the rest of the readout when a
     /// run starts or stops.
     history: VecDeque<RatePoint>,
+    /// Bytes moved (up + down) per minute over the last hour, from the same
+    /// samples: the Home traffic chart's "All". Cleared with the history.
+    minutes: MinuteSeries,
     /// sing-box API 句柄(端口 + 本次运行的 secret)。`start()` 从它订阅
     /// `SubscribeStatus`;AppState 每次启动 sing-box 前经 `set_api` 换新句柄。
     api: SingBoxApi,
@@ -97,6 +101,7 @@ impl Traffic {
             version: None,
             stalled: false,
             history: VecDeque::with_capacity(HISTORY_LEN),
+            minutes: MinuteSeries::default(),
             api,
             running: Arc::new(AtomicBool::new(false)),
             _drain: None,
@@ -225,7 +230,10 @@ impl Traffic {
     /// Each one also joins the rate history, so a backlog folded into one
     /// batch still plots one point per second.
     fn ingest(&mut self, samples: Vec<RuntimeStatus>) {
+        let minute = unix_minute(SystemTime::now());
         for sample in samples {
+            self.minutes
+                .add(minute, sample.uplink.saturating_add(sample.downlink));
             if self.history.len() == HISTORY_LEN {
                 self.history.pop_front();
             }
@@ -249,6 +257,12 @@ impl Traffic {
         &self.history
     }
 
+    /// Bytes moved per minute over the last hour of this run (see
+    /// `MinuteSeries`).
+    pub fn minutes(&self) -> &MinuteSeries {
+        &self.minutes
+    }
+
     fn apply(&mut self, status: RuntimeStatus) {
         self.up = status.uplink;
         self.down = status.downlink;
@@ -259,6 +273,7 @@ impl Traffic {
     fn reset(&mut self) {
         self.apply(RuntimeStatus::default());
         self.history.clear();
+        self.minutes.clear();
         self.started_at = None;
         self.version = None;
         self.stalled = false;

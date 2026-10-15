@@ -14,8 +14,8 @@ use gpui::{px, rgb, App, Entity, Hsla, Subscription, Window, WindowAppearance};
 use gpui_component::{Theme, ThemeMode};
 
 /// The colours BoxPilot lays over gpui-component's base theme: the blue
-/// accent, and the two surfaces of the window — the chrome the sidebar sits
-/// on and the raised content panel every page draws in.
+/// accent, and the two surfaces of the window — the canvas the sidebar and
+/// every page sit on, and the cards raised on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AccentPalette {
     pub primary: Hsla,
@@ -23,24 +23,24 @@ pub struct AccentPalette {
     pub primary_active: Hsla,
     /// Text / icons on `primary` (buttons, the Home power button).
     pub primary_foreground: Hsla,
-    /// The window chrome: the icon rail and the frame around the content
-    /// panel.
+    /// The window's canvas, behind the sidebar and the pages alike.
     pub sidebar: Hsla,
-    /// The content panel, cards, inputs and popovers.
+    /// Cards, inputs and popovers on the canvas.
     pub background: Hsla,
     pub border: Hsla,
-    /// The track of segmented controls: set into the panel, so the chosen
-    /// segment (drawn in `background`) reads as raised in both modes.
+    /// The track of segmented controls; the chosen segment is filled grey
+    /// on it (`widgets::segmented`).
     pub segmented_track: Hsla,
-    /// The selected sidebar entry: a raised tile in the content panel's
-    /// colour, its text in the foreground colour (the icon takes the accent).
+    /// The selected sidebar entry: a tile a shade darker (lighter in dark
+    /// mode) than the canvas.
     pub sidebar_accent: Hsla,
     pub sidebar_accent_foreground: Hsla,
 }
 
-/// Blue accents for `dark` or light mode. In dark mode the content panel
-/// is the darkest surface and the chrome around it a step lighter; in light
-/// mode a white panel sits on grey chrome. Dark brightens the primary one
+/// Blue accents for `dark` or light mode, after Surge's Activity view: no
+/// panel framing the page, the sidebar and pages share one canvas and the
+/// cards stand on it, white on soft grey in light mode, a lighter grey on
+/// near-black in dark. Dark brightens the primary one
 /// step (blue-500, hovering lighter) so it holds up against a near-black
 /// background, and keeps white text on it — the dark base theme's own
 /// primary foreground is near-black, made for its near-white primary.
@@ -51,13 +51,13 @@ pub fn accent_palette(dark: bool) -> AccentPalette {
             primary_hover: rgb(0x60A5FA).into(),  // blue-400
             primary_active: rgb(0x2563EB).into(), // blue-600
             primary_foreground: rgb(0xFFFFFF).into(),
-            // A near-black panel set in a lighter frame: the page reads as
-            // a canvas, the icon rail around it as chrome.
-            sidebar: rgb(0x141417).into(),
-            background: rgb(0x0B0B0D).into(),
-            border: rgb(0x232327).into(),
-            segmented_track: rgb(0x1C1C20).into(),
-            sidebar_accent: rgb(0x26262B).into(),
+            // One dark canvas behind sidebar and pages alike; cards a step
+            // lighter on it.
+            sidebar: rgb(0x1C1C1E).into(),
+            background: rgb(0x2C2C2E).into(),
+            border: rgb(0x3A3A3C).into(),
+            segmented_track: rgb(0x3A3A3C).into(),
+            sidebar_accent: rgb(0x2E2E31).into(),
             sidebar_accent_foreground: rgb(0xFAFAFA).into(),
         }
     } else {
@@ -66,18 +66,20 @@ pub fn accent_palette(dark: bool) -> AccentPalette {
             primary_hover: rgb(0x1D4ED8).into(),  // blue-700
             primary_active: rgb(0x1E40AF).into(), // blue-800
             primary_foreground: rgb(0xFFFFFF).into(),
-            sidebar: rgb(0xF4F4F5).into(), // zinc-100
+            // A soft grey canvas behind sidebar and pages alike; white cards
+            // on it.
+            sidebar: rgb(0xEFF0F4).into(),
             background: rgb(0xFFFFFF).into(),
-            border: rgb(0xE4E4E7).into(),          // zinc-200
-            segmented_track: rgb(0xF4F4F5).into(), // zinc-100
-            sidebar_accent: rgb(0xFFFFFF).into(),
+            border: rgb(0xE5E5EA).into(),
+            segmented_track: rgb(0xEDEDF0).into(),
+            sidebar_accent: rgb(0xE1E2E8).into(),
             sidebar_accent_foreground: rgb(0x0A0A0A).into(),
         }
     }
 }
 
 /// Corner radius of cards and other panels inside a page.
-pub const CARD_RADIUS: f32 = 10.;
+pub const CARD_RADIUS: f32 = 18.;
 /// Corner radius of the content panel the pages sit in.
 pub const PANEL_RADIUS: f32 = 12.;
 /// Gap between the content panel and the window's bottom and right edges
@@ -254,12 +256,9 @@ mod tests {
         assert_eq!(light.primary, hex(0x2563EB));
         assert_eq!(light.primary_hover, hex(0x1D4ED8));
         assert_eq!(light.primary_active, hex(0x1E40AF));
-        // The selected sidebar entry is a tile in the content panel's colour.
-        assert_eq!(light.sidebar_accent, light.background);
-        assert!(
-            light.sidebar.l < light.background.l,
-            "chrome sits below the panel"
-        );
+        // White cards on a grey canvas; the selected entry a shade darker.
+        assert!(light.sidebar.l < light.background.l, "cards stand out");
+        assert!(light.sidebar_accent.l < light.sidebar.l);
     }
 
     #[test]
@@ -273,11 +272,11 @@ mod tests {
         assert!(dark.primary_foreground.l > 0.9);
         assert!(dark.sidebar_accent.l < 0.3);
         assert!(dark.sidebar_accent_foreground.l > 0.8);
-        // The panel is the darkest surface, set in lighter chrome; the
-        // selected rail entry is lighter than the chrome.
-        assert!(dark.background.l < dark.sidebar.l);
+        // The canvas is the darkest surface, cards a step lighter on it;
+        // the selected entry is lighter than the canvas.
+        assert!(dark.background.l > dark.sidebar.l);
         assert!(dark.sidebar_accent.l > dark.sidebar.l);
-        // The chosen segment (panel colour) stands out from its track.
+        // A segmented track stands out from the card it sits on.
         for palette in [dark, accent_palette(false)] {
             assert_ne!(palette.segmented_track, palette.background);
         }

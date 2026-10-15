@@ -409,7 +409,7 @@ pub fn page_header(theme: &Theme, page: ActivePage) -> PageHeader {
         title: page.label(),
         context: page.hint().into_any_element(),
         muted: theme.muted_foreground,
-        background: theme.background,
+        background: theme.sidebar,
         divider: theme.border,
         actions: Vec::new(),
         collapsed: 0.,
@@ -422,7 +422,7 @@ pub struct PageHeader {
     title: &'static str,
     context: AnyElement,
     muted: Hsla,
-    /// The panel's colour, so a [`scroll_page`]'s body passes under it.
+    /// The canvas's colour, so a [`scroll_page`]'s body passes under it.
     background: Hsla,
     /// The line under it while a [`scroll_page`]'s body is under it.
     divider: Hsla,
@@ -1177,7 +1177,7 @@ impl Segment {
 }
 
 /// The app's one segmented control (a mode, a view, a sort order, a log
-/// level): a muted track, the selected choice raised on it. `size` tall,
+/// level): a muted track, the selected choice filled grey on it. `size` tall,
 /// as every control beside it ([`ControlSize`]): the choices sit 2px in
 /// from the track's edge, their text the size of a button's beside them.
 pub fn segmented(
@@ -1189,7 +1189,13 @@ pub fn segmented(
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let on_select = Rc::new(on_select);
-    let (fg, muted_fg, raised) = (theme.foreground, theme.muted_foreground, theme.background);
+    let (fg, muted_fg) = (theme.foreground, theme.muted_foreground);
+    // The chosen segment filled grey with white text, as Surge's are.
+    let chosen = if theme.is_dark() {
+        gpui::rgb(0x636366)
+    } else {
+        gpui::rgb(0x8E8E93)
+    };
     let inset = px(2.);
     div()
         .id(id)
@@ -1229,7 +1235,7 @@ pub fn segmented(
                 .rounded(theme.radius - inset)
                 .map(|this| {
                     if active {
-                        this.bg(raised).text_color(fg).shadow_xs()
+                        this.bg(chosen).text_color(gpui::white())
                     } else if segment.disabled {
                         this.text_color(muted_fg.opacity(0.5))
                     } else {

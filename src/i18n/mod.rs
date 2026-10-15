@@ -216,9 +216,11 @@ pub struct Nav {
     pub logs: &'static str,
     pub tools: &'static str,
     pub settings: &'static str,
-    /// Tooltip of the rail's button that shows / hides the labels beside
-    /// the sidebar's icons.
-    pub toggle_sidebar: &'static str,
+    /// Headings over the sidebar's groups of pages: Groups / Connections,
+    /// the Tailscale / VPN endpoints, Logs / Tools.
+    pub section_proxy: &'static str,
+    pub section_endpoints: &'static str,
+    pub section_troubleshoot: &'static str,
     /// Each page's line under its title, while it has nothing live to say
     /// there.
     pub home_hint: &'static str,
@@ -238,9 +240,39 @@ pub struct Home {
     pub add_subscription: &'static str,
     pub clash_mode: &'static str,
     pub memory: &'static str,
-    pub connections: &'static str,
-    pub uploaded: &'static str,
-    pub downloaded: &'static str,
+    /// The node the first group leads to (`core::home_view::leaf_node`).
+    pub exit_node: &'static str,
+    pub goroutines: &'static str,
+    pub sing_box_version: &'static str,
+    /// The delay card: each group's node and its latest URL test.
+    pub node_delay: &'static str,
+    /// A node sing-box holds no URL test result for yet.
+    pub not_tested: &'static str,
+    /// The delay card's button to the Tools page.
+    pub diagnostics: &'static str,
+    /// "Peak 2.0 MB/s": the highest rate of the rate card's window.
+    pub peak: Fmt1,
+    pub active_connections: &'static str,
+    /// Distinct processes behind the open connections.
+    pub processes: &'static str,
+    /// Heading of the per-minute traffic chart.
+    pub traffic_hour: &'static str,
+    /// The chart's two series: every byte, or proxied connections' only.
+    pub traffic_all: &'static str,
+    pub traffic_proxied: &'static str,
+    /// What the traffic ranking groups connections by.
+    pub rank_process: &'static str,
+    pub rank_domain: &'static str,
+    pub rank_outbound: &'static str,
+    /// The ranking with nothing to rank.
+    pub no_ranking: &'static str,
+    /// The process ranking when bytes moved but no connection carries its
+    /// process (sing-box looks them up in TUN mode, or for a process rule).
+    pub no_process_info: &'static str,
+    /// The card of totals since sing-box started, and the line beside its
+    /// heading.
+    pub run_total: &'static str,
+    pub run_total_hint: &'static str,
     pub proxy_mode: &'static str,
     pub mode_tun: &'static str,
     pub mode_proxy: &'static str,
@@ -249,16 +281,8 @@ pub struct Home {
     pub running_for: Fmt1,
     /// Under "Disconnected": what Connect would start with.
     pub ready_with: Fmt1,
-    /// Under "Starting…": the profile sing-box is starting with (keeps the
-    /// hero's second line, so the card doesn't shrink and grow back).
+    /// Under "Starting…": the profile sing-box is starting with.
     pub starting_with: Fmt1,
-    /// Heading of the Home card holding Proxy Mode / System Proxy / Clash
-    /// Mode.
-    pub quick_settings: &'static str,
-    /// Heading of the Home card for the active profile.
-    pub profile: &'static str,
-    /// Last item of the Home profile switcher: opens the Profiles page.
-    pub manage_profiles: &'static str,
     /// Under Proxy Mode where TUN can't be chosen: macOS without its
     /// privileged helper, and how to get it.
     pub tun_needs_helper: &'static str,
@@ -824,9 +848,8 @@ pub struct ConfigViewer {
     pub profile_unreadable: Fmt1,
 }
 
-/// The Home traffic chart.
+/// The Home rate charts' tooltips and the traffic chart's time axis.
 pub struct Chart {
-    pub last_two_minutes: &'static str,
     pub now: &'static str,
     pub secs_ago: fn(u16) -> String,
     pub mins_ago: fn(u16) -> String,

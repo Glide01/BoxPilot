@@ -12,6 +12,7 @@ mod diagnostics;
 mod helper;
 mod lan;
 mod language;
+mod proxy;
 mod updates;
 
 use crate::core::presentation::sanitize_port;
@@ -96,6 +97,7 @@ impl Render for SettingsPage {
         let app_state = self.app_state.clone();
         let mut general_rows = language::rows(&app_state, window, cx);
         general_rows.extend(appearance::rows(&app_state, window, cx));
+        let proxy_rows = proxy::rows(&app_state, window, cx);
         let lan_rows = lan::rows(&app_state, window, cx);
         let helper_rows = helper::rows(&app_state, window, cx);
         let diagnostics_rows = diagnostics::rows(&app_state, window, cx);
@@ -132,14 +134,19 @@ impl Render for SettingsPage {
                 .child(text)
         };
 
-        let mut network_rows = vec![setting_row(theme, t.local_proxy_port, None)
-            .child(
-                div()
-                    .w(px(96.))
-                    .on_mouse_down_out(|_, window, cx| window.blur(cx))
-                    .child(control_input(&self.port_input, ControlSize::Regular).cleanable(false)),
-            )
-            .into_any_element()];
+        let mut network_rows = proxy_rows;
+        network_rows.push(
+            setting_row(theme, t.local_proxy_port, None)
+                .child(
+                    div()
+                        .w(px(96.))
+                        .on_mouse_down_out(|_, window, cx| window.blur(cx))
+                        .child(
+                            control_input(&self.port_input, ControlSize::Regular).cleanable(false),
+                        ),
+                )
+                .into_any_element(),
+        );
         network_rows.extend(lan_rows);
         network_rows.push(
             setting_row(theme, t.close_on_switch, Some(t.close_on_switch_hint))

@@ -23,17 +23,25 @@ pub mod widgets;
 
 pub use root::RootView;
 
-use gpui::{div, px, Div, Styled};
+use gpui::{div, hsla, point, prelude::FluentBuilder, px, BoxShadow, Div, Styled};
 use gpui_component::{theme::Theme, StyledExt};
 
-/// Shared chrome for every card panel.
+/// Shared chrome for every card: a white (dark grey) tile standing on the
+/// window's canvas, no border, a soft shadow where one shows.
 pub fn card_frame(theme: &Theme) -> Div {
     div()
         .p_4()
         .rounded(px(self::theme::CARD_RADIUS))
-        .border_1()
-        .border_color(theme.border)
         .bg(theme.background)
+        .when(!theme.is_dark(), |card| {
+            card.shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.06),
+                offset: point(px(0.), px(1.)),
+                blur_radius: px(4.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+        })
         .v_flex()
         .gap_3()
         .w_full()
