@@ -19,15 +19,15 @@ use std::collections::VecDeque;
 /// The plot's height.
 pub const HEIGHT: f32 = 64.;
 
+/// How far above the plot's foot zero sits, as a share of the axis top.
+const BASELINE_LIFT: f64 = 0.25;
+
 /// The y axis never tops out below this (bytes/sec), so an idle connection's
 /// keep-alive trickle stays a flat line instead of filling the plot.
 const MIN_AXIS_MAX: u64 = 10 * 1024;
 
-/// The series colours. Download follows the accent (`primary`, which
-/// `ui::theme` steps per mode); upload is an orange stepped for each mode's
-/// surface. Checked as a pair against white and against the dark background
-/// for lightness, chroma, colour-blind separation and 3:1 contrast — gpui-
-/// component's theme has no orange, and its yellow is too light on dark.
+/// The series colours, Surge's: upload indigo, download sky blue, each
+/// stepped for its mode's card colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SeriesColors {
     pub download: Hsla,
@@ -35,17 +35,16 @@ pub struct SeriesColors {
 }
 
 pub fn series_colors(theme: &Theme) -> SeriesColors {
-    SeriesColors {
-        download: theme.primary,
-        upload: upload_color(theme.is_dark()),
-    }
-}
-
-fn upload_color(dark: bool) -> Hsla {
-    if dark {
-        rgb(0xD95926).into()
+    if theme.is_dark() {
+        SeriesColors {
+            download: rgb(0x64D2FF).into(),
+            upload: rgb(0x7D7AFF).into(),
+        }
     } else {
-        rgb(0xEB6834).into()
+        SeriesColors {
+            download: rgb(0x4FB7EE).into(),
+            upload: rgb(0x5856D6).into(),
+        }
     }
 }
 
@@ -176,7 +175,9 @@ impl Render for RateChart {
             .y(|p: &ChartPoint| p.rate)
             .stroke(color)
             .fill(fill)
-            .y_domain(0., top)
+            // Zero sits a little above the card's foot, as Surge's line
+            // does, the fill running on under it.
+            .y_domain(-top * BASELINE_LIFT, top)
             .y_padding(0., 0.)
             .tooltip_title(|p: &ChartPoint| age_label(p.age))
             .tooltip_value(|p: &ChartPoint, _, value| {
@@ -186,8 +187,8 @@ impl Render for RateChart {
                     "—".into()
                 }
             });
-        // Clip at the baseline: the smoothed curve dips a few pixels below
-        // zero right after a spike, which the chart's own mask lets through.
+        // Clip at the card's foot: the smoothed curve dips a few pixels
+        // below zero right after a spike.
         div()
             .w_full()
             .h(px(HEIGHT))

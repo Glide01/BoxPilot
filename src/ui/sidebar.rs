@@ -117,7 +117,7 @@ pub fn rail_brand(colors: SidebarColors) -> Div {
         )
 }
 
-/// One nav entry: icon and label in a row; the selected one is raised.
+/// One nav entry: icon and label in a row; the selected one on a grey tile.
 fn nav_item(
     page: ActivePage,
     icon: Icon,
@@ -138,23 +138,20 @@ fn nav_item(
         .px(px(NAV_INSET - 1.))
         .rounded(px(ITEM_RADIUS))
         .border_1()
+        .border_color(transparent_black())
         .cursor_pointer()
+        .text_color(fg)
         .map(|item| {
             if selected {
-                item.bg(tile)
-                    .border_color(colors.tile_border)
-                    .text_color(fg)
-                    .font_weight(FontWeight::MEDIUM)
+                item.bg(tile).font_weight(FontWeight::MEDIUM)
             } else {
-                item.border_color(transparent_black())
-                    .text_color(fg)
-                    .hover(move |style| style.bg(tile.opacity(0.6)))
+                item.hover(move |style| style.bg(tile.opacity(0.6)))
             }
         })
         .child(
             icon.size(px(ICON_SIZE))
                 .flex_none()
-                .text_color(if selected { colors.accent } else { muted }),
+                .text_color(if selected { fg } else { muted }),
         )
         .child(
             div()
@@ -314,10 +311,10 @@ pub fn sidebar(
 pub struct SidebarColors {
     pub fg: Hsla,
     pub muted: Hsla,
-    /// The selected item's icon and the update dot.
+    /// The update dot.
     pub accent: Hsla,
-    /// The selected item's raised tile.
+    /// The selected item's tile.
     pub tile: Hsla,
-    /// Its border, and the rule over the power button.
+    /// The rule over the power button.
     pub tile_border: Hsla,
 }

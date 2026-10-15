@@ -17,7 +17,7 @@ use crate::ui::sidebar::{
     brand, rail_brand, sidebar, Badges, OptionalPages, SidebarColors, SidebarStatus, StatusDetail,
     POWER_ICON_SIZE as SIDEBAR_POWER_ICON_SIZE, POWER_SIZE as SIDEBAR_POWER_SIZE,
 };
-use crate::ui::theme::{PANEL_INSET, PANEL_PADDING_X, PANEL_PADDING_Y, PANEL_RADIUS};
+use crate::ui::theme::{PANEL_INSET, PANEL_PADDING_X, PANEL_PADDING_Y};
 use crate::ui::title_bar;
 use crate::ui::toast::{self, Toasts};
 use crate::ui::widgets::power_button;
@@ -430,7 +430,6 @@ impl Render for RootView {
             tile: theme.sidebar_accent,
             tile_border: theme.border,
         };
-        let (panel_bg, panel_border) = (theme.background, theme.border);
         // 电源按钮旁的文字:已连接时显示 ↓/↑ 实时网速,否则显示当前 profile 名。
         let detail = if self.app_state.read(cx).api_stalled(cx) {
             StatusDetail::Reconnecting
@@ -531,7 +530,8 @@ impl Render for RootView {
             // observes the entities it reads), not on every root re-render —
             // the sidebar's speed line alone re-renders the root once a
             // second while connected.
-            // The page sits in a raised panel inset from the window chrome.
+            // The page sits straight on the window's canvas, beside the
+            // sidebar: no panel frames it, its cards stand on their own.
             .child(
                 div()
                     .flex_1()
@@ -540,11 +540,6 @@ impl Render for RootView {
                     .when(!strip, |panel| panel.my(px(PANEL_INSET)))
                     .mr(px(PANEL_INSET))
                     .v_flex()
-                    .rounded(px(PANEL_RADIUS))
-                    .border_1()
-                    .border_color(panel_border)
-                    .bg(panel_bg)
-                    .shadow_xs()
                     .overflow_hidden()
                     .px(px(PANEL_PADDING_X))
                     .py(px(PANEL_PADDING_Y))

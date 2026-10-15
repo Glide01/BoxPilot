@@ -60,6 +60,13 @@ const DELAY_GROUPS: usize = 3;
 const RANKING_ROWS: usize = 5;
 /// The traffic chart's plot height.
 const CHART_HEIGHT: f32 = 120.;
+/// A minute's bar in the traffic chart: a capsule this wide, a dot of it
+/// for a quiet minute.
+const BAR_WIDTH: f32 = 5.;
+/// Dashes in a gridline of the traffic chart, enough for a wide card.
+const GRID_DOTS: usize = 240;
+/// A card's main figure.
+const FIGURE_SIZE: f32 = 34.;
 /// Narrower windows than this stack the delay card over the two rate
 /// cards: beside it, each rate card is too narrow for its figure.
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 1100.;
@@ -239,8 +246,9 @@ fn figure(theme: &Theme, text: &str) -> Div {
         .whitespace_nowrap()
         .child(
             div()
-                .text_3xl()
-                .font_weight(FontWeight::SEMIBOLD)
+                .text_size(px(FIGURE_SIZE))
+                .line_height(px(FIGURE_SIZE + 4.))
+                .font_weight(FontWeight::BOLD)
                 .text_color(theme.foreground)
                 .child(number.to_string()),
         )
@@ -475,8 +483,8 @@ impl Render for HomePage {
                     .child(caption(theme, group.clone()).truncate())
                     .child(
                         div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_xl()
+                            .font_weight(FontWeight::BOLD)
                             .whitespace_nowrap()
                             .child(delay_text(delay.as_ref())),
                     )
@@ -598,8 +606,8 @@ impl Render for HomePage {
                 .min_w_0()
                 .child(
                     div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_xl()
+                        .font_weight(FontWeight::BOLD)
                         .child(value.to_string()),
                 )
                 .child(
@@ -638,13 +646,13 @@ impl Render for HomePage {
         let split = |label: &'static str, bytes: u64| {
             div().v_flex().gap_0p5().child(caption(theme, label)).child(
                 div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_xl()
+                    .font_weight(FontWeight::BOLD)
                     .whitespace_nowrap()
                     .child(known(format_bytes(bytes))),
             )
         };
-        let bar = |color: Hsla| div().h(px(10.)).rounded(px(5.)).bg(color);
+        let bar = |color: Hsla| div().h(px(18.)).rounded(px(5.)).bg(color);
         let (up_bar, down_bar) = if total > 0 {
             (bar(colors.upload), bar(colors.download))
         } else {
@@ -705,22 +713,14 @@ impl Render for HomePage {
         );
         let top = axis_max(minutes.iter().copied().max().unwrap_or(0));
         let bars = minutes.iter().enumerate().map(|(ix, &bytes)| {
-            let height = if bytes == 0 {
-                3.
-            } else {
-                (bytes as f32 / top as f32 * CHART_HEIGHT).max(3.)
-            };
+            let height = (bytes as f32 / top as f32 * CHART_HEIGHT).max(BAR_WIDTH);
             div()
                 .id(("home-minute", ix))
-                .flex_1()
-                .min_w_0()
+                .flex_none()
+                .w(px(BAR_WIDTH))
                 .h(px(height))
-                .rounded_t(px(2.))
-                .bg(if bytes == 0 {
-                    theme.border
-                } else {
-                    colors.download
-                })
+                .rounded_full()
+                .bg(colors.download)
                 .when(bytes > 0, |bar| {
                     let minutes_ago = (WINDOW_MINUTES - 1 - ix) as u16;
                     let when = if minutes_ago == 0 {
@@ -741,7 +741,22 @@ impl Render for HomePage {
                 .h_flex()
                 .items_center()
                 .gap_2()
-                .child(div().flex_1().h(px(1.)).bg(theme.border.opacity(0.7)))
+                // Dotted, as Surge's are: a row of short dashes.
+                .child(
+                    div()
+                        .flex_1()
+                        .h(px(1.))
+                        .overflow_hidden()
+                        .h_flex()
+                        .gap(px(3.))
+                        .children((0..GRID_DOTS).map(|_| {
+                            div()
+                                .flex_none()
+                                .w(px(2.))
+                                .h_full()
+                                .bg(theme.muted_foreground.opacity(0.35))
+                        })),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -764,7 +779,7 @@ impl Render for HomePage {
                     .h(px(CHART_HEIGHT))
                     .h_flex()
                     .items_end()
-                    .gap(px(2.))
+                    .justify_between()
                     .children(bars),
             );
         let axis = div()
@@ -908,17 +923,11 @@ fn talker_row(theme: &Theme, talker: &Talker, most: u64) -> Div {
                 )
                 .child(
                     div()
-                        .w_full()
                         .h(px(4.))
+                        .w(relative(share))
+                        .min_w(px(4.))
                         .rounded(px(2.))
-                        .bg(theme.muted)
-                        .child(
-                            div()
-                                .h_full()
-                                .w(relative(share))
-                                .rounded(px(2.))
-                                .bg(theme.muted_foreground.opacity(0.5)),
-                        ),
+                        .bg(theme.muted_foreground.opacity(0.22)),
                 ),
         )
 }
